@@ -1,0 +1,59 @@
+{
+  "logFile": ".\\iRacingLauncher.log",
+  "apps": [
+    {
+      "name": "SimHubWPF",
+      "path": "G:\\Program Files (x86)\\SimHub\\SimHubWPF.exe",
+      "args": "",
+      "windowStyle": "Normal",
+      "delayMs": 1500,
+      "elevate": false,
+      "processName": "SimHubWPF"
+    },
+    {
+      "name": "Trading Paints",
+      "path": "P:\\Program Files (x86)\\Rhinode LLC\\Trading Paints\\Trading Paints.exe",
+      "args": "",
+      "windowStyle": "Normal",
+      "delayMs": 0,
+      "elevate": false,
+      "processName": "Trading Paints"
+    },
+    {
+      "name": "iRacingUI",
+      "path": "N:\\Program Files (x86)\\iRacing\\ui\\iRacingUI.exe",
+      "args": "",
+      "windowStyle": "Normal",
+      "delayMs": 0,
+      "elevate": false,
+      "processName": "iRacingUI"
+    },
+    {
+      "name": "MarvinsAIRA",
+      "path": "P:\\Users\\ricky\\AppData\\Local\\Programs\\MarvinsAIRA\\MarvinsAIRA.exe",
+      "args": "",
+      "windowStyle": "Normal",
+      "delayMs": 0,
+      "elevate": false,
+      "processName": "MarvinsAIRA"
+    },
+    {
+      "name": "garage61-launcher",
+      "path": "C:\\Users\\ricky\\AppData\\Roaming\\garage61-install\\garage61-launcher.exe",
+      "args": "",
+      "windowStyle": "Normal",
+      "delayMs": 0,
+      "elevate": false,
+      "processName": "garage61-launcher"
+    },
+    {
+      "name": "SimPro Manager",
+      "path": "C:\\Program Files (x86)\\simpro\\bin\\simpro.exe",
+      "args": "",
+      "windowStyle": "Normal",
+      "delayMs": 0,
+      "elevate": false,
+      "processName": "simpro"
+    }
+  ]
+}
