@@ -8,8 +8,9 @@ A lightweight Windows CLI tool that launches, monitors, and closes all your sim 
 - **Sequential launch** with per-app configurable delays
 - **Idempotent start** — skips apps already running, no duplicate instances
 - **Status check** — shows running/stopped state and PID for each app
-- **Elevation support** — per-app UAC elevation via `ShellExecuteEx`
+- **Elevated process support** — can kill processes that auto-elevate (e.g. SimHub) via `SeDebugPrivilege`
 - **Stream Deck ready** — simple CLI commands, no interactive UI
+- **Config validation** — catches bad paths, negative delays, and invalid values at load time
 
 ## Requirements
 
@@ -31,14 +32,17 @@ go build -o "G:\RACING\launcher\simapplauncher.exe" ./cmd/simapplauncher
 ## Usage
 
 ```
-simapplauncher <start|stop|status>
+simapplauncher [-config <path>] <start|stop|status>
 ```
 
-The binary looks for `launcher.config.json` in the working directory.
+The binary looks for `launcher.config.json` in the working directory by default. Use `-config` to point to a different file.
 
 ```powershell
 # Launch all configured apps
 .\simapplauncher.exe start
+
+# Launch using a specific config file
+.\simapplauncher.exe -config "G:\RACING\other\launcher.config.json" start
 
 # Check which apps are running
 .\simapplauncher.exe status
@@ -57,7 +61,7 @@ The binary looks for `launcher.config.json` in the working directory.
   [+] MarvinsAIRA          ... launched (pid 46676)
   [!] MyApp                ... FAILED: path not found
 
-Done. 3/5 apps launched.
+Done. 3/5 apps running.
 
 > simapplauncher status
   SimHubWPF            RUNNING  41512
@@ -65,6 +69,10 @@ Done. 3/5 apps launched.
   iRacingUI            RUNNING  43876
   MarvinsAIRA          RUNNING  46676
   MyApp                STOPPED  -
+
+> simapplauncher stop
+  [-] SimHubWPF            ... closed
+  [-] Trading Paints       ... closed
 ```
 
 ## Configuration
@@ -73,7 +81,6 @@ Edit `launcher.config.json` in the same directory as the binary:
 
 ```json
 {
-  "logFile": ".\\launcher.log",
   "apps": [
     {
       "name": "SimHubWPF",
@@ -91,14 +98,14 @@ Edit `launcher.config.json` in the same directory as the binary:
 | Field | Description |
 |-------|-------------|
 | `name` | Display name shown in CLI output |
-| `path` | Full path to the executable |
-| `args` | Command-line arguments (space-separated string) |
-| `windowStyle` | `Normal`, `Hidden` |
-| `delayMs` | Milliseconds to wait after launching this app before the next |
+| `path` | Full path to the executable (required) |
+| `args` | Command-line arguments as a space-separated string |
+| `windowStyle` | `Normal` or `Hidden` (default: `Normal`) |
+| `delayMs` | Milliseconds to wait after launching this app before the next (must be >= 0) |
 | `elevate` | Launch via `ShellExecuteEx` with `runas` verb |
-| `processName` | Executable name (without `.exe`) used for status checks and stop |
+| `processName` | Exe stem used for status checks and stop (e.g. `SimHubWPF` for `SimHubWPF.exe`). Falls back to `name` if empty. |
 
-> **Note:** `processName` must match the image name shown in Task Manager, which may differ from the launched executable if the app spawns a child process.
+> **Note:** `processName` must match the image name shown in Task Manager. Many apps spawn a child process with a different name — if `status` shows an app as STOPPED immediately after launching it, check Task Manager for the real process name.
 
 ## Stream Deck Integration
 
@@ -121,25 +128,30 @@ pwsh -ExecutionPolicy Bypass -WorkingDirectory "G:\RACING\launcher" -Command ".\
 go test ./...
 ```
 
-**End-to-end test** (launches and closes your actual apps):
+**End-to-end test** (launches and closes your actual apps, ~20s):
 ```powershell
-go test -tags e2e -v ./internal/launcher/ -run TestE2E_FullStack -timeout 60s
+go test -tags e2e -v ./internal/launcher/ -run TestE2E_FullStack -timeout 120s
 ```
+
+## Known Limitations
+
+- `Minimized` window style is not implemented — it falls back to `Normal`. Full support requires `golang.org/x/sys/windows`.
+- `stop` kills all instances of a process by image name. If you have multiple instances of the same exe running, all will be closed.
 
 ## Project Structure
 
 ```
 cmd/simapplauncher/
-  main.go                     # CLI entry point — subcommand dispatch
+  main.go                     # CLI entry point — flag parsing and subcommand dispatch
 
 internal/
   config/
-    config.go                 # Config struct definitions
+    config.go                 # Config struct definitions and validation
     load.go                   # JSON config loader
-    load_test.go              # Config loading tests
+    load_test.go              # Config loading and validation tests
   launcher/
     launcher.go               # RunStart / RunStop / RunStatus + ProcessManager interface
-    process_windows.go        # Windows implementation: Spawn, IsRunning, Kill
+    process_windows.go        # Windows implementation: Spawn, IsRunning, Kill (with SeDebugPrivilege fallback)
     elevate_windows.go        # UAC elevation via ShellExecuteExW
     output.go                 # Formatted print helpers
     launcher_test.go          # Unit tests with mock ProcessManager
