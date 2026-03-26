@@ -6,10 +6,6 @@ Windows CLI tool (`simapplauncher.exe`) that launches, monitors, and closes sim 
 ## Build
 ```powershell
 go build -o simapplauncher.exe ./cmd/simapplauncher
-
-# Deploy to launcher folder
-go build -o "G:\RACING\launcher\simapplauncher.exe" ./cmd/simapplauncher
-cp launcher.config.json "G:\RACING\launcher\launcher.config.json"
 ```
 
 ## Tests
@@ -44,8 +40,8 @@ The `processName` field is the exe stem used for `tasklist`/`taskkill`. Falls ba
 `config.App.Args` is a `string`, not `[]string`. Split with `strings.Fields(app.Args)` before passing to `exec.Command`.
 
 ## Deployment
-- Binary + config deployed to `G:\RACING\launcher\`
-- Stream Deck triggers via the **Open** action pointing directly at `G:\RACING\launcher\simapplauncher.exe` with arguments `start` or `stop` — no PowerShell wrapper needed. Config path resolves relative to the exe via `os.Executable()`.
+- Binary + config live in `G:\RACING\SimAppLauncher\` (the repo root)
+- Stream Deck triggers via the **Open** action pointing directly at `G:\RACING\SimAppLauncher\simapplauncher.exe` with arguments `start` or `stop` — no PowerShell wrapper needed. Config path resolves relative to the exe via `os.Executable()`.
 - UAC is set to never-notify on this machine — elevation via `ShellExecuteExW runas` does not work in this environment; use `elevate: false` for all apps
 - SimHub auto-elevates via its own manifest and resists `taskkill` — the `SeDebugPrivilege` fallback in `Kill()` handles this
 
