@@ -7,7 +7,7 @@
       "args": "",
       "windowStyle": "Normal",
       "delayMs": 1500,
-      "elevate": true,
+      "elevate": false,
       "processName": "SimHubWPF"
     },
     {
