@@ -4,13 +4,22 @@ import (
 	"flag"
 	"fmt"
 	"os"
+	"path/filepath"
 
 	"github.com/rickymw/SimAppLauncher/internal/config"
 	"github.com/rickymw/SimAppLauncher/internal/launcher"
 )
 
+func defaultConfigPath() string {
+	exe, err := os.Executable()
+	if err != nil {
+		return "launcher.config.json"
+	}
+	return filepath.Join(filepath.Dir(exe), "launcher.config.json")
+}
+
 func main() {
-	cfgPath := flag.String("config", "launcher.config.json", "path to config file")
+	cfgPath := flag.String("config", defaultConfigPath(), "path to config file")
 	flag.Usage = func() {
 		fmt.Fprintln(os.Stderr, "Usage: simapplauncher [-config <path>] <start|stop|status>")
 		flag.PrintDefaults()

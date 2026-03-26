@@ -109,17 +109,13 @@ Edit `launcher.config.json` in the same directory as the binary:
 
 ## Stream Deck Integration
 
-Use the Stream Deck **Open** action with these commands:
+Use the Stream Deck **Open** action pointing directly at the binary — no PowerShell wrapper needed.
 
-**Start:**
-```
-pwsh -ExecutionPolicy Bypass -WorkingDirectory "G:\RACING\launcher" -Command ".\simapplauncher.exe start"
-```
+**Action:** `Open`
+**App/File:** `G:\RACING\launcher\simapplauncher.exe`
+**Arguments:** `start` (or `stop`)
 
-**Stop:**
-```
-pwsh -ExecutionPolicy Bypass -WorkingDirectory "G:\RACING\launcher" -Command ".\simapplauncher.exe stop"
-```
+The binary resolves `launcher.config.json` relative to its own location, so the working directory doesn't matter.
 
 ## Testing
 

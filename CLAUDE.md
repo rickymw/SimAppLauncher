@@ -45,7 +45,7 @@ The `processName` field is the exe stem used for `tasklist`/`taskkill`. Falls ba
 
 ## Deployment
 - Binary + config deployed to `G:\RACING\launcher\`
-- Stream Deck triggers via `pwsh -ExecutionPolicy Bypass -WorkingDirectory "G:\RACING\launcher" -Command ".\simapplauncher.exe start/stop"`
+- Stream Deck triggers via the **Open** action pointing directly at `G:\RACING\launcher\simapplauncher.exe` with arguments `start` or `stop` — no PowerShell wrapper needed. Config path resolves relative to the exe via `os.Executable()`.
 - UAC is set to never-notify on this machine — elevation via `ShellExecuteExW runas` does not work in this environment; use `elevate: false` for all apps
 - SimHub auto-elevates via its own manifest and resists `taskkill` — the `SeDebugPrivilege` fallback in `Kill()` handles this
 
