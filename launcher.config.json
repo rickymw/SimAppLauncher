@@ -7,7 +7,7 @@
       "args": "",
       "windowStyle": "Normal",
       "delayMs": 1500,
-      "elevate": false,
+      "elevate": true,
       "processName": "SimHubWPF"
     },
     {
@@ -48,12 +48,12 @@
     },
     {
       "name": "SimPro Manager",
-      "path": "C:\\Program Files (x86)\\simpro\\bin\\simpro.exe",
+      "path": "C:\\Program Files (x86)\\SIMAGIC\\Daemon\\simdaemon.exe",
       "args": "",
       "windowStyle": "Normal",
       "delayMs": 0,
       "elevate": false,
-      "processName": "simpro"
+      "processName": "simpro3"
     }
   ]
 }
