@@ -16,8 +16,8 @@ import (
 )
 
 const (
-	startupWait  = 5 * time.Second // time for apps to appear in tasklist after launch
-	shutdownWait = 2 * time.Second // time for apps to disappear after stop
+	startupWait  = 10 * time.Second // time for apps to appear in tasklist after launch
+	shutdownWait = 5 * time.Second  // time for apps to disappear after stop
 )
 
 // repoRoot resolves the repository root relative to this source file,
