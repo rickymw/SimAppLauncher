@@ -16,19 +16,26 @@ type SpawnResult struct {
 // ProcessManager abstracts OS-level process operations so they can be mocked in tests.
 type ProcessManager interface {
 	Spawn(app config.App) SpawnResult
-	IsRunning(processName string) (pid int, running bool)
+	IsRunning(processName string) (pid int, running bool, err error)
 	Kill(processName string) error
 }
 
 func RunStart(cfg config.Config, pm ProcessManager) {
 	launched := 0
+	alreadyRunning := 0
 	for _, app := range cfg.Apps {
 		name := app.ProcessName
 		if name == "" {
 			name = app.Name
 		}
-		if pid, running := pm.IsRunning(name); running {
+		pid, running, err := pm.IsRunning(name)
+		if err != nil {
+			PrintFailed(app.Name, "status check failed: "+err.Error())
+			continue
+		}
+		if running {
 			PrintAlreadyRunning(app.Name, pid)
+			alreadyRunning++
 			continue
 		}
 		result := pm.Spawn(app)
@@ -42,7 +49,7 @@ func RunStart(cfg config.Config, pm ProcessManager) {
 			time.Sleep(time.Duration(app.DelayMs) * time.Millisecond)
 		}
 	}
-	fmt.Printf("\nDone. %d/%d apps launched.\n", launched, len(cfg.Apps))
+	fmt.Printf("\nDone. %d/%d apps running.\n", launched+alreadyRunning, len(cfg.Apps))
 }
 
 func RunStop(cfg config.Config, pm ProcessManager) {
@@ -66,7 +73,11 @@ func RunStatus(cfg config.Config, pm ProcessManager) {
 		if name == "" {
 			name = app.Name
 		}
-		pid, running := pm.IsRunning(name)
+		pid, running, err := pm.IsRunning(name)
+		if err != nil {
+			PrintStatusError(app.Name, err.Error())
+			continue
+		}
 		PrintStatus(app.Name, running, pid)
 	}
 }

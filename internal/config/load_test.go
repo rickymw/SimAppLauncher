@@ -7,7 +7,6 @@ import (
 
 func TestLoad_ValidConfig(t *testing.T) {
 	json := `{
-		"logFile": "test.log",
 		"apps": [
 			{
 				"name": "TestApp",
@@ -25,9 +24,6 @@ func TestLoad_ValidConfig(t *testing.T) {
 	cfg, err := Load(f)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
-	}
-	if cfg.LogFile != "test.log" {
-		t.Errorf("LogFile = %q, want %q", cfg.LogFile, "test.log")
 	}
 	if len(cfg.Apps) != 1 {
 		t.Fatalf("len(Apps) = %d, want 1", len(cfg.Apps))
@@ -52,7 +48,7 @@ func TestLoad_FileNotFound(t *testing.T) {
 }
 
 func TestLoad_InvalidJSON(t *testing.T) {
-	f := writeTempFile(t, `{ "logFile": "bad json" `)
+	f := writeTempFile(t, `{ "apps": [ bad json`)
 
 	_, err := Load(f)
 	if err == nil {
@@ -61,7 +57,7 @@ func TestLoad_InvalidJSON(t *testing.T) {
 }
 
 func TestLoad_EmptyApps(t *testing.T) {
-	f := writeTempFile(t, `{"logFile": "", "apps": []}`)
+	f := writeTempFile(t, `{"apps": []}`)
 
 	cfg, err := Load(f)
 	if err != nil {
@@ -69,6 +65,51 @@ func TestLoad_EmptyApps(t *testing.T) {
 	}
 	if len(cfg.Apps) != 0 {
 		t.Errorf("len(Apps) = %d, want 0", len(cfg.Apps))
+	}
+}
+
+func TestValidate_NegativeDelayMs(t *testing.T) {
+	f := writeTempFile(t, `{"apps": [{"name": "App", "path": "C:\\app.exe", "delayMs": -1}]}`)
+
+	_, err := Load(f)
+	if err == nil {
+		t.Error("expected error for negative delayMs, got nil")
+	}
+}
+
+func TestValidate_EmptyName(t *testing.T) {
+	f := writeTempFile(t, `{"apps": [{"name": "", "path": "C:\\app.exe"}]}`)
+
+	_, err := Load(f)
+	if err == nil {
+		t.Error("expected error for empty name, got nil")
+	}
+}
+
+func TestValidate_EmptyPath(t *testing.T) {
+	f := writeTempFile(t, `{"apps": [{"name": "App", "path": ""}]}`)
+
+	_, err := Load(f)
+	if err == nil {
+		t.Error("expected error for empty path, got nil")
+	}
+}
+
+func TestValidate_InvalidWindowStyle(t *testing.T) {
+	f := writeTempFile(t, `{"apps": [{"name": "App", "path": "C:\\app.exe", "windowStyle": "Minimized"}]}`)
+
+	_, err := Load(f)
+	if err == nil {
+		t.Error("expected error for invalid windowStyle, got nil")
+	}
+}
+
+func TestValidate_ValidWindowStyles(t *testing.T) {
+	for _, style := range []string{"", "Normal", "Hidden", "normal", "hidden"} {
+		f := writeTempFile(t, `{"apps": [{"name": "App", "path": "C:\\app.exe", "windowStyle": "`+style+`"}]}`)
+		if _, err := Load(f); err != nil {
+			t.Errorf("windowStyle %q should be valid, got error: %v", style, err)
+		}
 	}
 }
 

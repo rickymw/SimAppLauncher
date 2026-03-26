@@ -5,6 +5,8 @@ package launcher
 import (
 	"fmt"
 	"os/exec"
+	"path/filepath"
+	"runtime"
 	"strconv"
 	"strings"
 	"testing"
@@ -14,20 +16,27 @@ import (
 )
 
 const (
-	configPath       = "../../launcher.config.json"
-	startupWait      = 5 * time.Second // time for apps to appear in tasklist after launch
-	shutdownWait     = 2 * time.Second // time for apps to disappear after stop
+	startupWait  = 5 * time.Second // time for apps to appear in tasklist after launch
+	shutdownWait = 2 * time.Second // time for apps to disappear after stop
 )
+
+// repoRoot resolves the repository root relative to this source file,
+// so the test works regardless of which directory go test is run from.
+func repoRoot() string {
+	_, filename, _, _ := runtime.Caller(0)
+	return filepath.Join(filepath.Dir(filename), "../..")
+}
 
 // TestE2E_FullStack launches all configured sim racing apps, verifies each is
 // running, stops them all, then verifies each is stopped.
 //
-// Run with: go test -tags e2e -v ./internal/launcher/ -run TestE2E_FullStack
+// Run with: go test -tags e2e -v ./internal/launcher/ -run TestE2E_FullStack -timeout 60s
 // WARNING: this will launch and close your actual sim racing apps.
 func TestE2E_FullStack(t *testing.T) {
-	cfg, err := config.Load(configPath)
+	cfgPath := filepath.Join(repoRoot(), "launcher.config.json")
+	cfg, err := config.Load(cfgPath)
 	if err != nil {
-		t.Fatalf("failed to load config: %v", err)
+		t.Fatalf("failed to load config from %s: %v", cfgPath, err)
 	}
 
 	pm := NewProcessManager()
@@ -53,8 +62,10 @@ func TestE2E_FullStack(t *testing.T) {
 		if name == "" {
 			name = app.Name
 		}
-		pid, running := pm.IsRunning(name)
-		if !running {
+		pid, running, err := pm.IsRunning(name)
+		if err != nil {
+			t.Errorf("[FAIL] %s — IsRunning error: %v", app.Name, err)
+		} else if !running {
 			t.Errorf("[FAIL] %s — not found in tasklist (processName: %q)", app.Name, name)
 		} else {
 			t.Logf("[ OK ] %s — running (pid %d)", app.Name, pid)
@@ -76,8 +87,10 @@ func TestE2E_FullStack(t *testing.T) {
 		if name == "" {
 			name = app.Name
 		}
-		_, running := pm.IsRunning(name)
-		if running {
+		_, running, err := pm.IsRunning(name)
+		if err != nil {
+			t.Errorf("[FAIL] %s — IsRunning error after stop: %v", app.Name, err)
+		} else if running {
 			t.Errorf("[FAIL] %s — still running after stop (processName: %q)", app.Name, name)
 		} else {
 			t.Logf("[ OK ] %s — stopped", app.Name)

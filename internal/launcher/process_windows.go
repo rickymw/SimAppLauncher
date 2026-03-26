@@ -40,11 +40,11 @@ func (w *windowsProcessManager) Spawn(app config.App) SpawnResult {
 	return SpawnResult{PID: cmd.Process.Pid}
 }
 
-func (w *windowsProcessManager) IsRunning(processName string) (pid int, running bool) {
+func (w *windowsProcessManager) IsRunning(processName string) (pid int, running bool, err error) {
 	filter := fmt.Sprintf("IMAGENAME eq %s.exe", processName)
-	out, err := exec.Command("tasklist", "/FI", filter, "/NH", "/FO", "CSV").Output()
-	if err != nil {
-		return 0, false
+	out, cmdErr := exec.Command("tasklist", "/FI", filter, "/NH", "/FO", "CSV").Output()
+	if cmdErr != nil {
+		return 0, false, fmt.Errorf("tasklist failed: %w", cmdErr)
 	}
 
 	output := string(out)
@@ -55,13 +55,13 @@ func (w *windowsProcessManager) IsRunning(processName string) (pid int, running 
 			fields := strings.Split(strings.TrimSpace(line), ",")
 			if len(fields) >= 2 {
 				pidStr := strings.Trim(fields[1], "\"")
-				if p, err := strconv.Atoi(pidStr); err == nil {
-					return p, true
+				if p, parseErr := strconv.Atoi(pidStr); parseErr == nil {
+					return p, true, nil
 				}
 			}
 		}
 	}
-	return 0, false
+	return 0, false, nil
 }
 
 func (w *windowsProcessManager) Kill(processName string) error {

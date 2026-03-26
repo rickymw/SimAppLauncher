@@ -1,5 +1,4 @@
 {
-  "logFile": ".\\iRacingLauncher.log",
   "apps": [
     {
       "name": "SimHubWPF",
