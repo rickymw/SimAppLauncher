@@ -13,61 +13,76 @@ import (
 	"github.com/rickymw/SimAppLauncher/internal/config"
 )
 
-// TestE2E_SpawnIsRunningKill exercises the full Windows process lifecycle:
-// Spawn → IsRunning → Kill → confirm stopped.
+const (
+	configPath       = "../../launcher.config.json"
+	startupWait      = 5 * time.Second // time for apps to appear in tasklist after launch
+	shutdownWait     = 2 * time.Second // time for apps to disappear after stop
+)
+
+// TestE2E_FullStack launches all configured sim racing apps, verifies each is
+// running, stops them all, then verifies each is stopped.
 //
-// Uses notepad.exe as a benign, always-available test process.
-// Idempotent: kills only the specific PID it spawned, so any pre-existing
-// notepad windows are left untouched.
-//
-// Run with: go test -tags e2e -v ./internal/launcher/
-func TestE2E_SpawnIsRunningKill(t *testing.T) {
+// Run with: go test -tags e2e -v ./internal/launcher/ -run TestE2E_FullStack
+// WARNING: this will launch and close your actual sim racing apps.
+func TestE2E_FullStack(t *testing.T) {
+	cfg, err := config.Load(configPath)
+	if err != nil {
+		t.Fatalf("failed to load config: %v", err)
+	}
+
 	pm := NewProcessManager()
 
-	app := config.App{
-		Name:        "notepad (e2e test)",
-		Path:        `C:\Windows\System32\notepad.exe`,
-		WindowStyle: "Hidden",
-		ProcessName: "notepad",
-	}
-
-	// 1. Spawn
-	result := pm.Spawn(app)
-	if result.Err != nil {
-		t.Fatalf("Spawn failed: %v", result.Err)
-	}
-	if result.PID == 0 {
-		t.Fatal("Spawn returned PID 0")
-	}
-	t.Logf("spawned notepad.exe with pid %d", result.PID)
-
-	// Ensure we always clean up, even on test failure.
+	// Always stop all apps on exit, even if the test fails mid-way.
 	t.Cleanup(func() {
-		killByPID(result.PID) // no-op if already dead
+		t.Log("cleanup: stopping all apps")
+		captureStdout(func() { RunStop(cfg, pm) })
 	})
 
-	// Give the process a moment to appear in the process list.
-	time.Sleep(200 * time.Millisecond)
+	// 1. Start all apps.
+	t.Log("starting all apps...")
+	out := captureStdout(func() { RunStart(cfg, pm) })
+	t.Log(out)
 
-	// 2. IsRunning by PID — expect running
-	if !isPIDRunning(result.PID) {
-		t.Fatalf("process %d not found in tasklist after Spawn", result.PID)
+	t.Logf("waiting %s for apps to initialize...", startupWait)
+	time.Sleep(startupWait)
+
+	// 2. Verify each app is running.
+	t.Log("verifying apps are running...")
+	for _, app := range cfg.Apps {
+		name := app.ProcessName
+		if name == "" {
+			name = app.Name
+		}
+		pid, running := pm.IsRunning(name)
+		if !running {
+			t.Errorf("[FAIL] %s — not found in tasklist (processName: %q)", app.Name, name)
+		} else {
+			t.Logf("[ OK ] %s — running (pid %d)", app.Name, pid)
+		}
 	}
-	t.Logf("confirmed pid %d is running", result.PID)
 
-	// 3. Kill by PID (leaves any other notepad windows untouched)
-	if err := killByPID(result.PID); err != nil {
-		t.Fatalf("kill by PID failed: %v", err)
+	// 3. Stop all apps.
+	t.Log("stopping all apps...")
+	out = captureStdout(func() { RunStop(cfg, pm) })
+	t.Log(out)
+
+	t.Logf("waiting %s for apps to shut down...", shutdownWait)
+	time.Sleep(shutdownWait)
+
+	// 4. Verify each app is stopped.
+	t.Log("verifying apps are stopped...")
+	for _, app := range cfg.Apps {
+		name := app.ProcessName
+		if name == "" {
+			name = app.Name
+		}
+		_, running := pm.IsRunning(name)
+		if running {
+			t.Errorf("[FAIL] %s — still running after stop (processName: %q)", app.Name, name)
+		} else {
+			t.Logf("[ OK ] %s — stopped", app.Name)
+		}
 	}
-	t.Logf("killed pid %d", result.PID)
-
-	time.Sleep(200 * time.Millisecond)
-
-	// 4. IsRunning by PID — expect stopped
-	if isPIDRunning(result.PID) {
-		t.Fatalf("process %d still running after kill", result.PID)
-	}
-	t.Log("process confirmed stopped")
 }
 
 // isPIDRunning checks tasklist for a specific PID.
