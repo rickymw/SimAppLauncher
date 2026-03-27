@@ -350,11 +350,11 @@ func printSegmentTable(lap *analysis.Lap, zones []analysis.SegZone) {
 	fmt.Println("------|--------------|-----------------|--------|--------|--------|------|-------|-------|-------|------|-----|------")
 	for i, z := range zones {
 		if z.SampleCount == 0 {
-			fmt.Printf("  %2d  | %-12s | %5.1f%% → %5.1f%%  |    --- |    --- |    --- |   -- |    -- |    -- |    -- |   -- |  -- |   ---\n",
+			fmt.Printf("  %2d  | %-12s | %5.1f%% → %5.1f%% |    --- |    --- |    --- |   -- |    -- |    -- |    -- |   -- |  -- |   ---\n",
 				i+1, z.Name, z.EntryPct*100, z.ExitPct*100)
 			continue
 		}
-		fmt.Printf("  %2d  | %-12s | %5.1f%% → %5.1f%%  | %6.1f | %6.1f | %6.1f |  %3d | %5.0f%% | %5.0f%% | %5.0f%% | %4.2f | %3d | %5d\n",
+		fmt.Printf("  %2d  | %-12s | %5.1f%% → %5.1f%% | %6.1f | %6.1f | %6.1f |  %3d | %4.0f%% | %4.0f%% | %4.0f%% | %4.2f | %3d | %5d\n",
 			i+1, z.Name, z.EntryPct*100, z.ExitPct*100,
 			z.SpeedEntryKPH, z.SpeedMinKPH, z.SpeedExitKPH,
 			z.DominantGear,
@@ -382,7 +382,7 @@ func printSegmentComparisonTable(lap1, lap2 *analysis.Lap, zones1, zones2 []anal
 		if i < len(deltas) {
 			d = deltas[i]
 		}
-		fmt.Printf("  %2d  | %-12s | %5.1f%% → %5.1f%%  | %5.1f | %5.1f | %5.0f%% | %5.0f%% | %5.0f%% | %5.0f%% | %5.0f%% | %5.0f%% | %5d | %5d | %+6.3f\n",
+		fmt.Printf("  %2d  | %-12s | %5.1f%% → %5.1f%% | %5.1f | %5.1f | %4.0f%% | %4.0f%% | %4.0f%% | %4.0f%% | %4.0f%% | %4.0f%% | %5d | %5d | %+6.3f\n",
 			i+1, z1.Name, z1.EntryPct*100, z1.ExitPct*100,
 			z1.SpeedMinKPH, z2.SpeedMinKPH,
 			z1.BrakePct, z2.BrakePct,
