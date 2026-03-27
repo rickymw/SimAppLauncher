@@ -491,6 +491,48 @@ func TestOpen_FileNotFound(t *testing.T) {
 	}
 }
 
+func TestOpen_SessionInfoTooLarge(t *testing.T) {
+	path := buildTestFile(t)
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("reading test file: %v", err)
+	}
+	// SessionInfoLen is the 5th int32 in rawHeader — byte offset 16.
+	binary.LittleEndian.PutUint32(data[16:], 20*1024*1024) // 20 MB > 10 MB max
+	if err := os.WriteFile(path, data, 0o644); err != nil {
+		t.Fatalf("writing modified test file: %v", err)
+	}
+
+	_, err = Open(path)
+	if err == nil {
+		t.Fatal("Open: expected error for oversized SessionInfoLen, got nil")
+	}
+	if !isInvalidFormat(err) {
+		t.Errorf("Open: expected ErrInvalidFormat in error chain, got %v", err)
+	}
+}
+
+func TestOpen_NumVarsTooLarge(t *testing.T) {
+	path := buildTestFile(t)
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("reading test file: %v", err)
+	}
+	// NumVars is the 7th int32 in rawHeader — byte offset 24.
+	binary.LittleEndian.PutUint32(data[24:], 5000) // 5000 > 4096 max
+	if err := os.WriteFile(path, data, 0o644); err != nil {
+		t.Fatalf("writing modified test file: %v", err)
+	}
+
+	_, err = Open(path)
+	if err == nil {
+		t.Fatal("Open: expected error for oversized NumVars, got nil")
+	}
+	if !isInvalidFormat(err) {
+		t.Errorf("Open: expected ErrInvalidFormat in error chain, got %v", err)
+	}
+}
+
 // isInvalidFormat reports whether err wraps ErrInvalidFormat.
 func isInvalidFormat(err error) bool {
 	return errors.Is(err, ErrInvalidFormat)

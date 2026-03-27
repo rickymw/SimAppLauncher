@@ -73,27 +73,15 @@ func (w *windowsProcessManager) Spawn(app config.App) SpawnResult {
 }
 
 func (w *windowsProcessManager) IsRunning(processName string) (pid int, running bool, err error) {
-	filter := fmt.Sprintf("IMAGENAME eq %s.exe", processName)
-	out, cmdErr := exec.Command("tasklist", "/FI", filter, "/NH", "/FO", "CSV").Output()
+	out, cmdErr := tasklistOutput(processName)
 	if cmdErr != nil {
-		return 0, false, fmt.Errorf("tasklist failed: %w", cmdErr)
+		return 0, false, cmdErr
 	}
-
-	output := string(out)
-	lowerName := strings.ToLower(processName + ".exe")
-	for _, line := range strings.Split(output, "\n") {
-		if strings.HasPrefix(strings.ToLower(strings.TrimSpace(line)), "\""+lowerName+"\"") {
-			// CSV line: "name.exe","pid","Console","1","10,000 K"
-			fields := strings.Split(strings.TrimSpace(line), ",")
-			if len(fields) >= 2 {
-				pidStr := strings.Trim(fields[1], "\"")
-				if p, parseErr := strconv.Atoi(pidStr); parseErr == nil {
-					return p, true, nil
-				}
-			}
-		}
+	p, parseErr := parsePIDFromTasklist(out, processName)
+	if parseErr != nil {
+		return 0, false, nil // not found — not an error for IsRunning
 	}
-	return 0, false, nil
+	return p, true, nil
 }
 
 func (w *windowsProcessManager) Kill(processName string) error {
@@ -101,9 +89,24 @@ func (w *windowsProcessManager) Kill(processName string) error {
 	if err := exec.Command("taskkill", "/F", "/IM", processName+".exe").Run(); err == nil {
 		return nil
 	}
-	// Fallback: enable SeDebugPrivilege and terminate via Windows API.
-	// This allows killing elevated processes when the caller is an admin.
+	// taskkill failed — check whether the process is actually running before
+	// attempting the SeDebugPrivilege path. If it is already stopped, return
+	// success so that RunStop does not report spurious failures.
+	if _, running, err := w.IsRunning(processName); err == nil && !running {
+		return nil
+	}
+	// Still running (or status check failed) — try SeDebugPrivilege fallback.
 	return killWithDebugPrivilege(processName)
+}
+
+// tasklistOutput runs tasklist filtered to processName and returns the raw output.
+func tasklistOutput(processName string) (string, error) {
+	filter := fmt.Sprintf("IMAGENAME eq %s.exe", processName)
+	out, err := exec.Command("tasklist", "/FI", filter, "/NH", "/FO", "CSV").Output()
+	if err != nil {
+		return "", fmt.Errorf("tasklist failed: %w", err)
+	}
+	return string(out), nil
 }
 
 // killWithDebugPrivilege enables SeDebugPrivilege on the current process token,
@@ -113,13 +116,11 @@ func killWithDebugPrivilege(processName string) error {
 		return fmt.Errorf("could not enable SeDebugPrivilege: %w", err)
 	}
 
-	// Find PID via tasklist.
-	filter := fmt.Sprintf("IMAGENAME eq %s.exe", processName)
-	out, err := exec.Command("tasklist", "/FI", filter, "/NH", "/FO", "CSV").Output()
+	out, err := tasklistOutput(processName)
 	if err != nil {
-		return fmt.Errorf("tasklist failed: %w", err)
+		return err
 	}
-	pid, err := parsePIDFromTasklist(string(out), processName)
+	pid, err := parsePIDFromTasklist(out, processName)
 	if err != nil {
 		return err
 	}

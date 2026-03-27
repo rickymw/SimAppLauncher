@@ -87,6 +87,10 @@ func analyzeSingleLap(laps []analysis.Lap, lapNum int) {
 			fmt.Printf("Note: Lap %d is a %s — data includes pit lane or standing start.\n\n",
 				lap.Number, lap.Kind)
 		}
+		if lap.IsPartialStart {
+			fmt.Printf("Note: Lap %d started mid-recording — lap time is underestimated.\n\n",
+				lap.Number)
+		}
 	} else {
 		lap = bestAnalyzeLap(laps)
 		if lap == nil {
@@ -189,11 +193,13 @@ func bestAnalyzeLap(laps []analysis.Lap) *analysis.Lap {
 	var best *analysis.Lap
 	for i := range laps {
 		l := &laps[i]
-		if l.Kind != analysis.KindFlying || len(l.Samples) < analysis.MinSamplesForValidLap {
+		if l.Kind != analysis.KindFlying || l.IsPartialStart {
 			continue
 		}
-		// Fewer samples = shorter duration = faster lap.
-		if best == nil || len(l.Samples) < len(best.Samples) {
+		if len(l.Samples) < analysis.MinSamplesForValidLap || l.LapTime <= 0 {
+			continue
+		}
+		if best == nil || l.LapTime < best.LapTime {
 			best = l
 		}
 	}

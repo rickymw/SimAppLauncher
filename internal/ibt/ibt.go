@@ -151,6 +151,17 @@ func parse(f *os.File) (*File, error) {
 	if rawHdr.NumBuf != 1 {
 		return nil, fmt.Errorf("ibt: NumBuf %d not supported (expected 1): %w", rawHdr.NumBuf, ErrInvalidFormat)
 	}
+	// Sanity bounds against corrupt/malformed headers that could cause huge allocations.
+	const maxSessionInfoLen = 10 * 1024 * 1024 // 10 MB — real files are ~100 KB
+	const maxNumVars = 4096                     // real files have ~300
+	if rawHdr.SessionInfoLen < 0 || rawHdr.SessionInfoLen > maxSessionInfoLen {
+		return nil, fmt.Errorf("ibt: SessionInfoLen %d out of range [0, %d]: %w",
+			rawHdr.SessionInfoLen, maxSessionInfoLen, ErrInvalidFormat)
+	}
+	if rawHdr.NumVars < 0 || rawHdr.NumVars > maxNumVars {
+		return nil, fmt.Errorf("ibt: NumVars %d out of range [0, %d]: %w",
+			rawHdr.NumVars, maxNumVars, ErrInvalidFormat)
+	}
 
 	// 2. Read irsdk_diskSubHeader (32 bytes at offset 112, file is already there).
 	var rawDisk rawDiskHeader
