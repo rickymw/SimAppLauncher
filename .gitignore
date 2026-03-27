@@ -1,0 +1,9 @@
+# iRacing telemetry files
+*.ibt
+
+# Claude Code internals
+.claude/
+
+# Go build artifacts (executables are intentionally committed as deployment artefacts)
+# Uncomment the lines below if you don't want to commit binaries:
+# *.exe
