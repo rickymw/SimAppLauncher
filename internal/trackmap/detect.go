@@ -84,7 +84,7 @@ func detectFromProfiles(absAvg, signAvg []float64, counts []int, trackLengthM fl
 	rawSegs = mergeShort(rawSegs, minStraightBuckets, minCornerBuckets)
 
 	// Merge chicanes: [corner, short-straight, corner] with opposite signs.
-	rawSegs = mergeChicanes(rawSegs)
+	rawSegs = mergeChicanes(rawSegs, trackLengthM)
 
 	return labelSegments(rawSegs, trackLengthM)
 }
@@ -139,8 +139,12 @@ func Detect(samples []Sample, trackLengthM float64) []Segment {
 	return DetectFromMultiple([][]Sample{samples}, trackLengthM)
 }
 
-// fillGaps forward-fills zero-count buckets from the last non-empty value.
+// fillGaps fills zero-count buckets from neighbouring non-empty values.
+// A forward pass propagates the last known value rightward; a backward pass
+// then fills any leading zeros (buckets before the first non-empty one) from
+// the earliest known value.
 func fillGaps(vals []float64, counts []int) {
+	// Forward pass: propagate rightward.
 	last := 0.0
 	for i := 0; i < len(vals); i++ {
 		if counts[i] > 0 {
@@ -149,21 +153,32 @@ func fillGaps(vals []float64, counts []int) {
 			vals[i] = last
 		}
 	}
+	// Backward pass: fill any leading zeros that the forward pass left as 0.
+	last = 0.0
+	for i := len(vals) - 1; i >= 0; i-- {
+		if counts[i] > 0 {
+			last = vals[i]
+		} else if vals[i] == 0.0 {
+			vals[i] = last
+		}
+	}
 }
 
 // boxSmooth applies a circular box (moving average) filter with the given window.
 // The window is centred on each bucket, wrapping around at boundaries.
+// The effective width is 2*(window/2)+1 elements (odd, to keep the centre bucket).
 func boxSmooth(vals []float64, window int) []float64 {
 	n := len(vals)
 	out := make([]float64, n)
 	half := window / 2
+	width := float64(2*half + 1) // actual number of elements summed
 	for i := 0; i < n; i++ {
 		sum := 0.0
 		for j := -half; j <= half; j++ {
 			idx := (i + j + n) % n
 			sum += vals[idx]
 		}
-		out[i] = sum / float64(window+1)
+		out[i] = sum / width
 	}
 	return out
 }
@@ -289,22 +304,26 @@ func mergeAt(segs []rawSeg, i int) []rawSeg {
 }
 
 // mergeChicanes scans for [corner, short-straight, corner] triplets where
-// the two corners have opposite latSign (product < 0) and the straight is
-// <= 18 buckets. Merges all three into a single chicane rawSeg.
-func mergeChicanes(segs []rawSeg) []rawSeg {
-	maxChicaneStraight := int(0.018 * numBuckets) // 18
-	for i := 0; i+2 < len(segs); i++ {
+// the two corners have opposite latSign (product < 0) and the gap straight is
+// short enough. The gap threshold scales with track length (target ~100 m).
+// Merges all three into a single chicane rawSeg.
+func mergeChicanes(segs []rawSeg, trackLengthM float64) []rawSeg {
+	// Scale chicane gap with track length: target 100 m.
+	const targetGapM = 100.0
+	maxGap := int(0.018 * numBuckets) // fallback: 1.8% ≈ 18 buckets
+	if trackLengthM > 0 {
+		maxGap = max(1, int(targetGapM/trackLengthM*float64(numBuckets)))
+	}
+
+	i := 0
+	for i+2 < len(segs) {
 		a, mid, b := segs[i], segs[i+1], segs[i+2]
-		if !a.isCorner || mid.isCorner || !b.isCorner {
+		if !a.isCorner || mid.isCorner || !b.isCorner ||
+			mid.length() > maxGap || a.latSign*b.latSign >= 0 {
+			i++
 			continue
 		}
-		if mid.length() > maxChicaneStraight {
-			continue
-		}
-		if a.latSign*b.latSign >= 0 {
-			continue // same direction — not a chicane
-		}
-		// Merge all three.
+		// Merge all three into one chicane segment.
 		total := float64(a.length() + mid.length() + b.length())
 		merged := rawSeg{
 			isCorner:  true,
@@ -318,7 +337,7 @@ func mergeChicanes(segs []rawSeg) []rawSeg {
 		result = append(result, merged)
 		result = append(result, segs[i+3:]...)
 		segs = result
-		i-- // re-check from this position
+		// Do not increment i — re-check this position in case of back-to-back chicanes.
 	}
 	return segs
 }
@@ -329,8 +348,9 @@ func mergeChicanes(segs []rawSeg) []rawSeg {
 // transition within a tolerance of ±0.02 (2% of lap distance). Returns a
 // value 0.0–1.0 where 1.0 = all boundaries matched.
 //
+// trackLengthM is used to scale the smoothing window (same as Detect).
 // If len(segs) <= 1, returns 1.0 (no interior boundaries to check).
-func MatchScore(samples []Sample, segs []Segment) float32 {
+func MatchScore(samples []Sample, segs []Segment, trackLengthM float64) float32 {
 	if len(segs) <= 1 {
 		return 1.0
 	}
@@ -369,9 +389,9 @@ func MatchScore(samples []Sample, segs []Segment) float32 {
 	fillGaps(absAvg, counts)
 	fillGaps(signAvg, counts)
 
-	// Use a fixed 15m window; if we have no track length info use a small default.
-	// Since MatchScore doesn't receive trackLengthM, use 1 as the minimum window.
-	smoothed := boxSmooth(absAvg, 1)
+	// Use the same window as Detect: ~15m scaled to track length.
+	window := max(1, int(15.0/trackLengthM*numBuckets))
+	smoothed := boxSmooth(absAvg, window)
 	isCorner := hysteresis(smoothed, 5.0, 2.5)
 
 	// Build a bool slice of transitions: transition[i] = true if isCorner[i] != isCorner[i-1].

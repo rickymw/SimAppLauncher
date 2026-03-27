@@ -221,38 +221,50 @@ type SegZone struct {
 	SampleCount   int     // total samples in the segment
 }
 
+// segmentForPct returns the index of the segment containing pct, or -1.
+// Segments are assumed to be sorted by EntryPct. The last segment accepts
+// any pct >= its EntryPct (no upper bound) to absorb samples at pct=1.0.
+func segmentForPct(pct float32, segs []trackmap.Segment) int {
+	last := len(segs) - 1
+	for i, seg := range segs {
+		if i == last {
+			if pct >= seg.EntryPct {
+				return i
+			}
+		} else if pct >= seg.EntryPct && pct < seg.ExitPct {
+			return i
+		}
+	}
+	return -1
+}
+
 // SegmentStats computes per-segment statistics for a single lap.
 // Returns one SegZone for each entry in segs.
+// All stats are accumulated in a single pass over lap.Samples.
 func SegmentStats(lap *Lap, segs []trackmap.Segment) []SegZone {
+	if len(segs) == 0 {
+		return nil
+	}
+
 	zones := make([]SegZone, len(segs))
 	for i, seg := range segs {
 		zones[i].Name = seg.Name
 		zones[i].Kind = seg.Kind
 		zones[i].EntryPct = seg.EntryPct
 		zones[i].ExitPct = seg.ExitPct
-		zones[i].SpeedMinKPH = float32(math.MaxFloat32)
 	}
 
-	lastIdx := len(segs) - 1
+	// gearCounts[seg][gear] — fixed-size array avoids per-segment map allocations.
+	// Gears: -1=R (index 0), 0=N (index 1), 1-8 (index 2-9).
+	const maxGearIdx = 10
+	gearCounts := make([][maxGearIdx]int, len(segs))
+	minSpeeds := make([]float32, len(segs))
+	for i := range minSpeeds {
+		minSpeeds[i] = float32(math.MaxFloat32)
+	}
 
 	for _, s := range lap.Samples {
-		pct := s.LapDistPct
-		// Find which segment this sample belongs to.
-		idx := -1
-		for i, seg := range segs {
-			if i == lastIdx {
-				// Last segment: accept pct >= entryPct
-				if pct >= seg.EntryPct {
-					idx = i
-					break
-				}
-			} else {
-				if pct >= seg.EntryPct && pct < seg.ExitPct {
-					idx = i
-					break
-				}
-			}
-		}
+		idx := segmentForPct(s.LapDistPct, segs)
 		if idx < 0 {
 			continue
 		}
@@ -264,24 +276,19 @@ func SegmentStats(lap *Lap, segs []trackmap.Segment) []SegZone {
 		z.SpeedExitKPH = s.Speed * ms2kmh
 
 		spd := s.Speed * ms2kmh
-		if spd < z.SpeedMinKPH {
-			z.SpeedMinKPH = spd
+		if spd < minSpeeds[idx] {
+			minSpeeds[idx] = spd
 		}
 
-		brkPct := s.Brake * 100
-		if brkPct > z.BrakePct {
+		if brkPct := s.Brake * 100; brkPct > z.BrakePct {
 			z.BrakePct = brkPct
 		}
-		thrPct := s.Throttle * 100
-		if thrPct > z.ThrottlePct {
+		if thrPct := s.Throttle * 100; thrPct > z.ThrottlePct {
 			z.ThrottlePct = thrPct
 		}
-
-		latG := abs32(s.LatAccel) / grav
-		if latG > z.LatGMax {
+		if latG := abs32(s.LatAccel) / grav; latG > z.LatGMax {
 			z.LatGMax = latG
 		}
-
 		if s.ABSActive {
 			z.ABSCount++
 		}
@@ -289,41 +296,36 @@ func SegmentStats(lap *Lap, segs []trackmap.Segment) []SegZone {
 			z.CoastSamples++
 		}
 
-		// Accumulate gear counts in a temporary map stored via DominantGear trick:
-		// We cannot embed a map in SegZone, so we compute dominant gear in a second pass.
+		// Gear index: clamp into [0, maxGearIdx).
+		gi := int(s.Gear) + 1 // -1→0, 0→1, 1→2, …
+		if gi >= 0 && gi < maxGearIdx {
+			gearCounts[idx][gi]++
+		}
+
 		z.SampleCount++
 	}
 
-	// Second pass: compute dominant gear per segment.
+	// Finalise per-segment values that require the full sample set.
 	for idx := range zones {
 		if zones[idx].SampleCount == 0 {
-			zones[idx].SpeedMinKPH = 0
-			continue
+			continue // leave SpeedMinKPH as zero — caller checks SampleCount
 		}
-		gearCounts := map[int32]int{}
-		for _, s := range lap.Samples {
-			pct := s.LapDistPct
-			seg := segs[idx]
-			var belongs bool
-			if idx == lastIdx {
-				belongs = pct >= seg.EntryPct
-			} else {
-				belongs = pct >= seg.EntryPct && pct < seg.ExitPct
-			}
-			if belongs {
-				gearCounts[s.Gear]++
-			}
-		}
+		zones[idx].SpeedMinKPH = minSpeeds[idx]
+
+		// Dominant gear: prefer forward gears (gi >= 2, i.e. gear >= 1).
 		bestGear, bestCount := int32(0), 0
-		for g, c := range gearCounts {
-			if g > 0 && c > bestCount {
-				bestGear, bestCount = g, c
+		for gi := 2; gi < maxGearIdx; gi++ {
+			if c := gearCounts[idx][gi]; c > bestCount {
+				bestCount = c
+				bestGear = int32(gi - 1)
 			}
 		}
 		if bestCount == 0 {
-			for g, c := range gearCounts {
-				if c > bestCount {
-					bestGear, bestCount = g, c
+			// All neutral/reverse — use raw mode.
+			for gi := 0; gi < maxGearIdx; gi++ {
+				if c := gearCounts[idx][gi]; c > bestCount {
+					bestCount = c
+					bestGear = int32(gi - 1)
 				}
 			}
 		}

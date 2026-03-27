@@ -174,7 +174,7 @@ func TestMatchScore_PerfectMatch(t *testing.T) {
 		samples[i] = Sample{LapDistPct: pct, LatAccel: lat}
 	}
 
-	score := MatchScore(samples, segs)
+	score := MatchScore(samples, segs, 4000.0)
 	if score < 0.85 {
 		t.Errorf("MatchScore() = %.3f, want >= 0.85", score)
 	}
@@ -182,7 +182,7 @@ func TestMatchScore_PerfectMatch(t *testing.T) {
 
 func TestMatchScore_NoSegments(t *testing.T) {
 	samples := []Sample{{LapDistPct: 0.5, LatAccel: 5.0}}
-	score := MatchScore(samples, nil)
+	score := MatchScore(samples, nil, 4000.0)
 	if score != 1.0 {
 		t.Errorf("MatchScore(samples, nil) = %.3f, want 1.0", score)
 	}
@@ -193,7 +193,7 @@ func TestMatchScore_SingleSegment(t *testing.T) {
 		{Name: "S1", Kind: KindStraight, EntryPct: 0.0, ExitPct: 1.0},
 	}
 	samples := []Sample{{LapDistPct: 0.5, LatAccel: 0.0}}
-	score := MatchScore(samples, segs)
+	score := MatchScore(samples, segs, 4000.0)
 	if score != 1.0 {
 		t.Errorf("MatchScore(samples, oneSegment) = %.3f, want 1.0", score)
 	}

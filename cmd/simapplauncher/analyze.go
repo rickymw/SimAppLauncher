@@ -92,7 +92,7 @@ func RunAnalyze(args []string, cfg config.Config, trackmapPath string) {
 			for i, s := range bestLap.Samples {
 				tsamples[i] = trackmap.Sample{LapDistPct: s.LapDistPct, LatAccel: s.LatAccel}
 			}
-			matchScore = trackmap.MatchScore(tsamples, segs)
+			matchScore = trackmap.MatchScore(tsamples, segs, trackLengthM)
 		}
 
 		// Increment usage counters and re-save, but only once per session.
@@ -106,7 +106,9 @@ func RunAnalyze(args []string, cfg config.Config, trackmapPath string) {
 			existingTM.LapsUsed += flyingCount
 			existingTM.SessionsUsed++
 			existingTM.AddSession(sessionID)
-			_ = trackmap.Save(trackmapPath, tmf)
+			if err := trackmap.Save(trackmapPath, tmf); err != nil {
+				fmt.Fprintf(os.Stderr, "Warning: could not save track map: %v\n", err)
+			}
 		}
 	} else if trackLengthM > 0 && bestLap != nil {
 		// Auto-detect from all flying, non-partial-start laps for more stable boundaries.
@@ -142,7 +144,9 @@ func RunAnalyze(args []string, cfg config.Config, trackmapPath string) {
 			}
 			newTM.AddSession(sessionID)
 			tmf[meta.TrackDisplayName] = newTM
-			_ = trackmap.Save(trackmapPath, tmf)
+			if err := trackmap.Save(trackmapPath, tmf); err != nil {
+				fmt.Fprintf(os.Stderr, "Warning: could not save track map: %v\n", err)
+			}
 			if *updateMap {
 				fmt.Printf("Track map updated: %d segments detected for %s\n\n",
 					len(segs), meta.TrackDisplayName)
