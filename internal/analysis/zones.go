@@ -222,6 +222,7 @@ type SegZone struct {
 	SpeedMinKPH   float32 // minimum speed in the segment (apex speed)
 	SpeedExitKPH  float32 // speed of the last sample in the segment
 	BrakePct      float32 // % of samples with brake pressure > 2% (time on brakes)
+	PeakBrakePct  float32 // maximum brake pressure seen in the segment (0–100%)
 	ThrottlePct   float32 // % of samples at full throttle (> 95%)
 	DominantGear  int32   // max forward gear for straights; min forward gear for corners/chicanes
 	LatGMax       float32 // peak abs(LatAccel)/9.81
@@ -293,6 +294,9 @@ func SegmentStats(lap *Lap, segs []trackmap.Segment) []SegZone {
 
 		if s.Brake > brakeOnThreshold {
 			brakeOnCounts[idx]++
+		}
+		if brkPct := s.Brake * 100; brkPct > zones[idx].PeakBrakePct {
+			zones[idx].PeakBrakePct = brkPct
 		}
 		if s.Throttle > fullThrottleThresh {
 			thrFullCounts[idx]++
