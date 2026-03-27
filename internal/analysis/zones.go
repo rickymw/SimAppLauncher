@@ -12,6 +12,10 @@ const (
 
 	ms2kmh           = 3.6      // m/s → km/h
 	grav     float32 = 9.81     // m/s² per g
+
+	// Input thresholds used for BrakePct / ThrottlePct fraction computation.
+	brakeOnThreshold    = float32(0.02) // brake pressure > 2% counts as "on brakes"
+	fullThrottleThresh  = float32(0.95) // throttle > 95% counts as "full throttle"
 )
 
 // Zone holds computed statistics for one 5%-of-track section.
@@ -21,8 +25,8 @@ type Zone struct {
 	SpeedEntryKPH float32 // speed of the first sample in the zone
 	SpeedMinKPH   float32 // minimum speed seen in the zone (apex speed)
 	SpeedExitKPH  float32 // speed of the last sample in the zone
-	BrakePct      float32 // peak brake pressure 0–100%
-	ThrottlePct   float32 // peak throttle 0–100%
+	BrakePct      float32 // % of samples with brake pressure > 2% (time on brakes)
+	ThrottlePct   float32 // % of samples at full throttle (> 95%)
 	DominantGear  int32   // modal gear (most common; neutral/reverse excluded if possible)
 	LatGMax       float32 // peak lateral G (absolute value)
 	LongDecelMax  float32 // peak deceleration G (0 during acceleration)
@@ -42,6 +46,9 @@ func ZoneStats(lap *Lap) []Zone {
 	}
 
 	zones := make([]Zone, NumZones)
+	brakeOnCounts := make([]int, NumZones)
+	thrFullCounts := make([]int, NumZones)
+
 	for i, samples := range buckets {
 		z := &zones[i]
 		z.Index = i
@@ -63,13 +70,11 @@ func ZoneStats(lap *Lap) []Zone {
 				minSpd = spd
 			}
 
-			brkPct := s.Brake * 100
-			if brkPct > z.BrakePct {
-				z.BrakePct = brkPct
+			if s.Brake > brakeOnThreshold {
+				brakeOnCounts[i]++
 			}
-			thrPct := s.Throttle * 100
-			if thrPct > z.ThrottlePct {
-				z.ThrottlePct = thrPct
+			if s.Throttle > fullThrottleThresh {
+				thrFullCounts[i]++
 			}
 
 			latG := abs32(s.LatAccel) / grav
@@ -96,6 +101,10 @@ func ZoneStats(lap *Lap) []Zone {
 		if minSpd < math.MaxFloat32 {
 			z.SpeedMinKPH = minSpd
 		}
+
+		n := float32(len(samples))
+		z.BrakePct = 100 * float32(brakeOnCounts[i]) / n
+		z.ThrottlePct = 100 * float32(thrFullCounts[i]) / n
 
 		// Dominant gear: modal value, preferring forward gears (>0) over neutral/reverse.
 		bestGear, bestCount := int32(0), 0
@@ -212,8 +221,8 @@ type SegZone struct {
 	SpeedEntryKPH float32 // speed of the first sample in the segment
 	SpeedMinKPH   float32 // minimum speed in the segment (apex speed)
 	SpeedExitKPH  float32 // speed of the last sample in the segment
-	BrakePct      float32 // peak brake pressure × 100
-	ThrottlePct   float32 // peak throttle × 100
+	BrakePct      float32 // % of samples with brake pressure > 2% (time on brakes)
+	ThrottlePct   float32 // % of samples at full throttle (> 95%)
 	DominantGear  int32   // modal gear
 	LatGMax       float32 // peak abs(LatAccel)/9.81
 	ABSCount      int     // samples where ABS was active
@@ -259,6 +268,8 @@ func SegmentStats(lap *Lap, segs []trackmap.Segment) []SegZone {
 	const maxGearIdx = 10
 	gearCounts := make([][maxGearIdx]int, len(segs))
 	minSpeeds := make([]float32, len(segs))
+	brakeOnCounts := make([]int, len(segs))
+	thrFullCounts := make([]int, len(segs))
 	for i := range minSpeeds {
 		minSpeeds[i] = float32(math.MaxFloat32)
 	}
@@ -280,11 +291,11 @@ func SegmentStats(lap *Lap, segs []trackmap.Segment) []SegZone {
 			minSpeeds[idx] = spd
 		}
 
-		if brkPct := s.Brake * 100; brkPct > z.BrakePct {
-			z.BrakePct = brkPct
+		if s.Brake > brakeOnThreshold {
+			brakeOnCounts[idx]++
 		}
-		if thrPct := s.Throttle * 100; thrPct > z.ThrottlePct {
-			z.ThrottlePct = thrPct
+		if s.Throttle > fullThrottleThresh {
+			thrFullCounts[idx]++
 		}
 		if latG := abs32(s.LatAccel) / grav; latG > z.LatGMax {
 			z.LatGMax = latG
@@ -311,6 +322,10 @@ func SegmentStats(lap *Lap, segs []trackmap.Segment) []SegZone {
 			continue // leave SpeedMinKPH as zero — caller checks SampleCount
 		}
 		zones[idx].SpeedMinKPH = minSpeeds[idx]
+
+		n := float32(zones[idx].SampleCount)
+		zones[idx].BrakePct = 100 * float32(brakeOnCounts[idx]) / n
+		zones[idx].ThrottlePct = 100 * float32(thrFullCounts[idx]) / n
 
 		// Dominant gear: prefer forward gears (gi >= 2, i.e. gear >= 1).
 		bestGear, bestCount := int32(0), 0

@@ -312,6 +312,81 @@ func TestZoneStats_ABSAndCoast(t *testing.T) {
 	}
 }
 
+func TestZoneStats_BrakePctFraction(t *testing.T) {
+	// 200 samples uniformly distributed: zone 0 gets samples 0–9 (10 samples).
+	// Give the first 5 brake > 2%, the rest none.
+	// Expected BrakePct for zone 0 ≈ 50%.
+	samples := make([]SampleData, 200)
+	for i := range samples {
+		pct := float32(i) / float32(len(samples))
+		brk := float32(0)
+		thr := float32(1.0)
+		if pct < 0.05 && i%2 == 0 {
+			brk = 0.5  // brake on for even-indexed samples in zone 0
+			thr = 0.5  // below full-throttle threshold
+		}
+		samples[i] = SampleData{LapDistPct: pct, Speed: 30, Brake: brk, Throttle: thr}
+	}
+	lap := &Lap{Samples: samples}
+	finalizeLap(lap)
+	zones := ZoneStats(lap)
+
+	// Zone 0 has 10 samples; 5 of them have Brake=0.5 (>2%) and Throttle=0.5 (<95%).
+	if math.Abs(float64(zones[0].BrakePct-50)) > 1 {
+		t.Errorf("zone 0: BrakePct = %.1f, want ~50", zones[0].BrakePct)
+	}
+	if math.Abs(float64(zones[0].ThrottlePct-50)) > 1 {
+		t.Errorf("zone 0: ThrottlePct = %.1f, want ~50", zones[0].ThrottlePct)
+	}
+	// Other zones: all samples have thr=1.0 (>95%) and brk=0 (<2%).
+	if math.Abs(float64(zones[1].ThrottlePct-100)) > 1 {
+		t.Errorf("zone 1: ThrottlePct = %.1f, want 100", zones[1].ThrottlePct)
+	}
+	if zones[1].BrakePct != 0 {
+		t.Errorf("zone 1: BrakePct = %.1f, want 0", zones[1].BrakePct)
+	}
+}
+
+func TestSegmentStats_BrakePctFraction(t *testing.T) {
+	// Segment 0 covers pct [0, 0.5).
+	// 200 samples total → 100 in segment 0.
+	// First 50 of those have brake=0.5 (>2%) and throttle=0.5 (<95%).
+	// Expected BrakePct ≈ 50%, ThrottlePct ≈ 50% for segment 0.
+	segs := []trackmap.Segment{
+		{Name: "S1", Kind: trackmap.KindStraight, EntryPct: 0.0, ExitPct: 0.5},
+		{Name: "T1", Kind: trackmap.KindCorner, EntryPct: 0.5, ExitPct: 1.0},
+	}
+	n := 200
+	samples := make([]SampleData, n)
+	for i := range samples {
+		pct := float32(i) / float32(n)
+		brk := float32(0)
+		thr := float32(1.0)
+		if pct < 0.5 && i < n/4 { // first quarter = first 50 samples in seg 0
+			brk = 0.5
+			thr = 0.5
+		}
+		samples[i] = SampleData{LapDistPct: pct, Speed: 30, Brake: brk, Throttle: thr}
+	}
+	lap := &Lap{Samples: samples}
+	finalizeLap(lap)
+	zones := SegmentStats(lap, segs)
+
+	if math.Abs(float64(zones[0].BrakePct-50)) > 1 {
+		t.Errorf("seg 0: BrakePct = %.1f, want ~50", zones[0].BrakePct)
+	}
+	if math.Abs(float64(zones[0].ThrottlePct-50)) > 1 {
+		t.Errorf("seg 0: ThrottlePct = %.1f, want ~50", zones[0].ThrottlePct)
+	}
+	// Segment 1: all throttle=1.0, brake=0.
+	if math.Abs(float64(zones[1].ThrottlePct-100)) > 1 {
+		t.Errorf("seg 1: ThrottlePct = %.1f, want 100", zones[1].ThrottlePct)
+	}
+	if zones[1].BrakePct != 0 {
+		t.Errorf("seg 1: BrakePct = %.1f, want 0", zones[1].BrakePct)
+	}
+}
+
 func TestZoneStats_DominantGear(t *testing.T) {
 	// 100 samples across the lap; zone 0 (pct 0.00–0.05) has 5 samples,
 	// 4 of which are gear 3 and 1 is gear 2 — gear 3 should dominate.
