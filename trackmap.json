@@ -1,0 +1,146 @@
+{
+  "Sebring International Raceway": {
+    "trackLengthM": 5793.8,
+    "source": "auto",
+    "detectedFrom": "2026-03-27",
+    "lapsUsed": 1,
+    "segments": [
+      {
+        "name": "S1",
+        "kind": "straight",
+        "entryPct": 0,
+        "exitPct": 0.06,
+        "entryM": 0,
+        "exitM": 347.628
+      },
+      {
+        "name": "T1",
+        "kind": "corner",
+        "entryPct": 0.06,
+        "exitPct": 0.142,
+        "entryM": 347.628,
+        "exitM": 822.7196
+      },
+      {
+        "name": "T2",
+        "kind": "corner",
+        "entryPct": 0.142,
+        "exitPct": 0.219,
+        "entryM": 822.7196,
+        "exitM": 1268.8422
+      },
+      {
+        "name": "T3",
+        "kind": "corner",
+        "entryPct": 0.219,
+        "exitPct": 0.287,
+        "entryM": 1268.8422,
+        "exitM": 1662.8206
+      },
+      {
+        "name": "S2",
+        "kind": "straight",
+        "entryPct": 0.287,
+        "exitPct": 0.334,
+        "entryM": 1662.8206,
+        "exitM": 1935.129
+      },
+      {
+        "name": "T4",
+        "kind": "corner",
+        "entryPct": 0.334,
+        "exitPct": 0.36,
+        "entryM": 1935.129,
+        "exitM": 2085.768
+      },
+      {
+        "name": "T5-6",
+        "kind": "chicane",
+        "entryPct": 0.36,
+        "exitPct": 0.434,
+        "entryM": 2085.768,
+        "exitM": 2514.509
+      },
+      {
+        "name": "S3",
+        "kind": "straight",
+        "entryPct": 0.434,
+        "exitPct": 0.469,
+        "entryM": 2514.509,
+        "exitM": 2717.2922
+      },
+      {
+        "name": "T7",
+        "kind": "corner",
+        "entryPct": 0.469,
+        "exitPct": 0.547,
+        "entryM": 2717.2922,
+        "exitM": 3169.2085
+      },
+      {
+        "name": "T8",
+        "kind": "corner",
+        "entryPct": 0.547,
+        "exitPct": 0.576,
+        "entryM": 3169.2085,
+        "exitM": 3337.2285
+      },
+      {
+        "name": "S4",
+        "kind": "straight",
+        "entryPct": 0.576,
+        "exitPct": 0.623,
+        "entryM": 3337.2285,
+        "exitM": 3609.5374
+      },
+      {
+        "name": "T9",
+        "kind": "corner",
+        "entryPct": 0.623,
+        "exitPct": 0.669,
+        "entryM": 3609.5374,
+        "exitM": 3876.0522
+      },
+      {
+        "name": "T10",
+        "kind": "corner",
+        "entryPct": 0.669,
+        "exitPct": 0.719,
+        "entryM": 3876.0522,
+        "exitM": 4165.742
+      },
+      {
+        "name": "T11",
+        "kind": "corner",
+        "entryPct": 0.719,
+        "exitPct": 0.75,
+        "entryM": 4165.742,
+        "exitM": 4345.3496
+      },
+      {
+        "name": "S5",
+        "kind": "straight",
+        "entryPct": 0.75,
+        "exitPct": 0.881,
+        "entryM": 4345.3496,
+        "exitM": 5104.3374
+      },
+      {
+        "name": "T12",
+        "kind": "corner",
+        "entryPct": 0.881,
+        "exitPct": 0.965,
+        "entryM": 5104.3374,
+        "exitM": 5591.0166
+      },
+      {
+        "name": "S6",
+        "kind": "straight",
+        "entryPct": 0.965,
+        "exitPct": 1,
+        "entryM": 5591.0166,
+        "exitM": 5793.8
+      }
+    ]
+  }
+}

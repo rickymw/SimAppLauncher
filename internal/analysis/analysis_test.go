@@ -3,6 +3,8 @@ package analysis
 import (
 	"math"
 	"testing"
+
+	"github.com/rickymw/SimAppLauncher/internal/trackmap"
 )
 
 // ---- FormatLapTime ----
@@ -327,6 +329,31 @@ func TestZoneStats_DominantGear(t *testing.T) {
 	}
 }
 
+// ---- ParseTrackLength ----
+
+func TestParseTrackLength_KM(t *testing.T) {
+	yaml := "WeekendInfo:\n TrackLength: 6.02 km\n"
+	got := ParseTrackLength(yaml)
+	if math.Abs(got-6020.0) > 0.1 {
+		t.Errorf("ParseTrackLength = %v, want 6020.0", got)
+	}
+}
+
+func TestParseTrackLength_Missing(t *testing.T) {
+	got := ParseTrackLength("")
+	if got != 0 {
+		t.Errorf("ParseTrackLength = %v, want 0", got)
+	}
+}
+
+func TestParseTrackLength_Malformed(t *testing.T) {
+	yaml := "WeekendInfo:\n TrackLength: unknown\n"
+	got := ParseTrackLength(yaml)
+	if got != 0 {
+		t.Errorf("ParseTrackLength = %v, want 0", got)
+	}
+}
+
 // ---- ZoneDeltas ----
 
 // timedLap builds a lap where LapDistPct goes linearly from 0 to 1 and
@@ -377,5 +404,84 @@ func TestZoneDeltas_UniformSpeedup(t *testing.T) {
 	}
 	if math.Abs(float64(sum+10)) > 0.1 {
 		t.Errorf("sum of deltas = %+.3f, want ~−10.000", sum)
+	}
+}
+
+// ---- SegmentStats ----
+
+// segLap builds a lap with samples spanning two explicit segments.
+// Segment 0 covers pct [0, 0.5) with speed=20 m/s and ABS active.
+// Segment 1 covers pct [0.5, 1.0) with speed=40 m/s and no ABS.
+func segLap() *Lap {
+	n := 200
+	samples := make([]SampleData, n)
+	for i := range samples {
+		pct := float32(i) / float32(n)
+		speed := float32(20.0)
+		abs := true
+		if pct >= 0.5 {
+			speed = 40.0
+			abs = false
+		}
+		samples[i] = SampleData{
+			LapDistPct:  pct,
+			SessionTime: float64(i) * 0.5,
+			Speed:       speed,
+			Throttle:    1.0,
+			ABSActive:   abs,
+		}
+	}
+	lap := &Lap{Samples: samples}
+	finalizeLap(lap)
+	return lap
+}
+
+func TestSegmentStats_Basic(t *testing.T) {
+	segs := []trackmap.Segment{
+		{Name: "S1", Kind: trackmap.KindStraight, EntryPct: 0.0, ExitPct: 0.5},
+		{Name: "T1", Kind: trackmap.KindCorner, EntryPct: 0.5, ExitPct: 1.0},
+	}
+	lap := segLap()
+	zones := SegmentStats(lap, segs)
+
+	if len(zones) != 2 {
+		t.Fatalf("len(zones) = %d, want 2", len(zones))
+	}
+
+	// Segment 0: speed 20 m/s → 72 km/h
+	wantSpd0 := float32(20.0 * ms2kmh)
+	if math.Abs(float64(zones[0].SpeedMinKPH-wantSpd0)) > 1.0 {
+		t.Errorf("zones[0].SpeedMinKPH = %.1f, want %.1f", zones[0].SpeedMinKPH, wantSpd0)
+	}
+	if zones[0].SpeedEntryKPH != wantSpd0 {
+		t.Errorf("zones[0].SpeedEntryKPH = %.1f, want %.1f", zones[0].SpeedEntryKPH, wantSpd0)
+	}
+	if zones[0].ABSCount == 0 {
+		t.Error("zones[0]: expected ABSCount > 0")
+	}
+
+	// Segment 1: speed 40 m/s → 144 km/h, no ABS
+	wantSpd1 := float32(40.0 * ms2kmh)
+	if math.Abs(float64(zones[1].SpeedMinKPH-wantSpd1)) > 1.0 {
+		t.Errorf("zones[1].SpeedMinKPH = %.1f, want %.1f", zones[1].SpeedMinKPH, wantSpd1)
+	}
+	if zones[1].ABSCount != 0 {
+		t.Errorf("zones[1].ABSCount = %d, want 0", zones[1].ABSCount)
+	}
+}
+
+// ---- SegmentDeltas ----
+
+func TestSegmentDeltas_IdenticalLaps(t *testing.T) {
+	segs := []trackmap.Segment{
+		{Name: "S1", Kind: trackmap.KindStraight, EntryPct: 0.0, ExitPct: 0.5},
+		{Name: "T1", Kind: trackmap.KindCorner, EntryPct: 0.5, ExitPct: 1.0},
+	}
+	lap := timedLap(200, 100.0)
+	deltas := SegmentDeltas(lap, lap, segs)
+	for i, d := range deltas {
+		if math.Abs(float64(d)) > 0.01 {
+			t.Errorf("segment %d: delta = %v, want ~0", i, d)
+		}
 	}
 }

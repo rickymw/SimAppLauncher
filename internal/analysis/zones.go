@@ -1,6 +1,10 @@
 package analysis
 
-import "math"
+import (
+	"math"
+
+	"github.com/rickymw/SimAppLauncher/internal/trackmap"
+)
 
 const (
 	// NumZones is the number of equal-distance track sections per lap.
@@ -196,4 +200,167 @@ func abs32(x float32) float32 {
 		return -x
 	}
 	return x
+}
+
+// SegZone holds computed statistics for one geometry-based track segment.
+// Speed fields are in km/h; input fields are 0–100%; G-force fields are in g.
+type SegZone struct {
+	Name          string
+	Kind          trackmap.SegmentKind
+	EntryPct      float32
+	ExitPct       float32
+	SpeedEntryKPH float32 // speed of the first sample in the segment
+	SpeedMinKPH   float32 // minimum speed in the segment (apex speed)
+	SpeedExitKPH  float32 // speed of the last sample in the segment
+	BrakePct      float32 // peak brake pressure × 100
+	ThrottlePct   float32 // peak throttle × 100
+	DominantGear  int32   // modal gear
+	LatGMax       float32 // peak abs(LatAccel)/9.81
+	ABSCount      int     // samples where ABS was active
+	CoastSamples  int     // samples with throttle<5% AND brake<5%
+	SampleCount   int     // total samples in the segment
+}
+
+// SegmentStats computes per-segment statistics for a single lap.
+// Returns one SegZone for each entry in segs.
+func SegmentStats(lap *Lap, segs []trackmap.Segment) []SegZone {
+	zones := make([]SegZone, len(segs))
+	for i, seg := range segs {
+		zones[i].Name = seg.Name
+		zones[i].Kind = seg.Kind
+		zones[i].EntryPct = seg.EntryPct
+		zones[i].ExitPct = seg.ExitPct
+		zones[i].SpeedMinKPH = float32(math.MaxFloat32)
+	}
+
+	lastIdx := len(segs) - 1
+
+	for _, s := range lap.Samples {
+		pct := s.LapDistPct
+		// Find which segment this sample belongs to.
+		idx := -1
+		for i, seg := range segs {
+			if i == lastIdx {
+				// Last segment: accept pct >= entryPct
+				if pct >= seg.EntryPct {
+					idx = i
+					break
+				}
+			} else {
+				if pct >= seg.EntryPct && pct < seg.ExitPct {
+					idx = i
+					break
+				}
+			}
+		}
+		if idx < 0 {
+			continue
+		}
+
+		z := &zones[idx]
+		if z.SampleCount == 0 {
+			z.SpeedEntryKPH = s.Speed * ms2kmh
+		}
+		z.SpeedExitKPH = s.Speed * ms2kmh
+
+		spd := s.Speed * ms2kmh
+		if spd < z.SpeedMinKPH {
+			z.SpeedMinKPH = spd
+		}
+
+		brkPct := s.Brake * 100
+		if brkPct > z.BrakePct {
+			z.BrakePct = brkPct
+		}
+		thrPct := s.Throttle * 100
+		if thrPct > z.ThrottlePct {
+			z.ThrottlePct = thrPct
+		}
+
+		latG := abs32(s.LatAccel) / grav
+		if latG > z.LatGMax {
+			z.LatGMax = latG
+		}
+
+		if s.ABSActive {
+			z.ABSCount++
+		}
+		if s.Throttle < 0.05 && s.Brake < 0.05 {
+			z.CoastSamples++
+		}
+
+		// Accumulate gear counts in a temporary map stored via DominantGear trick:
+		// We cannot embed a map in SegZone, so we compute dominant gear in a second pass.
+		z.SampleCount++
+	}
+
+	// Second pass: compute dominant gear per segment.
+	for idx := range zones {
+		if zones[idx].SampleCount == 0 {
+			zones[idx].SpeedMinKPH = 0
+			continue
+		}
+		gearCounts := map[int32]int{}
+		for _, s := range lap.Samples {
+			pct := s.LapDistPct
+			seg := segs[idx]
+			var belongs bool
+			if idx == lastIdx {
+				belongs = pct >= seg.EntryPct
+			} else {
+				belongs = pct >= seg.EntryPct && pct < seg.ExitPct
+			}
+			if belongs {
+				gearCounts[s.Gear]++
+			}
+		}
+		bestGear, bestCount := int32(0), 0
+		for g, c := range gearCounts {
+			if g > 0 && c > bestCount {
+				bestGear, bestCount = g, c
+			}
+		}
+		if bestCount == 0 {
+			for g, c := range gearCounts {
+				if c > bestCount {
+					bestGear, bestCount = g, c
+				}
+			}
+		}
+		zones[idx].DominantGear = bestGear
+	}
+
+	return zones
+}
+
+// SegmentDeltas computes the per-segment time delta between two laps.
+// A negative value means lap2 was faster through that segment.
+// Returns one delta per segment (time of lap2 at segment entry minus time of lap1).
+func SegmentDeltas(lap1, lap2 *Lap, segs []trackmap.Segment) []float32 {
+	deltas := make([]float32, len(segs))
+	if len(lap1.Samples) == 0 || len(lap2.Samples) == 0 || len(segs) == 0 {
+		return deltas
+	}
+
+	// Build boundary pct values: one per segment entry + one final at 1.0.
+	boundaries := make([]float32, len(segs)+1)
+	for i, seg := range segs {
+		boundaries[i] = seg.EntryPct
+	}
+	boundaries[len(segs)] = 1.0
+
+	cum1 := make([]float32, len(segs)+1)
+	cum2 := make([]float32, len(segs)+1)
+	for k, pct := range boundaries {
+		cum1[k] = timeAtPct(lap1, pct)
+		cum2[k] = timeAtPct(lap2, pct)
+	}
+
+	for z := 0; z < len(segs); z++ {
+		zoneTime1 := cum1[z+1] - cum1[z]
+		zoneTime2 := cum2[z+1] - cum2[z]
+		deltas[z] = zoneTime2 - zoneTime1
+	}
+
+	return deltas
 }

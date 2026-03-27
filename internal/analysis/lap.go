@@ -137,6 +137,28 @@ func FormatLapTime(secs float32) string {
 	return fmt.Sprintf("%d:%02d.%03d", mins, wholeS, ms)
 }
 
+// ParseTrackLength extracts the track length in metres from the session YAML.
+// iRacing format: "TrackLength: 6.02 km"
+// Returns 0 if not found or unparseable.
+func ParseTrackLength(yaml string) float64 {
+	val := yamlField(yaml, "TrackLength")
+	if val == "" {
+		return 0
+	}
+	parts := strings.Fields(val)
+	if len(parts) == 0 {
+		return 0
+	}
+	f, err := strconv.ParseFloat(parts[0], 64)
+	if err != nil {
+		return 0
+	}
+	if len(parts) >= 2 && strings.ToLower(parts[1]) == "km" {
+		f *= 1000
+	}
+	return f
+}
+
 // yamlField extracts a value from iRacing's session info YAML by key name.
 func yamlField(yaml, key string) string {
 	prefix := key + ":"

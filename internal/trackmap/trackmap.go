@@ -1,0 +1,75 @@
+// Package trackmap provides types and file I/O for the persistent track segment store.
+// Segments are detected from lateral acceleration telemetry and cached as JSON
+// so that detection only runs once per track.
+package trackmap
+
+import (
+	"encoding/json"
+	"errors"
+	"os"
+	"time"
+)
+
+// SegmentKind classifies a track segment.
+type SegmentKind string
+
+const (
+	KindStraight SegmentKind = "straight"
+	KindCorner   SegmentKind = "corner"
+	KindChicane  SegmentKind = "chicane"
+)
+
+// Segment describes one straight, corner, or chicane on the track.
+// EntryPct and ExitPct are lap distance fractions (0.0–1.0).
+// EntryM and ExitM are the corresponding distances in metres.
+type Segment struct {
+	Name     string      `json:"name"`
+	Kind     SegmentKind `json:"kind"`
+	EntryPct float32     `json:"entryPct"`
+	ExitPct  float32     `json:"exitPct"`
+	EntryM   float32     `json:"entryM"`
+	ExitM    float32     `json:"exitM"`
+}
+
+// TrackMap holds the full segment map for one track configuration.
+type TrackMap struct {
+	TrackLengthM float64   `json:"trackLengthM"`
+	Source       string    `json:"source"`       // "auto" or "manual"
+	DetectedFrom string    `json:"detectedFrom"` // date string (YYYY-MM-DD)
+	LapsUsed     int       `json:"lapsUsed"`
+	Segments     []Segment `json:"segments"`
+}
+
+// TrackMapFile is the top-level store keyed by TrackDisplayName.
+type TrackMapFile map[string]*TrackMap
+
+// Load reads a TrackMapFile from path.
+// Returns an empty TrackMapFile (not an error) if the file does not exist.
+func Load(path string) (TrackMapFile, error) {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return TrackMapFile{}, nil
+		}
+		return nil, err
+	}
+	var tmf TrackMapFile
+	if err := json.Unmarshal(data, &tmf); err != nil {
+		return nil, err
+	}
+	return tmf, nil
+}
+
+// Save writes tmf to path as indented JSON.
+func Save(path string, tmf TrackMapFile) error {
+	data, err := json.MarshalIndent(tmf, "", "  ")
+	if err != nil {
+		return err
+	}
+	return os.WriteFile(path, data, 0644)
+}
+
+// Today returns the current date as a YYYY-MM-DD string.
+func Today() string {
+	return time.Now().Format("2006-01-02")
+}
