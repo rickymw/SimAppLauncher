@@ -199,6 +199,97 @@ func TestMatchScore_SingleSegment(t *testing.T) {
 	}
 }
 
+// ---- HasSession / AddSession tests ----
+
+// TestHasSession_NotPresent verifies HasSession returns false for an empty SeenSessions slice.
+func TestHasSession_NotPresent(t *testing.T) {
+	tm := &TrackMap{}
+	if tm.HasSession("2026-03-25T16:32:28Z") {
+		t.Error("HasSession on empty SeenSessions should return false")
+	}
+}
+
+// TestAddSession_AddsAndDeduplicates verifies AddSession stores an ID and is idempotent.
+func TestAddSession_AddsAndDeduplicates(t *testing.T) {
+	tm := &TrackMap{}
+	id := "2026-03-25T16:32:28Z"
+	tm.AddSession(id)
+	tm.AddSession(id) // second call should be a no-op
+	if !tm.HasSession(id) {
+		t.Error("HasSession should return true after AddSession")
+	}
+	if len(tm.SeenSessions) != 1 {
+		t.Errorf("SeenSessions should have 1 entry after duplicate AddSession, got %d", len(tm.SeenSessions))
+	}
+}
+
+// ---- DetectFromMultiple tests ----
+
+// TestDetectFromMultiple_MatchesSingleLap verifies that DetectFromMultiple with one
+// lap produces the same segments as Detect with those same samples.
+func TestDetectFromMultiple_MatchesSingleLap(t *testing.T) {
+	n := 2000
+	samples := make([]Sample, n)
+	for i := 0; i < n; i++ {
+		pct := float32(i) / float32(n)
+		section := int(pct * 4)
+		var lat float32
+		if section%2 == 1 {
+			lat = 15.0
+		}
+		samples[i] = Sample{LapDistPct: pct, LatAccel: lat}
+	}
+
+	segsDetect := Detect(samples, 4000.0)
+	segsMulti := DetectFromMultiple([][]Sample{samples}, 4000.0)
+
+	if len(segsDetect) != len(segsMulti) {
+		t.Errorf("segment count mismatch: Detect=%d DetectFromMultiple=%d", len(segsDetect), len(segsMulti))
+		return
+	}
+	for i := range segsDetect {
+		if segsDetect[i].Kind != segsMulti[i].Kind {
+			t.Errorf("seg[%d] kind: Detect=%s DetectFromMultiple=%s", i, segsDetect[i].Kind, segsMulti[i].Kind)
+		}
+		if segsDetect[i].EntryPct != segsMulti[i].EntryPct {
+			t.Errorf("seg[%d] entryPct: Detect=%v DetectFromMultiple=%v", i, segsDetect[i].EntryPct, segsMulti[i].EntryPct)
+		}
+	}
+}
+
+// TestDetectFromMultiple_MultiLap verifies that DetectFromMultiple with two consistent
+// laps produces the same segment count as single-lap detection.
+func TestDetectFromMultiple_MultiLap(t *testing.T) {
+	// Build two laps with the same corner positions but slight noise variation.
+	makeLap := func(noise float32) []Sample {
+		n := 2000
+		s := make([]Sample, n)
+		for i := 0; i < n; i++ {
+			pct := float32(i) / float32(n)
+			section := int(pct * 4)
+			var lat float32
+			if section%2 == 1 {
+				lat = 15.0 + noise
+			}
+			s[i] = Sample{LapDistPct: pct, LatAccel: lat}
+		}
+		return s
+	}
+
+	lap1 := makeLap(0)
+	lap2 := makeLap(0.5)
+
+	segsSingle := Detect(lap1, 4000.0)
+	segsMulti := DetectFromMultiple([][]Sample{lap1, lap2}, 4000.0)
+
+	if len(segsMulti) == 0 {
+		t.Fatal("DetectFromMultiple returned no segments")
+	}
+	if len(segsSingle) != len(segsMulti) {
+		t.Errorf("segment count: single=%d multi=%d (expected equal)", len(segsSingle), len(segsMulti))
+	}
+}
+
 // TestSaveLoad_Roundtrip saves a TrackMapFile and loads it back, verifying all fields survive.
 func TestSaveLoad_Roundtrip(t *testing.T) {
 	dir := t.TempDir()

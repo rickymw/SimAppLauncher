@@ -6,6 +6,7 @@ import (
 	"os"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/rickymw/SimAppLauncher/internal/analysis"
 	"github.com/rickymw/SimAppLauncher/internal/config"
@@ -44,6 +45,8 @@ func RunAnalyze(args []string, cfg config.Config, trackmapPath string) {
 	}
 	defer f.Close()
 
+	sessionID := f.DiskHeader().SessionStartDate.UTC().Format(time.RFC3339)
+
 	meta := analysis.ParseSessionMeta(f.SessionInfo(), cfg.Driver)
 	fmt.Printf("Driver:  %s\n", fallback(meta.DriverName, "(unknown)"))
 	fmt.Printf("Car:     %s\n", fallback(meta.CarScreenName, "(unknown)"))
@@ -57,18 +60,6 @@ func RunAnalyze(args []string, cfg config.Config, trackmapPath string) {
 	if len(laps) == 0 {
 		analyzeDie("no samples found in file")
 	}
-
-	fmt.Println("\nLaps:")
-	for _, l := range laps {
-		if l.LapTime > 0 {
-			fmt.Printf("  Lap %2d: %s (%d samples) [%s]\n",
-				l.Number, analysis.FormatLapTime(l.LapTime), len(l.Samples), l.Kind)
-		} else {
-			fmt.Printf("  Lap %2d: incomplete (%d samples) [%s]\n",
-				l.Number, len(l.Samples), l.Kind)
-		}
-	}
-	fmt.Println()
 
 	// Resolve the best lap now (needed for auto-detection even when not yet printing).
 	bestLap := bestAnalyzeLap(laps)
@@ -104,8 +95,8 @@ func RunAnalyze(args []string, cfg config.Config, trackmapPath string) {
 			matchScore = trackmap.MatchScore(tsamples, segs)
 		}
 
-		// Increment usage counters and re-save.
-		if trackmapPath != "" {
+		// Increment usage counters and re-save, but only once per session.
+		if trackmapPath != "" && !existingTM.HasSession(sessionID) {
 			flyingCount := 0
 			for _, l := range laps {
 				if l.Kind == analysis.KindFlying && !l.IsPartialStart {
@@ -114,24 +105,43 @@ func RunAnalyze(args []string, cfg config.Config, trackmapPath string) {
 			}
 			existingTM.LapsUsed += flyingCount
 			existingTM.SessionsUsed++
+			existingTM.AddSession(sessionID)
 			_ = trackmap.Save(trackmapPath, tmf)
 		}
 	} else if trackLengthM > 0 && bestLap != nil {
-		// Auto-detect from best flying lap.
-		tsamples := make([]trackmap.Sample, len(bestLap.Samples))
-		for i, s := range bestLap.Samples {
-			tsamples[i] = trackmap.Sample{LapDistPct: s.LapDistPct, LatAccel: s.LatAccel}
+		// Auto-detect from all flying, non-partial-start laps for more stable boundaries.
+		var allSamples [][]trackmap.Sample
+		for i := range laps {
+			l := &laps[i]
+			if l.Kind != analysis.KindFlying || l.IsPartialStart {
+				continue
+			}
+			ts := make([]trackmap.Sample, len(l.Samples))
+			for j, s := range l.Samples {
+				ts[j] = trackmap.Sample{LapDistPct: s.LapDistPct, LatAccel: s.LatAccel}
+			}
+			allSamples = append(allSamples, ts)
 		}
-		segs = trackmap.Detect(tsamples, trackLengthM)
+		if len(allSamples) == 0 {
+			// Fallback: use bestLap only (e.g. all laps are partial-start).
+			ts := make([]trackmap.Sample, len(bestLap.Samples))
+			for i, s := range bestLap.Samples {
+				ts[i] = trackmap.Sample{LapDistPct: s.LapDistPct, LatAccel: s.LatAccel}
+			}
+			allSamples = [][]trackmap.Sample{ts}
+		}
+		segs = trackmap.DetectFromMultiple(allSamples, trackLengthM)
 		if trackmapPath != "" && len(segs) > 0 {
-			tmf[meta.TrackDisplayName] = &trackmap.TrackMap{
+			newTM := &trackmap.TrackMap{
 				TrackLengthM: trackLengthM,
 				Source:       "auto",
 				DetectedFrom: trackmap.Today(),
-				LapsUsed:     1,
+				LapsUsed:     len(allSamples),
 				SessionsUsed: 1,
 				Segments:     segs,
 			}
+			newTM.AddSession(sessionID)
+			tmf[meta.TrackDisplayName] = newTM
 			_ = trackmap.Save(trackmapPath, tmf)
 			if *updateMap {
 				fmt.Printf("Track map updated: %d segments detected for %s\n\n",
@@ -162,8 +172,19 @@ func RunAnalyze(args []string, cfg config.Config, trackmapPath string) {
 				matchScore*100)
 		} else {
 			// Just detected for the first time this session.
-			fmt.Printf("Map:     %d segs — geometry: low (1 lap, 1 session) — match: n/a (first detection)\n\n",
-				len(segs))
+			// len(allSamples) is not in scope here; the new TrackMap was saved with
+			// the correct LapsUsed but segs came back without a reference to tmf entry.
+			// Use the newly written entry if available.
+			detectedLaps := 1
+			if newTM, ok := tmf[meta.TrackDisplayName]; ok {
+				detectedLaps = newTM.LapsUsed
+			}
+			lapWord := "lap"
+			if detectedLaps != 1 {
+				lapWord = "laps"
+			}
+			fmt.Printf("Map:     %d segs — geometry: low (%d %s, 1 session) — match: n/a (first detection)\n\n",
+				len(segs), detectedLaps, lapWord)
 		}
 
 		// Low match score warning.
@@ -173,6 +194,18 @@ func RunAnalyze(args []string, cfg config.Config, trackmapPath string) {
 			fmt.Println()
 		}
 	}
+
+	fmt.Println("Laps:")
+	for _, l := range laps {
+		if l.LapTime > 0 {
+			fmt.Printf("  Lap %2d: %s (%d samples) [%s]\n",
+				l.Number, analysis.FormatLapTime(l.LapTime), len(l.Samples), l.Kind)
+		} else {
+			fmt.Printf("  Lap %2d: incomplete (%d samples) [%s]\n",
+				l.Number, len(l.Samples), l.Kind)
+		}
+	}
+	fmt.Println()
 
 	if *compare != "" {
 		analyzeCompareLaps(laps, *compare, segs)

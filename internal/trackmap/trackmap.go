@@ -43,12 +43,31 @@ const (
 
 // TrackMap holds the full segment map for one track configuration.
 type TrackMap struct {
-	TrackLengthM float64   `json:"trackLengthM"`
-	Source       string    `json:"source"`       // "auto" or "manual"
-	DetectedFrom string    `json:"detectedFrom"` // date string (YYYY-MM-DD)
-	LapsUsed     int       `json:"lapsUsed"`
-	SessionsUsed int       `json:"sessionsUsed"`
-	Segments     []Segment `json:"segments"`
+	TrackLengthM float64    `json:"trackLengthM"`
+	Source       string     `json:"source"`       // "auto" or "manual"
+	DetectedFrom string     `json:"detectedFrom"` // date string (YYYY-MM-DD)
+	LapsUsed     int        `json:"lapsUsed"`
+	SessionsUsed int        `json:"sessionsUsed"`
+	SeenSessions []string   `json:"seenSessions"` // RFC3339 session start dates already counted
+	Segments     []Segment  `json:"segments"`
+}
+
+// HasSession reports whether sessionID has already been counted.
+func (tm *TrackMap) HasSession(sessionID string) bool {
+	for _, s := range tm.SeenSessions {
+		if s == sessionID {
+			return true
+		}
+	}
+	return false
+}
+
+// AddSession records sessionID as seen. It is a no-op if sessionID is already present.
+func (tm *TrackMap) AddSession(sessionID string) {
+	if tm.HasSession(sessionID) {
+		return
+	}
+	tm.SeenSessions = append(tm.SeenSessions, sessionID)
 }
 
 // Confidence returns a GeometryConfidence level based on the number of laps

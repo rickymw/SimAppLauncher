@@ -24,18 +24,13 @@ type rawSeg struct {
 
 func (r rawSeg) length() int { return r.end - r.start + 1 }
 
-// Detect analyses a slice of samples and returns a labelled []Segment.
-// trackLengthM is used to scale the smoothing window and metre values.
-// Returns nil if samples is empty.
-func Detect(samples []Sample, trackLengthM float64) []Segment {
-	if len(samples) == 0 {
-		return nil
-	}
-
-	// Step 1: bucket abs(LatAccel) and LatAccel sign into 1000 buckets.
+// buildProfile buckets abs(LatAccel) and LatAccel sign for a single lap's
+// samples into numBuckets bins. Returns per-bucket average abs values,
+// per-bucket average sign values, and per-bucket sample counts.
+func buildProfile(samples []Sample) (latAbs []float64, latSign []float64, counts []int) {
 	absSum := make([]float64, numBuckets)
 	signSum := make([]float64, numBuckets)
-	counts := make([]int, numBuckets)
+	counts = make([]int, numBuckets)
 
 	for _, s := range samples {
 		b := int(s.LapDistPct * numBuckets)
@@ -54,40 +49,94 @@ func Detect(samples []Sample, trackLengthM float64) []Segment {
 		counts[b]++
 	}
 
-	// Average within each bucket.
-	absAvg := make([]float64, numBuckets)
-	signAvg := make([]float64, numBuckets)
+	latAbs = make([]float64, numBuckets)
+	latSign = make([]float64, numBuckets)
 	for i := 0; i < numBuckets; i++ {
 		if counts[i] > 0 {
-			absAvg[i] = absSum[i] / float64(counts[i])
-			signAvg[i] = signSum[i] / float64(counts[i])
+			latAbs[i] = absSum[i] / float64(counts[i])
+			latSign[i] = signSum[i] / float64(counts[i])
 		}
 	}
+	return latAbs, latSign, counts
+}
 
-	// Step 2: forward-fill empty buckets.
+// detectFromProfiles runs the shared detection pipeline on pre-built averaged
+// latAbs and latSign profiles. counts indicates which buckets had data; zero-
+// count buckets are forward-filled.
+func detectFromProfiles(absAvg, signAvg []float64, counts []int, trackLengthM float64) []Segment {
+	// Forward-fill empty buckets.
 	fillGaps(absAvg, counts)
 	fillGaps(signAvg, counts)
 
-	// Step 3: box-smooth the abs signal with a window proportional to ~15m.
+	// Box-smooth the abs signal with a window proportional to ~15m.
 	window := max(1, int(15.0/trackLengthM*numBuckets))
 	smoothed := boxSmooth(absAvg, window)
 
-	// Step 4: hysteresis classification (enter ≥5, exit <2.5).
+	// Hysteresis classification (enter ≥5, exit <2.5).
 	isCorner := hysteresis(smoothed, 5.0, 2.5)
 
-	// Step 5: group consecutive buckets into rawSegs.
+	// Group consecutive buckets into rawSegs.
 	rawSegs := groupBuckets(isCorner, signAvg)
 
-	// Step 6: merge short segments repeatedly until stable.
+	// Merge short segments repeatedly until stable.
 	minStraightBuckets := max(1, int(0.012*numBuckets)) // 12
 	minCornerBuckets := max(1, int(0.006*numBuckets))   // 6
 	rawSegs = mergeShort(rawSegs, minStraightBuckets, minCornerBuckets)
 
-	// Step 7: merge chicanes: [corner, short-straight, corner] with opposite signs.
+	// Merge chicanes: [corner, short-straight, corner] with opposite signs.
 	rawSegs = mergeChicanes(rawSegs)
 
-	// Step 8: label and convert to []Segment.
 	return labelSegments(rawSegs, trackLengthM)
+}
+
+// DetectFromMultiple averages the LatAccel profiles of all provided lap sample
+// slices before running corner detection. This produces more stable segment
+// boundaries than using a single lap. allSamples must be non-empty.
+func DetectFromMultiple(allSamples [][]Sample, trackLengthM float64) []Segment {
+	if len(allSamples) == 0 {
+		return nil
+	}
+
+	// Accumulate per-lap profiles.
+	absTotal := make([]float64, numBuckets)
+	signTotal := make([]float64, numBuckets)
+	// Track which buckets had data in any lap (for fillGaps).
+	anyCounts := make([]int, numBuckets)
+
+	for _, samples := range allSamples {
+		lapAbs, lapSign, lapCounts := buildProfile(samples)
+		for i := 0; i < numBuckets; i++ {
+			absTotal[i] += lapAbs[i]
+			signTotal[i] += lapSign[i]
+			if lapCounts[i] > 0 {
+				anyCounts[i]++
+			}
+		}
+	}
+
+	// Average element-wise across laps (only laps that had data in each bucket).
+	absAvg := make([]float64, numBuckets)
+	signAvg := make([]float64, numBuckets)
+	for i := 0; i < numBuckets; i++ {
+		if anyCounts[i] > 0 {
+			n := float64(anyCounts[i])
+			absAvg[i] = absTotal[i] / n
+			signAvg[i] = signTotal[i] / n
+		}
+	}
+
+	return detectFromProfiles(absAvg, signAvg, anyCounts, trackLengthM)
+}
+
+// Detect analyses a slice of samples and returns a labelled []Segment.
+// trackLengthM is used to scale the smoothing window and metre values.
+// Returns nil if samples is empty.
+// Detect is a thin wrapper around DetectFromMultiple for a single lap.
+func Detect(samples []Sample, trackLengthM float64) []Segment {
+	if len(samples) == 0 {
+		return nil
+	}
+	return DetectFromMultiple([][]Sample{samples}, trackLengthM)
 }
 
 // fillGaps forward-fills zero-count buckets from the last non-empty value.
