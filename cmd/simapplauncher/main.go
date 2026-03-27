@@ -21,7 +21,8 @@ func defaultConfigPath() string {
 func main() {
 	cfgPath := flag.String("config", defaultConfigPath(), "path to config file")
 	flag.Usage = func() {
-		fmt.Fprintln(os.Stderr, "Usage: simapplauncher [-config <path>] <start|stop|status>")
+		fmt.Fprintln(os.Stderr, "Usage: simapplauncher [-config <path>] <start|stop|status|analyze>")
+		fmt.Fprintln(os.Stderr, "       simapplauncher analyze [-lap N] [-compare N,M] <file.ibt>")
 		flag.PrintDefaults()
 	}
 	flag.Parse()
@@ -38,17 +39,22 @@ func main() {
 		os.Exit(1)
 	}
 
-	pm := launcher.NewProcessManager()
 	switch args[0] {
-	case "start":
-		launcher.RunStart(cfg, pm)
-	case "stop":
-		launcher.RunStop(cfg, pm)
-	case "status":
-		launcher.RunStatus(cfg, pm)
+	case "analyze":
+		RunAnalyze(args[1:], cfg)
 	default:
-		fmt.Fprintf(os.Stderr, "unknown command: %s\n", args[0])
-		flag.Usage()
-		os.Exit(1)
+		pm := launcher.NewProcessManager()
+		switch args[0] {
+		case "start":
+			launcher.RunStart(cfg, pm)
+		case "stop":
+			launcher.RunStop(cfg, pm)
+		case "status":
+			launcher.RunStatus(cfg, pm)
+		default:
+			fmt.Fprintf(os.Stderr, "unknown command: %s\n", args[0])
+			flag.Usage()
+			os.Exit(1)
+		}
 	}
 }

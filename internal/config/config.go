@@ -6,7 +6,8 @@ import (
 )
 
 type Config struct {
-	Apps []App `json:"apps"`
+	Driver string `json:"driver"` // iRacing UserName used by lapanalyze to identify the player's car
+	Apps   []App  `json:"apps"`
 }
 
 type App struct {

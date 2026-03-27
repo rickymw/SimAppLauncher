@@ -1,4 +1,5 @@
 {
+  "driver": "Ricky Maw",
   "apps": [
     {
       "name": "SimHubWPF",
