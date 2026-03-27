@@ -1,9 +1,13 @@
 package analysis
 
 import (
+	"bytes"
+	"encoding/binary"
 	"math"
+	"os"
 	"testing"
 
+	"github.com/rickymw/SimAppLauncher/internal/ibt"
 	"github.com/rickymw/SimAppLauncher/internal/trackmap"
 )
 
@@ -483,5 +487,330 @@ func TestSegmentDeltas_IdenticalLaps(t *testing.T) {
 		if math.Abs(float64(d)) > 0.01 {
 			t.Errorf("segment %d: delta = %v, want ~0", i, d)
 		}
+	}
+}
+
+// ---- LapKind.String ----
+
+func TestLapKind_String(t *testing.T) {
+	cases := []struct {
+		kind LapKind
+		want string
+	}{
+		{KindFlying, "flying lap"},
+		{KindOutLap, "out lap"},
+		{KindInLap, "in lap"},
+		{KindOutInLap, "out/in lap"},
+		{LapKind(99), "flying lap"}, // default branch
+	}
+	for _, tc := range cases {
+		if got := tc.kind.String(); got != tc.want {
+			t.Errorf("LapKind(%d).String() = %q, want %q", tc.kind, got, tc.want)
+		}
+	}
+}
+
+// ---- ExtractLaps ----
+//
+// The helpers below construct a minimal valid .ibt binary so that
+// ExtractLaps can be tested without a real telemetry recording.
+
+// lbRawVarBuf mirrors ibt.rawVarBuf (16 bytes).
+type lbRawVarBuf struct {
+	TickCount int32
+	BufOffset int32
+	Pad       [2]int32
+}
+
+// lbRawHeader mirrors ibt.rawHeader (112 bytes at offset 0).
+type lbRawHeader struct {
+	Ver               int32
+	Status            int32
+	TickRate          int32
+	SessionInfoUpdate int32
+	SessionInfoLen    int32
+	SessionInfoOffset int32
+	NumVars           int32
+	VarHeaderOffset   int32
+	NumBuf            int32
+	BufLen            int32
+	Pad               [2]int32
+	VarBuf            [4]lbRawVarBuf
+}
+
+// lbRawDiskHeader mirrors ibt.rawDiskHeader (32 bytes at offset 112).
+type lbRawDiskHeader struct {
+	SessionStartDate   int64
+	SessionStartTime   float64
+	SessionEndTime     float64
+	SessionLapCount    int32
+	SessionRecordCount int32
+}
+
+// lbRawVarHeader mirrors ibt.rawVarHeader (144 bytes).
+type lbRawVarHeader struct {
+	Type        int32
+	Offset      int32
+	Count       int32
+	CountAsTime bool
+	Pad         [3]byte
+	Name        [32]byte
+	Desc        [64]byte
+	Unit        [32]byte
+}
+
+// lbSample is one row of data for the lap builder file.
+type lbSample struct {
+	LapDistPct  float32
+	Speed       float32
+	SessionTime float64
+}
+
+func lbPad32(s string) [32]byte { var b [32]byte; copy(b[:], s); return b }
+func lbPad64(s string) [64]byte { var b [64]byte; copy(b[:], s); return b }
+
+const (
+	lbSessionInfoOffset = 144
+	lbSessionInfoLen    = 64
+	lbVarHeaderOffset   = 208
+	lbNumVars           = 3
+	lbBufLen            = 16 // LapDistPct(4) + Speed(4) + SessionTime(8)
+	lbDataOffset        = lbVarHeaderOffset + lbNumVars*144 // 208 + 432 = 640
+
+	// VarType constants (mirroring ibt package values)
+	lbVarTypeFloat  int32 = 4
+	lbVarTypeDouble int32 = 5
+)
+
+// buildLapIBTFile writes a minimal .ibt temp file with LapDistPct, Speed,
+// and SessionTime channels, then returns its path.
+func buildLapIBTFile(t *testing.T, samples []lbSample) string {
+	t.Helper()
+
+	var buf bytes.Buffer
+
+	hdr := lbRawHeader{
+		Ver: 1, Status: 1, TickRate: 60,
+		SessionInfoLen: lbSessionInfoLen, SessionInfoOffset: lbSessionInfoOffset,
+		NumVars: lbNumVars, VarHeaderOffset: lbVarHeaderOffset,
+		NumBuf: 1, BufLen: lbBufLen,
+	}
+	hdr.VarBuf[0] = lbRawVarBuf{TickCount: 0, BufOffset: lbDataOffset}
+	if err := binary.Write(&buf, binary.LittleEndian, hdr); err != nil {
+		t.Fatalf("writing header: %v", err)
+	}
+
+	disk := lbRawDiskHeader{
+		SessionStartDate: 1_700_000_000, SessionStartTime: 3600, SessionEndTime: 3700,
+		SessionLapCount: 3, SessionRecordCount: int32(len(samples)),
+	}
+	if err := binary.Write(&buf, binary.LittleEndian, disk); err != nil {
+		t.Fatalf("writing disk header: %v", err)
+	}
+
+	si := make([]byte, lbSessionInfoLen)
+	copy(si, "---\nSessionNum: 0\n")
+	buf.Write(si)
+
+	varHeaders := []lbRawVarHeader{
+		{Type: lbVarTypeFloat, Offset: 0, Count: 1, Name: lbPad32("LapDistPct"), Desc: lbPad64("Lap pct"), Unit: lbPad32("")},
+		{Type: lbVarTypeFloat, Offset: 4, Count: 1, Name: lbPad32("Speed"), Desc: lbPad64("Speed"), Unit: lbPad32("m/s")},
+		{Type: lbVarTypeDouble, Offset: 8, Count: 1, Name: lbPad32("SessionTime"), Desc: lbPad64("Session time"), Unit: lbPad32("s")},
+	}
+	for _, vh := range varHeaders {
+		if err := binary.Write(&buf, binary.LittleEndian, vh); err != nil {
+			t.Fatalf("writing var header: %v", err)
+		}
+	}
+
+	for _, s := range samples {
+		row := make([]byte, lbBufLen)
+		binary.LittleEndian.PutUint32(row[0:], math.Float32bits(s.LapDistPct))
+		binary.LittleEndian.PutUint32(row[4:], math.Float32bits(s.Speed))
+		binary.LittleEndian.PutUint64(row[8:], math.Float64bits(s.SessionTime))
+		buf.Write(row)
+	}
+
+	tmp, err := os.CreateTemp("", "test-lap-*.ibt")
+	if err != nil {
+		t.Fatalf("creating temp file: %v", err)
+	}
+	path := tmp.Name()
+	t.Cleanup(func() { os.Remove(path) })
+	if _, err := tmp.Write(buf.Bytes()); err != nil {
+		tmp.Close()
+		t.Fatalf("writing ibt: %v", err)
+	}
+	if err := tmp.Close(); err != nil {
+		t.Fatalf("closing: %v", err)
+	}
+	return path
+}
+
+// makeLapSamples builds a linear sample sequence from pctStart to pctEnd
+// with the given speed. SessionTime increments by 1/60 per sample.
+func makeLapSamples(n int, pctStart, pctEnd, speed float32, timeOffset float64) []lbSample {
+	out := make([]lbSample, n)
+	for i := range out {
+		frac := float32(0)
+		if n > 1 {
+			frac = float32(i) / float32(n-1)
+		}
+		out[i] = lbSample{
+			LapDistPct:  pctStart + frac*(pctEnd-pctStart),
+			Speed:       speed,
+			SessionTime: timeOffset + float64(i)/60.0,
+		}
+	}
+	return out
+}
+
+func TestExtractLaps_Empty(t *testing.T) {
+	path := buildLapIBTFile(t, nil)
+	f, err := ibt.Open(path)
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	defer f.Close()
+
+	laps, err := ExtractLaps(f)
+	if err != nil {
+		t.Fatalf("ExtractLaps: %v", err)
+	}
+	if len(laps) != 0 {
+		t.Errorf("expected 0 laps, got %d", len(laps))
+	}
+}
+
+func TestExtractLaps_SingleCrossing(t *testing.T) {
+	// Lap 1: 320 samples, LapDistPct 0.01→0.99.
+	// Then S/F crossing (next sample starts at 0.02).
+	// Lap 2: 50 samples (final lap, always appended).
+	const lap1N, lap2N = 320, 50
+
+	lap1 := makeLapSamples(lap1N, 0.01, 0.99, 30, 0)
+	lap2 := makeLapSamples(lap2N, 0.02, 0.30, 30, float64(lap1N)/60.0)
+	samples := append(lap1, lap2...)
+
+	path := buildLapIBTFile(t, samples)
+	f, err := ibt.Open(path)
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	defer f.Close()
+
+	laps, err := ExtractLaps(f)
+	if err != nil {
+		t.Fatalf("ExtractLaps: %v", err)
+	}
+	if len(laps) != 2 {
+		t.Fatalf("expected 2 laps, got %d", len(laps))
+	}
+
+	// Lap 1 checks.
+	if laps[0].IsPartialStart {
+		t.Error("lap 1: expected IsPartialStart=false")
+	}
+	if len(laps[0].Samples) != lap1N {
+		t.Errorf("lap 1: %d samples, want %d", len(laps[0].Samples), lap1N)
+	}
+	if laps[0].Kind != KindFlying {
+		t.Errorf("lap 1: Kind=%v, want KindFlying", laps[0].Kind)
+	}
+	wantLapTime1 := float32(float64(lap1N-1) / 60.0)
+	if math.Abs(float64(laps[0].LapTime-wantLapTime1)) > 0.01 {
+		t.Errorf("lap 1: LapTime=%.3f, want ~%.3f", laps[0].LapTime, wantLapTime1)
+	}
+
+	// Lap 2 checks.
+	if len(laps[1].Samples) != lap2N {
+		t.Errorf("lap 2: %d samples, want %d", len(laps[1].Samples), lap2N)
+	}
+}
+
+func TestExtractLaps_TooShortFirstLap(t *testing.T) {
+	// 10-sample "lap" before S/F crossing — too short to keep (< MinSamplesForValidLap).
+	// 30-sample final lap — always appended.
+	lap1 := makeLapSamples(10, 0.60, 0.90, 30, 0)
+	lap2 := makeLapSamples(30, 0.02, 0.30, 30, float64(10)/60.0)
+	samples := append(lap1, lap2...)
+
+	path := buildLapIBTFile(t, samples)
+	f, err := ibt.Open(path)
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	defer f.Close()
+
+	laps, err := ExtractLaps(f)
+	if err != nil {
+		t.Fatalf("ExtractLaps: %v", err)
+	}
+	if len(laps) != 1 {
+		t.Fatalf("expected 1 lap (short first lap dropped), got %d", len(laps))
+	}
+	if len(laps[0].Samples) != 30 {
+		t.Errorf("expected 30 samples in final lap, got %d", len(laps[0].Samples))
+	}
+}
+
+func TestExtractLaps_IsPartialStart(t *testing.T) {
+	// First sample at 0.10 > 0.05 → IsPartialStart = true.
+	samples := makeLapSamples(320, 0.10, 0.99, 30, 0)
+
+	path := buildLapIBTFile(t, samples)
+	f, err := ibt.Open(path)
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	defer f.Close()
+
+	laps, err := ExtractLaps(f)
+	if err != nil {
+		t.Fatalf("ExtractLaps: %v", err)
+	}
+	if len(laps) != 1 {
+		t.Fatalf("expected 1 lap, got %d", len(laps))
+	}
+	if !laps[0].IsPartialStart {
+		t.Error("expected IsPartialStart=true for lap starting at pct 0.10")
+	}
+}
+
+func TestExtractLaps_ZeroArtifact(t *testing.T) {
+	// iRacing emits a single LapDistPct=0.0 frame at the S/F crossing.
+	// That artifact sample must be absorbed: not added to either lap.
+	const lap1N = 320
+	lap1 := makeLapSamples(lap1N, 0.01, 0.99, 30, 0)
+
+	// Artifact sample: LapDistPct exactly 0.0, prevDist (0.99) > 0.5.
+	artifact := lbSample{LapDistPct: 0.0, Speed: 30, SessionTime: float64(lap1N) / 60.0}
+
+	// Lap 2: 50 samples.
+	lap2 := makeLapSamples(50, 0.01, 0.30, 30, float64(lap1N+1)/60.0)
+
+	samples := append(lap1, artifact)
+	samples = append(samples, lap2...)
+
+	path := buildLapIBTFile(t, samples)
+	f, err := ibt.Open(path)
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	defer f.Close()
+
+	laps, err := ExtractLaps(f)
+	if err != nil {
+		t.Fatalf("ExtractLaps: %v", err)
+	}
+	if len(laps) != 2 {
+		t.Fatalf("expected 2 laps, got %d", len(laps))
+	}
+	// Artifact sample must not appear in either lap.
+	if len(laps[0].Samples) != lap1N {
+		t.Errorf("lap 1: %d samples, want %d (artifact must be excluded)", len(laps[0].Samples), lap1N)
+	}
+	if len(laps[1].Samples) != 50 {
+		t.Errorf("lap 2: %d samples, want 50", len(laps[1].Samples))
 	}
 }
