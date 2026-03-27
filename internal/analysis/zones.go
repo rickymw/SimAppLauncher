@@ -223,7 +223,7 @@ type SegZone struct {
 	SpeedExitKPH  float32 // speed of the last sample in the segment
 	BrakePct      float32 // % of samples with brake pressure > 2% (time on brakes)
 	ThrottlePct   float32 // % of samples at full throttle (> 95%)
-	DominantGear  int32   // modal gear
+	DominantGear  int32   // max forward gear for straights; min forward gear for corners/chicanes
 	LatGMax       float32 // peak abs(LatAccel)/9.81
 	ABSCount      int     // samples where ABS was active
 	CoastSamples  int     // samples with throttle<5% AND brake<5%
@@ -263,15 +263,15 @@ func SegmentStats(lap *Lap, segs []trackmap.Segment) []SegZone {
 		zones[i].ExitPct = seg.ExitPct
 	}
 
-	// gearCounts[seg][gear] — fixed-size array avoids per-segment map allocations.
-	// Gears: -1=R (index 0), 0=N (index 1), 1-8 (index 2-9).
-	const maxGearIdx = 10
-	gearCounts := make([][maxGearIdx]int, len(segs))
 	minSpeeds := make([]float32, len(segs))
 	brakeOnCounts := make([]int, len(segs))
 	thrFullCounts := make([]int, len(segs))
+	// minGear / maxGear track the lowest and highest forward gear (≥1) per segment.
+	minGears := make([]int32, len(segs))
+	maxGears := make([]int32, len(segs))
 	for i := range minSpeeds {
 		minSpeeds[i] = float32(math.MaxFloat32)
+		minGears[i] = math.MaxInt32
 	}
 
 	for _, s := range lap.Samples {
@@ -307,10 +307,14 @@ func SegmentStats(lap *Lap, segs []trackmap.Segment) []SegZone {
 			z.CoastSamples++
 		}
 
-		// Gear index: clamp into [0, maxGearIdx).
-		gi := int(s.Gear) + 1 // -1→0, 0→1, 1→2, …
-		if gi >= 0 && gi < maxGearIdx {
-			gearCounts[idx][gi]++
+		// Track min/max forward gear for this segment.
+		if s.Gear >= 1 {
+			if s.Gear < minGears[idx] {
+				minGears[idx] = s.Gear
+			}
+			if s.Gear > maxGears[idx] {
+				maxGears[idx] = s.Gear
+			}
 		}
 
 		z.SampleCount++
@@ -327,24 +331,19 @@ func SegmentStats(lap *Lap, segs []trackmap.Segment) []SegZone {
 		zones[idx].BrakePct = 100 * float32(brakeOnCounts[idx]) / n
 		zones[idx].ThrottlePct = 100 * float32(thrFullCounts[idx]) / n
 
-		// Dominant gear: prefer forward gears (gi >= 2, i.e. gear >= 1).
-		bestGear, bestCount := int32(0), 0
-		for gi := 2; gi < maxGearIdx; gi++ {
-			if c := gearCounts[idx][gi]; c > bestCount {
-				bestCount = c
-				bestGear = int32(gi - 1)
-			}
+		// Gear selection depends on segment kind:
+		//   Straight → highest gear reached (max speed gear)
+		//   Corner / Chicane → lowest gear reached (apex gear)
+		// If no forward-gear samples were seen, report 0.
+		var gear int32
+		if minGears[idx] == math.MaxInt32 {
+			gear = 0 // no forward-gear samples
+		} else if segs[idx].Kind == trackmap.KindStraight {
+			gear = maxGears[idx]
+		} else {
+			gear = minGears[idx]
 		}
-		if bestCount == 0 {
-			// All neutral/reverse — use raw mode.
-			for gi := 0; gi < maxGearIdx; gi++ {
-				if c := gearCounts[idx][gi]; c > bestCount {
-					bestCount = c
-					bestGear = int32(gi - 1)
-				}
-			}
-		}
-		zones[idx].DominantGear = bestGear
+		zones[idx].DominantGear = gear
 	}
 
 	return zones

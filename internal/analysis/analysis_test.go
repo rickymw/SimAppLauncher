@@ -551,6 +551,49 @@ func TestSegmentStats_Basic(t *testing.T) {
 
 // ---- SegmentDeltas ----
 
+func TestSegmentStats_GearSelection(t *testing.T) {
+	// Three segments: straight, corner, chicane.
+	// Straight samples: gears 3,4,5 — want max = 5.
+	// Corner  samples: gears 5,4,3 — want min = 3.
+	// Chicane samples: gears 4,3,4 — want min = 3.
+	segs := []trackmap.Segment{
+		{Name: "S1", Kind: trackmap.KindStraight, EntryPct: 0.00, ExitPct: 0.33},
+		{Name: "T1", Kind: trackmap.KindCorner, EntryPct: 0.33, ExitPct: 0.66},
+		{Name: "T2-3", Kind: trackmap.KindChicane, EntryPct: 0.66, ExitPct: 1.00},
+	}
+
+	// 90 samples, 30 per segment.
+	const n = 90
+	gearSeq := []int32{3, 4, 5, 5, 4, 3, 4, 3, 4} // 10 samples per gear pattern per segment
+	samples := make([]SampleData, n)
+	for i := range samples {
+		pct := float32(i) / float32(n)
+		block := i / 10 // 0-2 → seg0 gears, 3-5 → seg1 gears, 6-8 → seg2 gears
+		samples[i] = SampleData{
+			LapDistPct:  pct,
+			SessionTime: float64(i),
+			Speed:       30,
+			Gear:        gearSeq[block],
+		}
+	}
+	lap := &Lap{Samples: samples}
+	finalizeLap(lap)
+	zones := SegmentStats(lap, segs)
+
+	// Straight: max gear = 5
+	if zones[0].DominantGear != 5 {
+		t.Errorf("straight: DominantGear = %d, want 5 (max)", zones[0].DominantGear)
+	}
+	// Corner: min gear = 3
+	if zones[1].DominantGear != 3 {
+		t.Errorf("corner: DominantGear = %d, want 3 (min)", zones[1].DominantGear)
+	}
+	// Chicane: min gear = 3
+	if zones[2].DominantGear != 3 {
+		t.Errorf("chicane: DominantGear = %d, want 3 (min)", zones[2].DominantGear)
+	}
+}
+
 func TestSegmentDeltas_IdenticalLaps(t *testing.T) {
 	segs := []trackmap.Segment{
 		{Name: "S1", Kind: trackmap.KindStraight, EntryPct: 0.0, ExitPct: 0.5},
