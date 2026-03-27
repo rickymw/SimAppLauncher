@@ -33,7 +33,8 @@ func ZoneStats(lap *Lap) []Zone {
 	// Bucket samples by zone index.
 	buckets := make([][]SampleData, NumZones)
 	for _, s := range lap.Samples {
-		buckets[zoneIdx(s.LapDistPct)] = append(buckets[zoneIdx(s.LapDistPct)], s)
+		zi := zoneIdx(s.LapDistPct)
+		buckets[zi] = append(buckets[zi], s)
 	}
 
 	zones := make([]Zone, NumZones)

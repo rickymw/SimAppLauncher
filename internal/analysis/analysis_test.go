@@ -307,26 +307,18 @@ func TestZoneStats_ABSAndCoast(t *testing.T) {
 }
 
 func TestZoneStats_DominantGear(t *testing.T) {
-	// Zone 0 has mostly gear 3, with a couple of gear 2 samples.
-	samples := make([]SampleData, 20)
+	// 100 samples across the lap; zone 0 (pct 0.00–0.05) has 5 samples,
+	// 4 of which are gear 3 and 1 is gear 2 — gear 3 should dominate.
+	samples := make([]SampleData, 100)
 	for i := range samples {
-		samples[i] = SampleData{
-			LapDistPct: float32(i) / float32(len(samples)),
-			Speed:      30,
-		}
-	}
-	// First zone (pct < 0.05): indices 0..0 (only 1 sample at 0/20 = 0.0)
-	// Let's put 8 gear-3 and 2 gear-2 samples in zone 0 by using 10 samples there.
-	samples2 := make([]SampleData, 100)
-	for i := range samples2 {
-		pct := float32(i) / float32(len(samples2))
+		pct := float32(i) / float32(len(samples))
 		gear := int32(3)
 		if pct < 0.05 && i%5 == 0 {
 			gear = 2 // 1 in 5 samples in zone 0 is gear 2
 		}
-		samples2[i] = SampleData{LapDistPct: pct, Speed: 30, Gear: gear}
+		samples[i] = SampleData{LapDistPct: pct, Speed: 30, Gear: gear}
 	}
-	lap := &Lap{Samples: samples2}
+	lap := &Lap{Samples: samples}
 	finalizeLap(lap)
 	zones := ZoneStats(lap)
 

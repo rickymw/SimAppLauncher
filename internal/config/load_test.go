@@ -7,6 +7,7 @@ import (
 
 func TestLoad_ValidConfig(t *testing.T) {
 	json := `{
+		"driver": "Ricky Maw",
 		"apps": [
 			{
 				"name": "TestApp",
@@ -25,6 +26,9 @@ func TestLoad_ValidConfig(t *testing.T) {
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
+	if cfg.Driver != "Ricky Maw" {
+		t.Errorf("Driver = %q, want %q", cfg.Driver, "Ricky Maw")
+	}
 	if len(cfg.Apps) != 1 {
 		t.Fatalf("len(Apps) = %d, want 1", len(cfg.Apps))
 	}
@@ -37,6 +41,18 @@ func TestLoad_ValidConfig(t *testing.T) {
 	}
 	if app.Elevate {
 		t.Error("Elevate = true, want false")
+	}
+}
+
+func TestLoad_DriverFieldOmitted(t *testing.T) {
+	// driver is optional — omitting it should leave Driver as empty string
+	f := writeTempFile(t, `{"apps": [{"name": "App", "path": "C:\\app.exe"}]}`)
+	cfg, err := Load(f)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if cfg.Driver != "" {
+		t.Errorf("Driver = %q, want empty string", cfg.Driver)
 	}
 }
 

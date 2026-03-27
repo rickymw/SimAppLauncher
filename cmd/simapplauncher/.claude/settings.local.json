@@ -1,0 +1,31 @@
+{
+  "permissions": {
+    "allow": [
+      "Read(//g/RACING/SimAppLauncher/**)",
+      "Bash(go test:*)",
+      "Bash(go build:*)",
+      "Bash(\".\\\\ibtdump.exe\" \"porsche718gt4_sebring international 2026-03-25 16-32-28.ibt\")",
+      "Bash(powershell -Command \"$bytes = [System.IO.File]::ReadAllBytes\\(''porsche718gt4_sebring international 2026-03-25 16-32-28.ibt''\\); $bytes[0..255] | ForEach-Object { $_ToString\\(''X2''\\) } | Join-String -Separator '' ''\")",
+      "Bash(powershell -Command \"$f=''porsche718gt4_sebring international 2026-03-25 16-32-28.ibt''; $b=[System.IO.File]::ReadAllBytes\\($f\\); \\($b | Select-Object -First 256 | ForEach-Object { $_ToString\\(''X2''\\) }\\) -join '' ''\")",
+      "Bash(\".\\\\lapanalyze.exe\" -noai \"porsche718gt4_sebring international 2026-03-25 16-32-28.ibt\")",
+      "Bash(go run:*)",
+      "Bash(rm -rf cmddbg)",
+      "Bash(del cmddbg:*)",
+      "Bash(powershell -Command \"Remove-Item -Recurse -Force ''G:\\\\RACING\\\\SimAppLauncher\\\\cmd\\\\dbg'' -ErrorAction SilentlyContinue; Write-Output done\")",
+      "Bash(Remove-Item \"G:\\\\RACING\\\\SimAppLauncher\\\\internal\\\\analysis\\\\ai.go\")",
+      "Bash(Remove-Item \"G:\\\\RACING\\\\SimAppLauncher\\\\internal\\\\analysis\\\\prompt.go\")",
+      "Bash(.lapanalyze.exe \".\\\\porsche718gt4_sebring international 2026-03-25 16-32-28.ibt\")",
+      "Bash(\"./lapanalyze.exe\" \"porsche718gt4_sebring international 2026-03-25 16-32-28.ibt\")",
+      "Bash(\"./ibtdump.exe\" \"porsche718gt4_sebring international 2026-03-25 16-32-28.ibt\")",
+      "Bash(./ibtdump.exe 'porsche718gt4_sebring international 2026-03-25 16-32-28.ibt' 2)",
+      "Read(//tmp/**)",
+      "Bash(\".\\\\lapanalyze.exe\" \"porsche718gt4_sebring international 2026-03-25 16-32-28.ibt\")",
+      "Bash(mkdir -p _tmp)",
+      "Bash(cp _yamldump.go _tmp/main.go)",
+      "Bash(grep -n \"CarIdx: 4$\\\\|CarIdx:  4$\")",
+      "Bash(rm -f lapanalyze.exe)",
+      "Bash(rm -rf cmd/lapanalyze)",
+      "Bash(\".\\\\simapplauncher.exe\" analyze:*)"
+    ]
+  }
+}
