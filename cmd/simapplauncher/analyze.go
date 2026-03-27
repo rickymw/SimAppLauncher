@@ -20,6 +20,7 @@ func RunAnalyze(args []string, cfg config.Config, trackmapPath string) {
 	fs := flag.NewFlagSet("analyze", flag.ExitOnError)
 	lapNum := fs.Int("lap", 0, "lap number to analyze (0 = best completed lap)")
 	compare := fs.String("compare", "", "compare two laps, e.g. -compare 1,2")
+	updateMap := fs.Bool("update-map", false, "ignore existing track map and re-detect from this session")
 	fs.Usage = func() {
 		fmt.Fprintln(os.Stderr, "Usage: simapplauncher [-config <path>] analyze [flags] <file.ibt>")
 		fmt.Fprintln(os.Stderr)
@@ -84,8 +85,37 @@ func RunAnalyze(args []string, cfg config.Config, trackmapPath string) {
 		tmf = trackmap.TrackMapFile{}
 	}
 
-	if tm, ok := tmf[meta.TrackDisplayName]; ok && len(tm.Segments) > 0 {
-		segs = tm.Segments
+	var geomConf trackmap.GeometryConfidence
+	var matchScore float32 = -1 // -1 means "not computed" (no stored map yet)
+
+	existingTM, hasExisting := tmf[meta.TrackDisplayName]
+	useExisting := hasExisting && len(existingTM.Segments) > 0 && !*updateMap
+
+	if useExisting {
+		segs = existingTM.Segments
+		geomConf = existingTM.Confidence()
+
+		// Compute match score from best lap.
+		if bestLap != nil && trackLengthM > 0 {
+			tsamples := make([]trackmap.Sample, len(bestLap.Samples))
+			for i, s := range bestLap.Samples {
+				tsamples[i] = trackmap.Sample{LapDistPct: s.LapDistPct, LatAccel: s.LatAccel}
+			}
+			matchScore = trackmap.MatchScore(tsamples, segs)
+		}
+
+		// Increment usage counters and re-save.
+		if trackmapPath != "" {
+			flyingCount := 0
+			for _, l := range laps {
+				if l.Kind == analysis.KindFlying && !l.IsPartialStart {
+					flyingCount++
+				}
+			}
+			existingTM.LapsUsed += flyingCount
+			existingTM.SessionsUsed++
+			_ = trackmap.Save(trackmapPath, tmf)
+		}
 	} else if trackLengthM > 0 && bestLap != nil {
 		// Auto-detect from best flying lap.
 		tsamples := make([]trackmap.Sample, len(bestLap.Samples))
@@ -99,11 +129,48 @@ func RunAnalyze(args []string, cfg config.Config, trackmapPath string) {
 				Source:       "auto",
 				DetectedFrom: trackmap.Today(),
 				LapsUsed:     1,
+				SessionsUsed: 1,
 				Segments:     segs,
 			}
 			_ = trackmap.Save(trackmapPath, tmf)
-			fmt.Printf("Track map created: %d segments detected for %s\n\n",
-				len(segs), meta.TrackDisplayName)
+			if *updateMap {
+				fmt.Printf("Track map updated: %d segments detected for %s\n\n",
+					len(segs), meta.TrackDisplayName)
+			} else {
+				fmt.Printf("Track map created: %d segments detected for %s\n\n",
+					len(segs), meta.TrackDisplayName)
+			}
+		}
+	}
+
+	// Print map confidence line.
+	if len(segs) > 0 {
+		if matchScore >= 0 {
+			// Loaded from existing map.
+			lapWord := "lap"
+			if existingTM.LapsUsed != 1 {
+				lapWord = "laps"
+			}
+			sessionWord := "session"
+			if existingTM.SessionsUsed != 1 {
+				sessionWord = "sessions"
+			}
+			fmt.Printf("Map:     %d segs — geometry: %s (%d %s, %d %s) — match: %.0f%%\n\n",
+				len(segs), geomConf,
+				existingTM.LapsUsed, lapWord,
+				existingTM.SessionsUsed, sessionWord,
+				matchScore*100)
+		} else {
+			// Just detected for the first time this session.
+			fmt.Printf("Map:     %d segs — geometry: low (1 lap, 1 session) — match: n/a (first detection)\n\n",
+				len(segs))
+		}
+
+		// Low match score warning.
+		if matchScore >= 0 && matchScore < 0.70 {
+			fmt.Printf("Warning: lap profile matches stored map at only %.0f%% — consider running with\n", matchScore*100)
+			fmt.Println("         -update-map to regenerate segment boundaries from this session.")
+			fmt.Println()
 		}
 	}
 

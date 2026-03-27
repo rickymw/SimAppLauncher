@@ -31,13 +31,41 @@ type Segment struct {
 	ExitM    float32     `json:"exitM"`
 }
 
+// GeometryConfidence describes how well-established the stored track map is,
+// based on the number of laps used to build it.
+type GeometryConfidence string
+
+const (
+	ConfLow      GeometryConfidence = "low"
+	ConfModerate GeometryConfidence = "moderate"
+	ConfHigh     GeometryConfidence = "high"
+)
+
 // TrackMap holds the full segment map for one track configuration.
 type TrackMap struct {
 	TrackLengthM float64   `json:"trackLengthM"`
 	Source       string    `json:"source"`       // "auto" or "manual"
 	DetectedFrom string    `json:"detectedFrom"` // date string (YYYY-MM-DD)
 	LapsUsed     int       `json:"lapsUsed"`
+	SessionsUsed int       `json:"sessionsUsed"`
 	Segments     []Segment `json:"segments"`
+}
+
+// Confidence returns a GeometryConfidence level based on the number of laps
+// used to build this track map.
+//
+//   - < 3 laps  → low
+//   - 3–10 laps → moderate
+//   - > 10 laps → high
+func (tm *TrackMap) Confidence() GeometryConfidence {
+	switch {
+	case tm.LapsUsed > 10:
+		return ConfHigh
+	case tm.LapsUsed >= 3:
+		return ConfModerate
+	default:
+		return ConfLow
+	}
 }
 
 // TrackMapFile is the top-level store keyed by TrackDisplayName.

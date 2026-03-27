@@ -3,7 +3,8 @@
     "trackLengthM": 5793.8,
     "source": "auto",
     "detectedFrom": "2026-03-27",
-    "lapsUsed": 1,
+    "lapsUsed": 16,
+    "sessionsUsed": 1,
     "segments": [
       {
         "name": "S1",

@@ -274,6 +274,90 @@ func mergeChicanes(segs []rawSeg) []rawSeg {
 	return segs
 }
 
+// MatchScore computes how well the given lap samples match the stored segment
+// boundaries. For each segment boundary (entry pct of each segment after the
+// first), it checks whether the current lap also shows a corner/straight
+// transition within a tolerance of ±0.02 (2% of lap distance). Returns a
+// value 0.0–1.0 where 1.0 = all boundaries matched.
+//
+// If len(segs) <= 1, returns 1.0 (no interior boundaries to check).
+func MatchScore(samples []Sample, segs []Segment) float32 {
+	if len(segs) <= 1 {
+		return 1.0
+	}
+
+	// Re-run the same classification pipeline as Detect on the current lap.
+	absSum := make([]float64, numBuckets)
+	signSum := make([]float64, numBuckets)
+	counts := make([]int, numBuckets)
+
+	for _, s := range samples {
+		b := int(s.LapDistPct * numBuckets)
+		if b < 0 {
+			b = 0
+		}
+		if b >= numBuckets {
+			b = numBuckets - 1
+		}
+		absSum[b] += math.Abs(float64(s.LatAccel))
+		if s.LatAccel > 0 {
+			signSum[b] += 1.0
+		} else if s.LatAccel < 0 {
+			signSum[b] -= 1.0
+		}
+		counts[b]++
+	}
+
+	absAvg := make([]float64, numBuckets)
+	signAvg := make([]float64, numBuckets)
+	for i := 0; i < numBuckets; i++ {
+		if counts[i] > 0 {
+			absAvg[i] = absSum[i] / float64(counts[i])
+			signAvg[i] = signSum[i] / float64(counts[i])
+		}
+	}
+
+	fillGaps(absAvg, counts)
+	fillGaps(signAvg, counts)
+
+	// Use a fixed 15m window; if we have no track length info use a small default.
+	// Since MatchScore doesn't receive trackLengthM, use 1 as the minimum window.
+	smoothed := boxSmooth(absAvg, 1)
+	isCorner := hysteresis(smoothed, 5.0, 2.5)
+
+	// Build a bool slice of transitions: transition[i] = true if isCorner[i] != isCorner[i-1].
+	hasTransition := make([]bool, numBuckets)
+	for i := 1; i < numBuckets; i++ {
+		if isCorner[i] != isCorner[i-1] {
+			hasTransition[i] = true
+		}
+	}
+
+	// Check each interior boundary (segments[1], segments[2], ...).
+	const tolerance = 20 // ±2% = ±20 buckets
+	matched := 0
+	total := len(segs) - 1
+	for _, seg := range segs[1:] {
+		b := int(seg.EntryPct * float32(numBuckets))
+		lo := b - tolerance
+		if lo < 0 {
+			lo = 0
+		}
+		hi := b + tolerance
+		if hi >= numBuckets {
+			hi = numBuckets - 1
+		}
+		for j := lo; j <= hi; j++ {
+			if hasTransition[j] {
+				matched++
+				break
+			}
+		}
+	}
+
+	return float32(matched) / float32(total)
+}
+
 // labelSegments converts rawSegs to named Segments with pct and metre values.
 func labelSegments(rawSegs []rawSeg, trackLengthM float64) []Segment {
 	segments := make([]Segment, 0, len(rawSegs))

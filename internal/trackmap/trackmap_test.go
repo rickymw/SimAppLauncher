@@ -123,6 +123,82 @@ func TestLoad_FileNotFound(t *testing.T) {
 	}
 }
 
+// ---- Confidence tests ----
+
+func TestConfidence_Low(t *testing.T) {
+	tm := &TrackMap{LapsUsed: 1}
+	if got := tm.Confidence(); got != ConfLow {
+		t.Errorf("Confidence() = %q, want %q", got, ConfLow)
+	}
+}
+
+func TestConfidence_Moderate(t *testing.T) {
+	tm := &TrackMap{LapsUsed: 5}
+	if got := tm.Confidence(); got != ConfModerate {
+		t.Errorf("Confidence() = %q, want %q", got, ConfModerate)
+	}
+}
+
+func TestConfidence_High(t *testing.T) {
+	tm := &TrackMap{LapsUsed: 15}
+	if got := tm.Confidence(); got != ConfHigh {
+		t.Errorf("Confidence() = %q, want %q", got, ConfHigh)
+	}
+}
+
+// ---- MatchScore tests ----
+
+// TestMatchScore_PerfectMatch builds samples that match the stored segments
+// exactly (LatAccel=15 in corner buckets, 0 in straight buckets).
+// Expects a score >= 0.85.
+func TestMatchScore_PerfectMatch(t *testing.T) {
+	// Segments: S1 [0.0, 0.25), T1 [0.25, 0.50), S2 [0.50, 0.75), T2 [0.75, 1.0)
+	segs := []Segment{
+		{Name: "S1", Kind: KindStraight, EntryPct: 0.00, ExitPct: 0.25},
+		{Name: "T1", Kind: KindCorner, EntryPct: 0.25, ExitPct: 0.50},
+		{Name: "S2", Kind: KindStraight, EntryPct: 0.50, ExitPct: 0.75},
+		{Name: "T2", Kind: KindCorner, EntryPct: 0.75, ExitPct: 1.00},
+	}
+
+	// Build 1000 samples (1 per bucket) with LatAccel=15 in corner regions,
+	// 0 in straight regions.
+	n := 1000
+	samples := make([]Sample, n)
+	for i := 0; i < n; i++ {
+		pct := float32(i) / float32(n)
+		var lat float32
+		// Corner buckets: [250,500) and [750,1000)
+		if (i >= 250 && i < 500) || (i >= 750 && i < 1000) {
+			lat = 15.0
+		}
+		samples[i] = Sample{LapDistPct: pct, LatAccel: lat}
+	}
+
+	score := MatchScore(samples, segs)
+	if score < 0.85 {
+		t.Errorf("MatchScore() = %.3f, want >= 0.85", score)
+	}
+}
+
+func TestMatchScore_NoSegments(t *testing.T) {
+	samples := []Sample{{LapDistPct: 0.5, LatAccel: 5.0}}
+	score := MatchScore(samples, nil)
+	if score != 1.0 {
+		t.Errorf("MatchScore(samples, nil) = %.3f, want 1.0", score)
+	}
+}
+
+func TestMatchScore_SingleSegment(t *testing.T) {
+	segs := []Segment{
+		{Name: "S1", Kind: KindStraight, EntryPct: 0.0, ExitPct: 1.0},
+	}
+	samples := []Sample{{LapDistPct: 0.5, LatAccel: 0.0}}
+	score := MatchScore(samples, segs)
+	if score != 1.0 {
+		t.Errorf("MatchScore(samples, oneSegment) = %.3f, want 1.0", score)
+	}
+}
+
 // TestSaveLoad_Roundtrip saves a TrackMapFile and loads it back, verifying all fields survive.
 func TestSaveLoad_Roundtrip(t *testing.T) {
 	dir := t.TempDir()
