@@ -175,6 +175,29 @@ If boundaries drift or you want to regenerate them from a new session, run with 
 
 Segments are labelled automatically (T1, S1, T3-T4, etc.). To use real corner names, hand-edit the `name` field in `trackmap.json` — the file is plain JSON and your edits are preserved across future sessions.
 
+### AI Coaching
+
+Claude can run the analysis and deliver structured coaching feedback automatically — no copy-paste required.
+
+**Prerequisites:** [Claude Code](https://claude.com/claude-code) running in this repo directory.
+
+**What to say:**
+
+> "Coach me on my latest session"
+> "Analyse my last session and give me coaching feedback"
+> "Coach me on `session.ibt`"
+
+**What Claude does:**
+
+1. Runs `analyze` to read the lap list and identify the best flying lap and most recent flying lap
+2. Runs `analyze -compare <most-recent>,<best>` to produce a side-by-side segment comparison
+3. Reads `coach.md` (the coaching framework at the repo root) to structure its analysis
+4. Delivers per-segment findings and a **Top 3 Actions** list ranked by estimated time gain
+
+The coaching framework is in `coach.md` at the repo root. You can edit it to adjust the analysis style, add track-specific notes, or change the output format.
+
+---
+
 ### Out/in lap detection
 
 A lap is flagged as an **out lap** if entry speed < 5 m/s (pit/grid exit), an **in lap** if exit speed < 5 m/s (pit entry). Either type is shown in the lap list but skipped by best-lap auto-selection. You can still force-analyze them with `-lap N`.

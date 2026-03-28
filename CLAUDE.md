@@ -31,6 +31,17 @@ simapplauncher analyze -update-map session.ibt           # re-detect track segme
 simapplauncher analyze -geo-method lataccel session.ibt  # use lateral G instead of GPS curvature
 ```
 
+## AI Coaching workflow
+When the user asks to be coached, to analyse their session, or to review a lap, use Bash to run the analyze command — do not ask them to paste output.
+
+1. Run `.\simapplauncher.exe analyze` (or with a specific `.ibt` path) to get the lap list
+2. Identify the **best lap** ("Selecting best lap: Lap N") and the **most recent flying lap** (highest-numbered flying lap that isn't the best)
+3. Run `.\simapplauncher.exe analyze -compare <most-recent-flying>,<best>` to get the segment comparison
+4. Read `coach.md` (repo root) for the full coaching framework, column reference, and output format
+5. Deliver per-segment findings and a **Top 3 Actions** list
+
+If the user specifies a file or particular lap numbers, pass those through. If there is only one flying lap, skip step 3 and analyse the single-lap output instead.
+
 ## Architecture
 
 ### Key interface
