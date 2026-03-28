@@ -22,11 +22,12 @@ go test -tags e2e -v ./internal/launcher/ -run TestE2E_FullStack -timeout 120s
 simapplauncher start                                   # launch all apps in config order
 simapplauncher stop                                    # kill all apps
 simapplauncher status                                  # print running/stopped state
+simapplauncher analyze                                 # best flying lap from most recently modified .ibt in ibtDir
 simapplauncher analyze session.ibt                     # best flying lap from file
 simapplauncher analyze -lap 3 session.ibt              # specific lap
 simapplauncher analyze -compare 2,3 session.ibt        # side-by-side lap comparison
 simapplauncher analyze -update-map session.ibt         # re-detect track segments from this session
-simapplauncher analyze -geo-method latlon session.ibt  # detect using GPS curvature instead of lateral G
+simapplauncher analyze -geo-method lataccel session.ibt  # detect using lateral G instead of GPS curvature
 ```
 
 ## Architecture
@@ -48,6 +49,7 @@ simapplauncher analyze -geo-method latlon session.ibt  # detect using GPS curvat
 
 Top-level fields:
 - `driver` — iRacing `UserName` (e.g. `"Ricky Maw"`). Used by `analyze` to match the player's car in multi-class sessions. Case-insensitive. Falls back to `DriverCarIdx` if omitted or no match.
+- `ibtDir` — directory to search for `.ibt` files when none is passed to `analyze` (e.g. `"C:\\Users\\ricky\\Documents\\iRacing\\telemetry"`). When set, `analyze` with no file argument opens the most recently modified `.ibt` in this directory.
 - `apps` — list of apps to launch/stop.
 
 The `processName` field is the exe stem used for `tasklist`/`taskkill`. Falls back to `name` if empty. Must match Task Manager's image name, which may differ from the launched exe if the app spawns a child process.
@@ -122,7 +124,7 @@ Geometry confidence: `low` (< 3 laps), `moderate` (3–10 laps), `high` (> 10 la
 9. Print segment table or comparison table; `Entry → Exit` columns show effective (braking-adjusted) boundaries
 
 `-update-map` forces re-detection from the current session regardless of existing data.
-`-geo-method latlon` uses GPS curvature for detection instead of lateral G; falls back to `lataccel` with a warning if `Lat`/`Lon` channels are not present in the file. The method used is stored in `trackmap.json` and shown in the Map: output line.
+`-geo-method` controls segment detection: `latlon` (default, GPS curvature) or `lataccel` (lateral G). `latlon` falls back to `lataccel` with a warning if `Lat`/`Lon` channels are not present in the file. The method used is stored in `trackmap.json` and shown in the Map: output line.
 
 ## Deployment
 - Binary + config live in `G:\RACING\SimAppLauncher\` (the repo root)
@@ -136,7 +138,7 @@ Geometry confidence: `low` (< 3 laps), `moderate` (3–10 laps), `high` (> 10 la
 - `stop` kills by image name — affects all instances of a process if multiple are running
 - `processName` whitespace is not trimmed — accidental spaces will cause silent match failures
 - `SegmentDeltas` requires both laps to have monotonically increasing `LapDistPct`; laps with backward tracking (e.g. short-cuts) may produce incorrect deltas
-- Segment detection with `lataccel` method only uses lateral G — pure braking zones with no lateral load appear as straights (use `-geo-method latlon` to fix this)
+- Segment detection with `lataccel` method only uses lateral G — pure braking zones with no lateral load appear as straights (`latlon` default avoids this)
 - S/F line wraparound: if the first and last segments are both straights they are not automatically merged into one
 
 ## Open improvements
@@ -144,3 +146,4 @@ Geometry confidence: `low` (< 3 laps), `moderate` (3–10 laps), `high` (> 10 la
 - CSV parsing in `IsRunning` and `parsePIDFromTasklist` is naive — works because PID is always field[1], but would break if Windows changes the column order
 - Segment names are auto-labelled T1/S1/etc — no way to assign real corner names without hand-editing `trackmap.json`
 - Same-direction corner complexes (e.g. Maggotts/Becketts) are not merged; only direction-reversing chicanes are detected
+- `latlon` geo-method could be improved by using `VelocityX`/`VelocityY` channels (world-frame velocity) to compute heading-change rate instead of GPS curvature — avoids GPS quantisation entirely and should give a cleaner curvature proxy than bin-averaged lat/lon positions

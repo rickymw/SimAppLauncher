@@ -7,6 +7,7 @@ import (
 
 type Config struct {
 	Driver string `json:"driver"` // iRacing UserName used by lapanalyze to identify the player's car
+	IbtDir string `json:"ibtDir"` // directory to search for .ibt files when none is specified on the command line
 	Apps   []App  `json:"apps"`
 }
 

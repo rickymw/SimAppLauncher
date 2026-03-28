@@ -4,6 +4,7 @@ import (
 	"flag"
 	"fmt"
 	"os"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"time"
@@ -22,7 +23,7 @@ func RunAnalyze(args []string, cfg config.Config, trackmapPath string) {
 	lapNum := fs.Int("lap", 0, "lap number to analyze (0 = best completed lap)")
 	compare := fs.String("compare", "", "compare two laps, e.g. -compare 1,2")
 	updateMap := fs.Bool("update-map", false, "ignore existing track map and re-detect from this session")
-	geoMethod := fs.String("geo-method", "lataccel", "segment detection method: lataccel (default) or latlon (GPS curvature)")
+	geoMethod := fs.String("geo-method", "latlon", "segment detection method: latlon (default, GPS curvature) or lataccel")
 	fs.Usage = func() {
 		fmt.Fprintln(os.Stderr, "Usage: simapplauncher [-config <path>] analyze [flags] <file.ibt>")
 		fmt.Fprintln(os.Stderr)
@@ -36,12 +37,27 @@ func RunAnalyze(args []string, cfg config.Config, trackmapPath string) {
 	}
 	_ = fs.Parse(args)
 
-	if fs.NArg() != 1 {
+	var ibtPath string
+	switch fs.NArg() {
+	case 1:
+		ibtPath = fs.Arg(0)
+	case 0:
+		if cfg.IbtDir == "" {
+			fs.Usage()
+			os.Exit(1)
+		}
+		var err error
+		ibtPath, err = latestIbtFile(cfg.IbtDir)
+		if err != nil {
+			analyzeDie("finding latest .ibt in %s: %v", cfg.IbtDir, err)
+		}
+		fmt.Printf("File:    %s\n", filepath.Base(ibtPath))
+	default:
 		fs.Usage()
 		os.Exit(1)
 	}
 
-	f, err := ibt.Open(fs.Arg(0))
+	f, err := ibt.Open(ibtPath)
 	if err != nil {
 		analyzeDie("opening file: %v", err)
 	}
@@ -491,6 +507,33 @@ func fallback(s, def string) string {
 func analyzeDie(format string, args ...any) {
 	fmt.Fprintf(os.Stderr, "analyze: "+format+"\n", args...)
 	os.Exit(1)
+}
+
+// latestIbtFile returns the path of the most recently modified .ibt file in dir.
+func latestIbtFile(dir string) (string, error) {
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return "", err
+	}
+	var latest string
+	var latestTime time.Time
+	for _, e := range entries {
+		if e.IsDir() || filepath.Ext(e.Name()) != ".ibt" {
+			continue
+		}
+		info, err := e.Info()
+		if err != nil {
+			continue
+		}
+		if info.ModTime().After(latestTime) {
+			latestTime = info.ModTime()
+			latest = filepath.Join(dir, e.Name())
+		}
+	}
+	if latest == "" {
+		return "", fmt.Errorf("no .ibt files found in %s", dir)
+	}
+	return latest, nil
 }
 
 // hasMissingBrakeEntries reports whether any corner or chicane segment in segs

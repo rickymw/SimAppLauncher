@@ -1,5 +1,6 @@
 {
   "driver": "Ricky Maw",
+  "ibtDir": "C:\\Users\\ricky\\Documents\\iRacing\\telemetry",
   "apps": [
     {
       "name": "SimHubWPF",
