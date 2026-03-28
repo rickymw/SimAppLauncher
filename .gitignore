@@ -7,3 +7,10 @@
 # Go build artifacts (executables are intentionally committed as deployment artefacts)
 # Uncomment the lines below if you don't want to commit binaries:
 # *.exe
+
+# Go test coverage output
+cov.out
+coverage.out
+
+# Live data files generated at runtime (not source-controlled)
+trackmap.json
