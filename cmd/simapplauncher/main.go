@@ -40,10 +40,11 @@ func main() {
 	}
 
 	trackmapPath := filepath.Join(filepath.Dir(*cfgPath), "trackmap.json")
+	pbPath := filepath.Join(filepath.Dir(*cfgPath), "pb.json")
 
 	switch args[0] {
 	case "analyze":
-		RunAnalyze(args[1:], cfg, trackmapPath)
+		RunAnalyze(args[1:], cfg, trackmapPath, pbPath)
 	default:
 		pm := launcher.NewProcessManager()
 		switch args[0] {

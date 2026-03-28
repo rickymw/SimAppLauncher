@@ -147,3 +147,5 @@ Geometry confidence: `low` (< 3 laps), `moderate` (3–10 laps), `high` (> 10 la
 - Segment names are auto-labelled T1/S1/etc — no way to assign real corner names without hand-editing `trackmap.json`
 - Same-direction corner complexes (e.g. Maggotts/Becketts) are not merged; only direction-reversing chicanes are detected
 - `latlon` geo-method could be improved by using `VelocityX`/`VelocityY` channels (world-frame velocity) to compute heading-change rate instead of GPS curvature — avoids GPS quantisation entirely and should give a cleaner curvature proxy than bin-averaged lat/lon positions
+- Sector times: group segments into logical sectors and show sector time per lap, so the coachable third of the track is immediately visible without running `-compare`
+- Exit speed vs straight entry speed: surface the direct relationship between corner exit speed and the subsequent straight's max speed — the primary measure of whether a corner exit is costing time on the following straight

@@ -32,7 +32,7 @@ type Zone struct {
 	BrakePct      float32 // % of samples with brake pressure > 2% (time on brakes)
 	ThrottlePct   float32 // % of samples at full throttle (> 95%)
 	DominantGear  int32   // modal gear (most common; neutral/reverse excluded if possible)
-	LatGMax       float32 // peak lateral G (absolute value)
+	LatGAvg       float32 // average lateral G (absolute value)
 	LongDecelMax  float32 // peak deceleration G (0 during acceleration)
 	ABSCount      int     // samples where ABS was active
 	CoastSamples  int     // samples with throttle < 5% AND brake < 5%
@@ -81,10 +81,7 @@ func ZoneStats(lap *Lap) []Zone {
 				thrFullCounts[i]++
 			}
 
-			latG := abs32(s.LatAccel) / grav
-			if latG > z.LatGMax {
-				z.LatGMax = latG
-			}
+			z.LatGAvg += abs32(s.LatAccel) / grav
 			// LongAccel is positive for forward acceleration, negative under braking.
 			// LongDecelMax tracks peak deceleration (positive g value).
 			decel := max(-s.LongAccel/grav, float32(0))
@@ -109,6 +106,7 @@ func ZoneStats(lap *Lap) []Zone {
 		n := float32(len(samples))
 		z.BrakePct = 100 * float32(brakeOnCounts[i]) / n
 		z.ThrottlePct = 100 * float32(thrFullCounts[i]) / n
+		z.LatGAvg /= n
 
 		// Dominant gear: modal value, preferring forward gears (>0) over neutral/reverse.
 		bestGear, bestCount := int32(0), 0
@@ -229,7 +227,7 @@ type SegZone struct {
 	PeakBrakePct  float32 // maximum brake pressure seen in the segment (0–100%)
 	ThrottlePct   float32 // % of samples at full throttle (> 95%)
 	DominantGear  int32   // max forward gear for straights; min forward gear for corners/chicanes
-	LatGMax       float32 // peak abs(LatAccel)/9.81
+	LatGAvg       float32 // average abs(LatAccel)/9.81
 	ABSCount      int     // samples where ABS was active
 	CoastSamples  int     // samples with throttle<5% AND brake<5%
 	SampleCount   int     // total samples in the segment
@@ -366,6 +364,7 @@ func SegmentStats(lap *Lap, segs []trackmap.Segment) []SegZone {
 	}
 
 	minSpeeds := make([]float32, len(segs))
+	latGSums := make([]float32, len(segs))
 	brakeOnCounts := make([]int, len(segs))
 	thrFullCounts := make([]int, len(segs))
 	// minGear / maxGear track the lowest and highest forward gear (≥1) per segment.
@@ -402,9 +401,7 @@ func SegmentStats(lap *Lap, segs []trackmap.Segment) []SegZone {
 		if s.Throttle > fullThrottleThresh {
 			thrFullCounts[idx]++
 		}
-		if latG := abs32(s.LatAccel) / grav; latG > z.LatGMax {
-			z.LatGMax = latG
-		}
+		latGSums[idx] += abs32(s.LatAccel) / grav
 		if s.ABSActive {
 			z.ABSCount++
 		}
@@ -435,6 +432,7 @@ func SegmentStats(lap *Lap, segs []trackmap.Segment) []SegZone {
 		n := float32(zones[idx].SampleCount)
 		zones[idx].BrakePct = 100 * float32(brakeOnCounts[idx]) / n
 		zones[idx].ThrottlePct = 100 * float32(thrFullCounts[idx]) / n
+		zones[idx].LatGAvg = latGSums[idx] / n
 
 		// Gear selection depends on segment kind:
 		//   Straight → highest gear reached (max speed gear)

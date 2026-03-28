@@ -12,13 +12,14 @@ import (
 	"github.com/rickymw/SimAppLauncher/internal/analysis"
 	"github.com/rickymw/SimAppLauncher/internal/config"
 	"github.com/rickymw/SimAppLauncher/internal/ibt"
+	"github.com/rickymw/SimAppLauncher/internal/pb"
 	"github.com/rickymw/SimAppLauncher/internal/trackmap"
 )
 
 // RunAnalyze implements the "analyze" subcommand.
 // args contains everything after "analyze" on the command line.
 // trackmapPath is the path to trackmap.json; "" disables load/save.
-func RunAnalyze(args []string, cfg config.Config, trackmapPath string) {
+func RunAnalyze(args []string, cfg config.Config, trackmapPath, pbPath string) {
 	fs := flag.NewFlagSet("analyze", flag.ExitOnError)
 	lapNum := fs.Int("lap", 0, "lap number to analyze (0 = best completed lap)")
 	compare := fs.String("compare", "", "compare two laps, e.g. -compare 1,2")
@@ -292,14 +293,43 @@ func RunAnalyze(args []string, cfg config.Config, trackmapPath string) {
 		}
 	}
 
+	// PB tracking: load, check, update, display.
+	if pbPath != "" && bestLap != nil && meta.CarScreenName != "" && meta.TrackDisplayName != "" {
+		pbf, err := pb.Load(pbPath)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "Warning: could not load pb.json: %v\n", err)
+			pbf = pb.File{}
+		}
+
+		sessionDate := f.DiskHeader().SessionStartDate.Format("2006-01-02")
+		weather := analysis.ParseWeather(f.SessionInfo())
+		formatted := analysis.FormatLapTime(bestLap.LapTime)
+
+		isNew := pb.Update(pbf, meta.CarScreenName, meta.TrackDisplayName,
+			bestLap.LapTime, formatted, sessionDate, weather)
+
+		if isNew {
+			if err := pb.Save(pbPath, pbf); err != nil {
+				fmt.Fprintf(os.Stderr, "Warning: could not save pb.json: %v\n", err)
+			}
+			fmt.Printf("PB:      %s — set %s, %s  [NEW PB!]\n\n",
+				formatted, sessionDate, fallback(weather, "weather unknown"))
+		} else {
+			stored := pbf[pb.Key(meta.CarScreenName, meta.TrackDisplayName)]
+			delta := bestLap.LapTime - stored.LapTime
+			fmt.Printf("PB:      %s — set %s, %s  (+%.3fs behind)\n\n",
+				stored.LapTimeFormatted, stored.Date,
+				fallback(stored.Weather, "weather unknown"), delta)
+		}
+	}
+
 	fmt.Println("Laps:")
 	for _, l := range laps {
 		if l.LapTime > 0 {
-			fmt.Printf("  Lap %2d: %s (%d samples) [%s]\n",
-				l.Number, analysis.FormatLapTime(l.LapTime), len(l.Samples), l.Kind)
+			fmt.Printf("  Lap %2d: %s [%s]\n",
+				l.Number, analysis.FormatLapTime(l.LapTime), l.Kind)
 		} else {
-			fmt.Printf("  Lap %2d: incomplete (%d samples) [%s]\n",
-				l.Number, len(l.Samples), l.Kind)
+			fmt.Printf("  Lap %2d: incomplete [%s]\n", l.Number, l.Kind)
 		}
 	}
 	fmt.Println()
@@ -399,7 +429,7 @@ func printZoneTable(lap *analysis.Lap, zones []analysis.Zone) {
 			z.SpeedEntryKPH, z.SpeedMinKPH, z.SpeedExitKPH,
 			z.DominantGear,
 			z.BrakePct, z.ThrottlePct,
-			z.LatGMax,
+			z.LatGAvg,
 			z.ABSCount, z.CoastSamples)
 	}
 	fmt.Println()
@@ -439,21 +469,22 @@ func printComparisonTable(lap1, lap2 *analysis.Lap, zones1, zones2 []analysis.Zo
 //	   1  | S1           |  0.0% →   3.2%  |  202.7 |  202.7 |  241.3 |    5 |    0% |  100% | 0.31 |   0 |     0
 func printSegmentTable(lap *analysis.Lap, zones []analysis.SegZone) {
 	fmt.Printf("Lap %d — %s\n\n", lap.Number, analysis.FormatLapTime(lap.LapTime))
-	fmt.Println(" Seg  | Name         |  Entry →   Exit | EntSpd | MinSpd | ExtSpd | Gear | Brk%  | PkBrk | FThr% | LatG | ABS | Coast")
-	fmt.Println("------|--------------|-----------------|--------|--------|--------|------|-------|-------|-------|------|-----|------")
+	fmt.Println(" Seg  | Name         | EntSpd | MinSpd | ExtSpd | Gear | Brk%  | PkBrk | FThr% | AvgLatG | ABS | Coast")
+	fmt.Println("------|--------------|--------|--------|--------|------|-------|-------|-------|---------|-----|------")
 	for i, z := range zones {
 		if z.SampleCount == 0 {
-			fmt.Printf("  %2d  | %-12s | %5.1f%% → %5.1f%% |    --- |    --- |    --- |   -- |    -- |    -- |    -- |   -- |  -- |   ---\n",
-				i+1, z.Name, z.EntryPct*100, z.ExitPct*100)
+			fmt.Printf("  %2d  | %-12s |    --- |    --- |    --- |   -- |    -- |    -- |    -- |      -- |  -- |    --\n",
+				i+1, z.Name)
 			continue
 		}
-		fmt.Printf("  %2d  | %-12s | %5.1f%% → %5.1f%% | %6.1f | %6.1f | %6.1f |  %3d | %4.0f%% | %4.0f%% | %4.0f%% | %4.2f | %3d | %5d\n",
-			i+1, z.Name, z.EntryPct*100, z.ExitPct*100,
+		coastSecs := float32(z.CoastSamples) / 60.0
+		fmt.Printf("  %2d  | %-12s | %6.1f | %6.1f | %6.1f |  %3d | %4.0f%% | %4.0f%% | %4.0f%% |    %4.2f | %3d | %5.2fs\n",
+			i+1, z.Name,
 			z.SpeedEntryKPH, z.SpeedMinKPH, z.SpeedExitKPH,
 			z.DominantGear,
 			z.BrakePct, z.PeakBrakePct, z.ThrottlePct,
-			z.LatGMax,
-			z.ABSCount, z.CoastSamples)
+			z.LatGAvg,
+			z.ABSCount, coastSecs)
 	}
 	fmt.Println()
 }
@@ -464,8 +495,8 @@ func printSegmentComparisonTable(lap1, lap2 *analysis.Lap, zones1, zones2 []anal
 		lap1.Number, analysis.FormatLapTime(lap1.LapTime),
 		lap2.Number, analysis.FormatLapTime(lap2.LapTime))
 	fmt.Printf("Overall delta (B−A): %+.3fs\n\n", lap2.LapTime-lap1.LapTime)
-	fmt.Println(" Seg  | Name         |  Entry →   Exit | A.Min | B.Min | A.Brk%| B.Brk%|A.PkBk |B.PkBk |A.FThr%|B.FThr%| A.ABS | B.ABS |   Δ(s)")
-	fmt.Println("------|--------------|-----------------|-------|-------|-------|-------|-------|-------|-------|-------|-------|-------|-------")
+	fmt.Println(" Seg  | Name         | A.Min | B.Min | A.Brk%| B.Brk%|A.PkBk |B.PkBk |A.FThr%|B.FThr%| A.ABS | B.ABS |   Δ(s)")
+	fmt.Println("------|--------------|-------|-------|-------|-------|-------|-------|-------|-------|-------|-------|-------")
 	for i, z1 := range zones1 {
 		var z2 analysis.SegZone
 		if i < len(zones2) {
@@ -475,8 +506,8 @@ func printSegmentComparisonTable(lap1, lap2 *analysis.Lap, zones1, zones2 []anal
 		if i < len(deltas) {
 			d = deltas[i]
 		}
-		fmt.Printf("  %2d  | %-12s | %5.1f%% → %5.1f%% | %5.1f | %5.1f | %4.0f%% | %4.0f%% | %4.0f%% | %4.0f%% | %4.0f%% | %4.0f%% | %5d | %5d | %+6.3f\n",
-			i+1, z1.Name, z1.EntryPct*100, z1.ExitPct*100,
+		fmt.Printf("  %2d  | %-12s | %5.1f | %5.1f | %4.0f%% | %4.0f%% | %4.0f%% | %4.0f%% | %4.0f%% | %4.0f%% | %5d | %5d | %+6.3f\n",
+			i+1, z1.Name,
 			z1.SpeedMinKPH, z2.SpeedMinKPH,
 			z1.BrakePct, z2.BrakePct,
 			z1.PeakBrakePct, z2.PeakBrakePct,
