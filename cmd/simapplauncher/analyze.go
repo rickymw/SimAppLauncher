@@ -301,7 +301,7 @@ func RunAnalyze(args []string, cfg config.Config, trackmapPath, pbPath string) {
 			pbf = pb.File{}
 		}
 
-		sessionDate := f.DiskHeader().SessionStartDate.Format("2006-01-02")
+		sessionDate := f.DiskHeader().SessionStartDate.Local().Format("2006-01-02")
 		weather := analysis.ParseWeather(f.SessionInfo())
 		formatted := analysis.FormatLapTime(bestLap.LapTime)
 

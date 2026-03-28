@@ -137,35 +137,34 @@ func FormatLapTime(secs float32) string {
 	return fmt.Sprintf("%d:%02d.%03d", mins, wholeS, ms)
 }
 
-// ParseWeather extracts a human-readable weather summary from the session YAML.
-// Returns a string like "Partly Cloudy, 27°C", or "" if the fields are absent.
+// ParseWeather extracts air and track temperatures from the session YAML.
+// Returns a string like "Air 27°C, Track 40°C", or "" if the fields are absent.
+// TrackTemp is tried first; falls back to TrackSurfaceTemp (WeekendInfo field).
 func ParseWeather(yaml string) string {
-	skiesMap := map[int]string{0: "Clear", 1: "Partly Cloudy", 2: "Mostly Cloudy", 3: "Overcast"}
-
-	skiesStr := yamlField(yaml, "Skies")
-	var skiesLabel string
-	if n, err := strconv.Atoi(skiesStr); err == nil {
-		skiesLabel = skiesMap[n]
-	}
-	if skiesLabel == "" {
-		skiesLabel = skiesStr // already a string in some iRacing builds
-	}
-
-	airTempStr := yamlField(yaml, "AirTemp")
-	var tempLabel string
-	if parts := strings.Fields(airTempStr); len(parts) >= 1 {
-		if f, err := strconv.ParseFloat(parts[0], 64); err == nil {
-			tempLabel = fmt.Sprintf("%.0f°C", f)
+	parseTemp := func(key string) string {
+		val := yamlField(yaml, key)
+		if parts := strings.Fields(val); len(parts) >= 1 {
+			if f, err := strconv.ParseFloat(parts[0], 64); err == nil {
+				return fmt.Sprintf("%.0f°C", f)
+			}
 		}
+		return ""
+	}
+
+	airTemp := parseTemp("AirTemp")
+
+	trackTemp := parseTemp("TrackTemp")
+	if trackTemp == "" {
+		trackTemp = parseTemp("TrackSurfaceTemp")
 	}
 
 	switch {
-	case skiesLabel != "" && tempLabel != "":
-		return skiesLabel + ", " + tempLabel
-	case skiesLabel != "":
-		return skiesLabel
-	case tempLabel != "":
-		return tempLabel
+	case airTemp != "" && trackTemp != "":
+		return "Air " + airTemp + ", Track " + trackTemp
+	case airTemp != "":
+		return "Air " + airTemp
+	case trackTemp != "":
+		return "Track " + trackTemp
 	default:
 		return ""
 	}
