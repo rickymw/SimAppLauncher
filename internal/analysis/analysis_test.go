@@ -11,6 +11,224 @@ import (
 	"github.com/rickymw/SimAppLauncher/internal/trackmap"
 )
 
+// ---- helpers for direct Lap construction ----
+
+// makeLap builds a Lap directly from a SampleData slice without needing an
+// ibt file. Used by tests that exercise zones.go logic in isolation.
+func makeFlyingLap(samples []SampleData) Lap {
+	var lapTime float32
+	if len(samples) > 1 {
+		lapTime = float32(samples[len(samples)-1].SessionTime - samples[0].SessionTime)
+	}
+	return Lap{
+		Number:  1,
+		Kind:    KindFlying,
+		LapTime: lapTime,
+		Samples: samples,
+	}
+}
+
+// straightSample returns a sample at pct with full throttle and no braking.
+func straightSample(pct float32, t float64) SampleData {
+	return SampleData{LapDistPct: pct, SessionTime: t, Speed: 50, Throttle: 1.0}
+}
+
+// brakingSample returns a sample at pct with full brake applied.
+func brakingSample(pct float32, t float64) SampleData {
+	return SampleData{LapDistPct: pct, SessionTime: t, Speed: 50, Brake: 0.80}
+}
+
+// ---- ComputeBrakeEntries ----
+
+// TestComputeBrakeEntries_DetectsBrakingOnset verifies that the braking onset
+// before a corner is detected and returned as the effective entry point.
+func TestComputeBrakeEntries_DetectsBrakingOnset(t *testing.T) {
+	// Layout: S1 [0.0, 0.6), T1 [0.6, 1.0)
+	// Braking zone: [0.50, 0.60) — driver brakes on the straight before T1.
+	segs := []trackmap.Segment{
+		{Name: "S1", Kind: trackmap.KindStraight, EntryPct: 0.0, ExitPct: 0.6},
+		{Name: "T1", Kind: trackmap.KindCorner, EntryPct: 0.6, ExitPct: 1.0},
+	}
+
+	const n = 1000
+	samples := make([]SampleData, n)
+	for i := 0; i < n; i++ {
+		pct := float32(i) / float32(n)
+		if pct >= 0.50 && pct < 0.60 {
+			samples[i] = brakingSample(pct, float64(i)/60)
+		} else {
+			samples[i] = straightSample(pct, float64(i)/60)
+		}
+	}
+
+	lap := makeFlyingLap(samples)
+	entries := ComputeBrakeEntries([]Lap{lap}, segs)
+
+	if entries[0] != segs[0].EntryPct {
+		t.Errorf("S1: got %.4f, want %.4f (geometric, unchanged)", entries[0], segs[0].EntryPct)
+	}
+	// Braking starts at ~0.50; allow a tiny tolerance for sample quantisation.
+	if entries[1] < 0.495 || entries[1] > 0.510 {
+		t.Errorf("T1 brake onset: got %.4f, want ~0.500", entries[1])
+	}
+}
+
+// TestComputeBrakeEntries_NoBrakeKeepsGeometric verifies that a corner with no
+// detected braking keeps its geometric EntryPct.
+func TestComputeBrakeEntries_NoBrakeKeepsGeometric(t *testing.T) {
+	segs := []trackmap.Segment{
+		{Name: "S1", Kind: trackmap.KindStraight, EntryPct: 0.0, ExitPct: 0.5},
+		{Name: "T1", Kind: trackmap.KindCorner, EntryPct: 0.5, ExitPct: 1.0},
+	}
+
+	const n = 500
+	samples := make([]SampleData, n)
+	for i := 0; i < n; i++ {
+		samples[i] = straightSample(float32(i)/float32(n), float64(i)/60)
+	}
+
+	lap := makeFlyingLap(samples)
+	entries := ComputeBrakeEntries([]Lap{lap}, segs)
+
+	if entries[1] != segs[1].EntryPct {
+		t.Errorf("T1: got %.4f, want %.4f (geometric, no braking detected)", entries[1], segs[1].EntryPct)
+	}
+}
+
+// TestComputeBrakeEntries_MultiLapAverages verifies that onset is averaged
+// across multiple laps.
+func TestComputeBrakeEntries_MultiLapAverages(t *testing.T) {
+	segs := []trackmap.Segment{
+		{Name: "S1", Kind: trackmap.KindStraight, EntryPct: 0.0, ExitPct: 0.6},
+		{Name: "T1", Kind: trackmap.KindCorner, EntryPct: 0.6, ExitPct: 1.0},
+	}
+
+	makeLapWithBrakeAt := func(brakeStart float32) Lap {
+		const n = 1000
+		samples := make([]SampleData, n)
+		for i := 0; i < n; i++ {
+			pct := float32(i) / float32(n)
+			if pct >= brakeStart && pct < 0.60 {
+				samples[i] = brakingSample(pct, float64(i)/60)
+			} else {
+				samples[i] = straightSample(pct, float64(i)/60)
+			}
+		}
+		return makeFlyingLap(samples)
+	}
+
+	// Lap 1 brakes at 0.48, lap 2 brakes at 0.52 → average ≈ 0.50.
+	laps := []Lap{makeLapWithBrakeAt(0.48), makeLapWithBrakeAt(0.52)}
+	entries := ComputeBrakeEntries(laps, segs)
+
+	if entries[1] < 0.49 || entries[1] > 0.51 {
+		t.Errorf("T1 average onset: got %.4f, want ~0.500", entries[1])
+	}
+}
+
+// TestComputeBrakeEntries_SkipsNonFlying verifies that out laps and in laps are
+// ignored when computing the average.
+func TestComputeBrakeEntries_SkipsNonFlying(t *testing.T) {
+	segs := []trackmap.Segment{
+		{Name: "S1", Kind: trackmap.KindStraight, EntryPct: 0.0, ExitPct: 0.6},
+		{Name: "T1", Kind: trackmap.KindCorner, EntryPct: 0.6, ExitPct: 1.0},
+	}
+
+	// Flying lap brakes at 0.50; out lap brakes at 0.30 (should be ignored).
+	const n = 1000
+	makeTestLap := func(kind LapKind, brakeStart float32) Lap {
+		samples := make([]SampleData, n)
+		for i := 0; i < n; i++ {
+			pct := float32(i) / float32(n)
+			if pct >= brakeStart && pct < 0.60 {
+				samples[i] = brakingSample(pct, float64(i)/60)
+			} else {
+				samples[i] = straightSample(pct, float64(i)/60)
+			}
+		}
+		return Lap{Number: 1, Kind: kind, LapTime: 120, Samples: samples}
+	}
+
+	laps := []Lap{
+		makeTestLap(KindFlying, 0.50),
+		makeTestLap(KindOutLap, 0.30), // must be ignored
+	}
+	entries := ComputeBrakeEntries(laps, segs)
+
+	if entries[1] < 0.495 || entries[1] > 0.510 {
+		t.Errorf("T1: got %.4f, want ~0.500 (out lap should be ignored)", entries[1])
+	}
+}
+
+// ---- SegmentStats effective boundaries ----
+
+// TestSegmentStats_EffectiveBoundaries verifies that when BrakeEntryPct is set
+// on a corner, samples in the braking zone are attributed to the corner and the
+// preceding straight's effective exit is clipped accordingly.
+func TestSegmentStats_EffectiveBoundaries(t *testing.T) {
+	// S1: geometric [0.0, 0.6); T1: geometric [0.6, 1.0), BrakeEntryPct=0.5.
+	// Samples in [0.5, 0.6) are in the braking zone and must go to T1.
+	segs := []trackmap.Segment{
+		{Name: "S1", Kind: trackmap.KindStraight, EntryPct: 0.0, ExitPct: 0.6},
+		{Name: "T1", Kind: trackmap.KindCorner, EntryPct: 0.6, ExitPct: 1.0, BrakeEntryPct: 0.5},
+	}
+
+	const n = 1000
+	samples := make([]SampleData, n)
+	for i := 0; i < n; i++ {
+		pct := float32(i) / float32(n)
+		if pct >= 0.5 {
+			samples[i] = brakingSample(pct, float64(i)/60)
+		} else {
+			samples[i] = straightSample(pct, float64(i)/60)
+		}
+	}
+	lap := makeFlyingLap(samples)
+	zones := SegmentStats(&lap, segs)
+
+	// Effective boundaries in display.
+	if zones[0].ExitPct != 0.5 {
+		t.Errorf("S1 ExitPct: got %.3f, want 0.500 (clipped to BrakeEntryPct)", zones[0].ExitPct)
+	}
+	if zones[1].EntryPct != 0.5 {
+		t.Errorf("T1 EntryPct: got %.3f, want 0.500 (BrakeEntryPct)", zones[1].EntryPct)
+	}
+
+	// S1 should have no braking (all brake samples are at pct ≥ 0.5, now in T1).
+	if zones[0].BrakePct != 0 {
+		t.Errorf("S1 BrakePct: got %.1f%%, want 0%%", zones[0].BrakePct)
+	}
+
+	// T1 should have 100% braking (all its samples have Brake=0.80 > threshold).
+	if zones[1].BrakePct < 99 {
+		t.Errorf("T1 BrakePct: got %.1f%%, want ~100%%", zones[1].BrakePct)
+	}
+}
+
+// TestSegmentStats_EffectiveBoundaries_GeometricFallback verifies that when
+// BrakeEntryPct is zero the geometric EntryPct is used unchanged.
+func TestSegmentStats_EffectiveBoundaries_GeometricFallback(t *testing.T) {
+	segs := []trackmap.Segment{
+		{Name: "S1", Kind: trackmap.KindStraight, EntryPct: 0.0, ExitPct: 0.5},
+		{Name: "T1", Kind: trackmap.KindCorner, EntryPct: 0.5, ExitPct: 1.0}, // BrakeEntryPct=0
+	}
+
+	const n = 500
+	samples := make([]SampleData, n)
+	for i := 0; i < n; i++ {
+		samples[i] = straightSample(float32(i)/float32(n), float64(i)/60)
+	}
+	lap := makeFlyingLap(samples)
+	zones := SegmentStats(&lap, segs)
+
+	if zones[0].ExitPct != 0.5 {
+		t.Errorf("S1 ExitPct: got %.3f, want 0.500 (geometric)", zones[0].ExitPct)
+	}
+	if zones[1].EntryPct != 0.5 {
+		t.Errorf("T1 EntryPct: got %.3f, want 0.500 (geometric)", zones[1].EntryPct)
+	}
+}
+
 // ---- FormatLapTime ----
 
 func TestFormatLapTime(t *testing.T) {

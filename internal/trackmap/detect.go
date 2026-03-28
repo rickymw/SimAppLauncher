@@ -7,10 +7,30 @@ import (
 
 const numBuckets = 1000 // 0.1% resolution
 
+// Detection thresholds for the lataccel method (m/s²).
+const (
+	latAccelEnterThresh = 5.0
+	latAccelExitThresh  = 2.5
+)
+
+// Detection thresholds for the latlon curvature method (1/m).
+// curvEnterThresh = 0.004 → R ≤ 250 m (enter corner).
+// curvExitThresh  = 0.0015 → R > 667 m (exit to straight).
+const (
+	curvEnterThresh = 0.004
+	curvExitThresh  = 0.0015
+)
+
+const earthRadiusM = 6_371_000.0
+
 // Sample is the minimal telemetry data required for corner detection.
+// Lat and Lon are only used by DetectFromMultipleLatLon; they are zero-valued
+// (and ignored) when using the default lataccel method.
 type Sample struct {
 	LapDistPct float32
 	LatAccel   float32 // m/s²; positive = left
+	Lat        float64 // decimal degrees; 0 = not available
+	Lon        float64 // decimal degrees; 0 = not available
 }
 
 // rawSeg is an intermediate segment used during detection before final labelling.
@@ -61,9 +81,10 @@ func buildProfile(samples []Sample) (latAbs []float64, latSign []float64, counts
 }
 
 // detectFromProfiles runs the shared detection pipeline on pre-built averaged
-// latAbs and latSign profiles. counts indicates which buckets had data; zero-
-// count buckets are forward-filled.
-func detectFromProfiles(absAvg, signAvg []float64, counts []int, trackLengthM float64) []Segment {
+// abs and sign profiles. counts indicates which buckets had data; zero-count
+// buckets are forward-filled. enterThresh and exitThresh are the hysteresis
+// thresholds in the same units as absAvg (m/s² for lataccel, 1/m for latlon).
+func detectFromProfiles(absAvg, signAvg []float64, counts []int, trackLengthM, enterThresh, exitThresh float64) []Segment {
 	// Forward-fill empty buckets.
 	fillGaps(absAvg, counts)
 	fillGaps(signAvg, counts)
@@ -72,8 +93,8 @@ func detectFromProfiles(absAvg, signAvg []float64, counts []int, trackLengthM fl
 	window := max(1, int(15.0/trackLengthM*numBuckets))
 	smoothed := boxSmooth(absAvg, window)
 
-	// Hysteresis classification (enter ≥5, exit <2.5).
-	isCorner := hysteresis(smoothed, 5.0, 2.5)
+	// Hysteresis classification.
+	isCorner := hysteresis(smoothed, enterThresh, exitThresh)
 
 	// Group consecutive buckets into rawSegs.
 	rawSegs := groupBuckets(isCorner, signAvg)
@@ -125,7 +146,7 @@ func DetectFromMultiple(allSamples [][]Sample, trackLengthM float64) []Segment {
 		}
 	}
 
-	return detectFromProfiles(absAvg, signAvg, anyCounts, trackLengthM)
+	return detectFromProfiles(absAvg, signAvg, anyCounts, trackLengthM, latAccelEnterThresh, latAccelExitThresh)
 }
 
 // Detect analyses a slice of samples and returns a labelled []Segment.
@@ -137,6 +158,149 @@ func Detect(samples []Sample, trackLengthM float64) []Segment {
 		return nil
 	}
 	return DetectFromMultiple([][]Sample{samples}, trackLengthM)
+}
+
+// project converts (lat, lon) in decimal degrees to local (x, y) in metres
+// relative to the origin (lat0, lon0), using an equirectangular projection.
+func project(lat, lon, lat0, lon0 float64) (x, y float64) {
+	cosLat0 := math.Cos(lat0 * math.Pi / 180.0)
+	x = (lon - lon0) * math.Pi / 180.0 * cosLat0 * earthRadiusM
+	y = (lat - lat0) * math.Pi / 180.0 * earthRadiusM
+	return
+}
+
+// signedCurvature returns the signed curvature (1/m) of the arc through three
+// consecutive XY points A→B→C. Positive = left turn. Returns 0 for degenerate
+// input (coincident points or collinear within floating-point precision).
+func signedCurvature(ax, ay, bx, by, cx, cy float64) float64 {
+	abx, aby := bx-ax, by-ay
+	bcx, bcy := cx-bx, cy-by
+	acx, acy := cx-ax, cy-ay
+	cross := abx*bcy - aby*bcx
+	ab := math.Hypot(abx, aby)
+	bc := math.Hypot(bcx, bcy)
+	ac := math.Hypot(acx, acy)
+	denom := ab * bc * ac
+	if denom < 1e-10 {
+		return 0
+	}
+	return 2 * cross / denom
+}
+
+// buildPositionProfile accumulates projected XY positions for a single lap's
+// samples into numBuckets bins. Returns per-bucket XY sums and sample counts.
+// Samples with Lat==0 and Lon==0 are skipped. lat0/lon0 is the projection origin.
+func buildPositionProfile(samples []Sample, lat0, lon0 float64) (xSum, ySum []float64, counts []int) {
+	xSum = make([]float64, numBuckets)
+	ySum = make([]float64, numBuckets)
+	counts = make([]int, numBuckets)
+	for _, s := range samples {
+		if s.Lat == 0 && s.Lon == 0 {
+			continue
+		}
+		b := int(s.LapDistPct * numBuckets)
+		if b < 0 {
+			b = 0
+		}
+		if b >= numBuckets {
+			b = numBuckets - 1
+		}
+		x, y := project(s.Lat, s.Lon, lat0, lon0)
+		xSum[b] += x
+		ySum[b] += y
+		counts[b]++
+	}
+	return
+}
+
+// DetectFromMultipleLatLon detects track segments using geometric curvature
+// derived from GPS (lat/lon) positions rather than lateral acceleration.
+// This correctly identifies pure-braking zones that produce little lateral load.
+//
+// Curvature is computed on bin-averaged positions (not per-sample triplets),
+// which eliminates GPS quantisation noise that would otherwise dominate
+// consecutive 60 Hz samples separated by less than 1 m of arc.
+//
+// Returns nil if no lat/lon data is available in the samples (Lat==0 and
+// Lon==0 for every sample), allowing the caller to fall back to DetectFromMultiple.
+func DetectFromMultipleLatLon(allSamples [][]Sample, trackLengthM float64) []Segment {
+	if len(allSamples) == 0 {
+		return nil
+	}
+
+	// Step 1: shared projection origin from all samples.
+	var latSum, lonSum float64
+	var nPos int
+	for _, samples := range allSamples {
+		for _, s := range samples {
+			if s.Lat != 0 || s.Lon != 0 {
+				latSum += s.Lat
+				lonSum += s.Lon
+				nPos++
+			}
+		}
+	}
+	if nPos == 0 {
+		return nil // lat/lon not available in telemetry
+	}
+	lat0 := latSum / float64(nPos)
+	lon0 := lonSum / float64(nPos)
+
+	// Step 2: accumulate bin-averaged XY positions across all laps.
+	xTotal := make([]float64, numBuckets)
+	yTotal := make([]float64, numBuckets)
+	anyCounts := make([]int, numBuckets) // total samples per bin across all laps
+	for _, samples := range allSamples {
+		xs, ys, cnts := buildPositionProfile(samples, lat0, lon0)
+		for i := 0; i < numBuckets; i++ {
+			xTotal[i] += xs[i]
+			yTotal[i] += ys[i]
+			anyCounts[i] += cnts[i]
+		}
+	}
+
+	hasData := false
+	for _, c := range anyCounts {
+		if c > 0 {
+			hasData = true
+			break
+		}
+	}
+	if !hasData {
+		return nil
+	}
+
+	// Step 3: average positions per bin then forward-fill empty bins.
+	xAvg := make([]float64, numBuckets)
+	yAvg := make([]float64, numBuckets)
+	for i := 0; i < numBuckets; i++ {
+		if anyCounts[i] > 0 {
+			xAvg[i] = xTotal[i] / float64(anyCounts[i])
+			yAvg[i] = yTotal[i] / float64(anyCounts[i])
+		}
+	}
+	fillGaps(xAvg, anyCounts)
+	fillGaps(yAvg, anyCounts)
+
+	// Step 4: compute curvature once on the clean averaged positions.
+	// Use bins spaced ~20 m apart for the (prev, centre, next) triplet so
+	// that each arm length is large relative to GPS quantisation noise (~0.1 m).
+	spacing := max(1, int(20.0/trackLengthM*numBuckets))
+	absAvg := make([]float64, numBuckets)
+	signAvg := make([]float64, numBuckets)
+	for i := 0; i < numBuckets; i++ {
+		prev := (i - spacing + numBuckets) % numBuckets
+		next := (i + spacing) % numBuckets
+		kappa := signedCurvature(xAvg[prev], yAvg[prev], xAvg[i], yAvg[i], xAvg[next], yAvg[next])
+		absAvg[i] = math.Abs(kappa)
+		if kappa > 0 {
+			signAvg[i] = 1.0
+		} else if kappa < 0 {
+			signAvg[i] = -1.0
+		}
+	}
+
+	return detectFromProfiles(absAvg, signAvg, anyCounts, trackLengthM, curvEnterThresh, curvExitThresh)
 }
 
 // fillGaps fills zero-count buckets from neighbouring non-empty values.

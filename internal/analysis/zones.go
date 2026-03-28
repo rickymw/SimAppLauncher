@@ -14,8 +14,12 @@ const (
 	grav     float32 = 9.81     // m/s² per g
 
 	// Input thresholds used for BrakePct / ThrottlePct fraction computation.
-	brakeOnThreshold    = float32(0.02) // brake pressure > 2% counts as "on brakes"
-	fullThrottleThresh  = float32(0.95) // throttle > 95% counts as "full throttle"
+	brakeOnThreshold   = float32(0.02) // brake pressure > 2% counts as "on brakes"
+	fullThrottleThresh = float32(0.95) // throttle > 95% counts as "full throttle"
+
+	// brakeEntryThreshold is the minimum brake pressure (0.0–1.0) that marks
+	// the start of a braking zone when scanning backward from a corner entry.
+	brakeEntryThreshold = float32(0.05)
 )
 
 // Zone holds computed statistics for one 5%-of-track section.
@@ -231,17 +235,93 @@ type SegZone struct {
 	SampleCount   int     // total samples in the segment
 }
 
-// segmentForPct returns the index of the segment containing pct, or -1.
-// Segments are assumed to be sorted by EntryPct. The last segment accepts
-// any pct >= its EntryPct (no upper bound) to absorb samples at pct=1.0.
-func segmentForPct(pct float32, segs []trackmap.Segment) int {
-	last := len(segs) - 1
+// effectiveSegEntry returns the effective entry percentage for a segment.
+// For corners and chicanes with a computed BrakeEntryPct, that value is used;
+// otherwise the geometric EntryPct is returned.
+func effectiveSegEntry(seg trackmap.Segment) float32 {
+	if seg.Kind != trackmap.KindStraight && seg.BrakeEntryPct > 0 {
+		return seg.BrakeEntryPct
+	}
+	return seg.EntryPct
+}
+
+// ComputeBrakeEntries scans flying laps to find the average braking onset
+// point before each corner/chicane segment. For each such segment it scans
+// backward from the geometric corner entry, looking for the start of the
+// contiguous braking zone (Brake > brakeEntryThreshold = 5%). The result is
+// averaged across all flying non-partial-start laps.
+//
+// Returns a []float32 of effective entry percentages, one per segment. Straights
+// and corners where no braking was detected keep the geometric EntryPct.
+func ComputeBrakeEntries(laps []Lap, segs []trackmap.Segment) []float32 {
+	entries := make([]float32, len(segs))
 	for i, seg := range segs {
+		entries[i] = seg.EntryPct
+	}
+
+	for i, seg := range segs {
+		if seg.Kind == trackmap.KindStraight {
+			continue
+		}
+
+		// How far back to look: the preceding segment's geometric entry.
+		var minPct float32
+		if i > 0 {
+			minPct = segs[i-1].EntryPct
+		}
+
+		var totalOnset float32
+		var lapCount int
+
+		for k := range laps {
+			lap := &laps[k]
+			if lap.Kind != KindFlying || lap.IsPartialStart {
+				continue
+			}
+
+			// Scan backward from the geometric corner entry to find the start
+			// of the contiguous braking zone immediately before it.
+			onset := seg.EntryPct
+			inBraking := false
+			for j := len(lap.Samples) - 1; j >= 0; j-- {
+				s := lap.Samples[j]
+				if s.LapDistPct >= seg.EntryPct {
+					continue // still in/after the corner
+				}
+				if s.LapDistPct < minPct {
+					break // past the start of the preceding segment
+				}
+				if s.Brake > brakeEntryThreshold {
+					inBraking = true
+					onset = s.LapDistPct // extend onset further back
+				} else if inBraking {
+					break // found the trailing edge of the braking zone
+				}
+			}
+
+			totalOnset += onset
+			lapCount++
+		}
+
+		if lapCount > 0 {
+			entries[i] = totalOnset / float32(lapCount)
+		}
+	}
+
+	return entries
+}
+
+// segmentForEffPct returns the segment index for a sample at pct, using
+// pre-computed effective entry and exit boundaries. Returns -1 if no match.
+// The last segment absorbs any pct >= its effective entry (handles pct=1.0).
+func segmentForEffPct(pct float32, effEntry, effExit []float32) int {
+	last := len(effEntry) - 1
+	for i := range effEntry {
 		if i == last {
-			if pct >= seg.EntryPct {
+			if pct >= effEntry[i] {
 				return i
 			}
-		} else if pct >= seg.EntryPct && pct < seg.ExitPct {
+		} else if pct >= effEntry[i] && pct < effExit[i] {
 			return i
 		}
 	}
@@ -250,18 +330,39 @@ func segmentForPct(pct float32, segs []trackmap.Segment) int {
 
 // SegmentStats computes per-segment statistics for a single lap.
 // Returns one SegZone for each entry in segs.
-// All stats are accumulated in a single pass over lap.Samples.
+//
+// Sample assignment uses effective boundaries: for corners/chicanes with a
+// stored BrakeEntryPct, that value is used as the segment entry instead of the
+// geometric EntryPct. Each preceding straight's effective exit is clipped to the
+// next corner's BrakeEntryPct so that braking-zone samples are attributed to the
+// corner rather than the straight. The EntryPct/ExitPct fields of the returned
+// SegZone reflect these effective boundaries.
 func SegmentStats(lap *Lap, segs []trackmap.Segment) []SegZone {
 	if len(segs) == 0 {
 		return nil
+	}
+
+	// Pre-compute effective entry and exit for each segment.
+	effEntry := make([]float32, len(segs))
+	effExit := make([]float32, len(segs))
+	for i, seg := range segs {
+		effEntry[i] = effectiveSegEntry(seg)
+		effExit[i] = seg.ExitPct
+	}
+	// Clip each segment's exit to the next segment's effective entry so there
+	// are no overlaps and braking-zone samples fall into the corner.
+	for i := 0; i < len(segs)-1; i++ {
+		if effEntry[i+1] < effExit[i] {
+			effExit[i] = effEntry[i+1]
+		}
 	}
 
 	zones := make([]SegZone, len(segs))
 	for i, seg := range segs {
 		zones[i].Name = seg.Name
 		zones[i].Kind = seg.Kind
-		zones[i].EntryPct = seg.EntryPct
-		zones[i].ExitPct = seg.ExitPct
+		zones[i].EntryPct = effEntry[i] // effective boundary for display
+		zones[i].ExitPct = effExit[i]
 	}
 
 	minSpeeds := make([]float32, len(segs))
@@ -276,7 +377,7 @@ func SegmentStats(lap *Lap, segs []trackmap.Segment) []SegZone {
 	}
 
 	for _, s := range lap.Samples {
-		idx := segmentForPct(s.LapDistPct, segs)
+		idx := segmentForEffPct(s.LapDistPct, effEntry, effExit)
 		if idx < 0 {
 			continue
 		}
@@ -362,10 +463,11 @@ func SegmentDeltas(lap1, lap2 *Lap, segs []trackmap.Segment) []float32 {
 		return deltas
 	}
 
-	// Build boundary pct values: one per segment entry + one final at 1.0.
+	// Build boundary pct values using effective entries so that the time delta
+	// for each segment matches the sample attribution in SegmentStats.
 	boundaries := make([]float32, len(segs)+1)
 	for i, seg := range segs {
-		boundaries[i] = seg.EntryPct
+		boundaries[i] = effectiveSegEntry(seg)
 	}
 	boundaries[len(segs)] = 1.0
 

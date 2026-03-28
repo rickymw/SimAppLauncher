@@ -26,6 +26,7 @@ simapplauncher analyze session.ibt                     # best flying lap from fi
 simapplauncher analyze -lap 3 session.ibt              # specific lap
 simapplauncher analyze -compare 2,3 session.ibt        # side-by-side lap comparison
 simapplauncher analyze -update-map session.ibt         # re-detect track segments from this session
+simapplauncher analyze -geo-method latlon session.ibt  # detect using GPS curvature instead of lateral G
 ```
 
 ## Architecture
@@ -59,7 +60,7 @@ Parses iRacing `.ibt` binary files and produces per-lap segment statistics.
 
 - **`internal/ibt`** — low-level `.ibt` parser: reads the file header, variable descriptors, and raw sample buffers. `File.Sample(i)` returns a typed accessor for all channels at sample `i`.
 - **`internal/analysis/lap.go`** — `ExtractLaps` splits the sample stream into `Lap` objects at S/F crossings (detected by `LapDistPct` dropping > 0.5). Classifies each lap as `flying`, `out lap`, `in lap`, or `out/in lap` based on entry/exit speed. `ParseTrackLength` extracts the track length in metres from the session YAML.
-- **`internal/analysis/zones.go`** — `SegmentStats` computes per-segment speed, inputs, G-forces, ABS count, and coasting samples. `SegmentDeltas` interpolates `SessionTime` at segment boundaries for per-segment time deltas. The older fixed `ZoneStats`/`ZoneDeltas` (20 × 5% zones) are retained but not used by the CLI.
+- **`internal/analysis/zones.go`** — `SegmentStats` computes per-segment speed, inputs, G-forces, ABS count, and coasting samples. Uses *effective boundaries*: for corners/chicanes with a stored `BrakeEntryPct`, that value is used as the segment entry (instead of the geometric `EntryPct`), and each preceding straight's exit is clipped to the corner's `BrakeEntryPct` so braking-zone samples are attributed to the corner. `SegmentDeltas` uses the same effective boundaries for timing. `ComputeBrakeEntries(laps, segs)` scans flying laps backward from each corner's geometric entry to find the average braking onset (Brake > 5%), returning a `[]float32` of effective entry percentages. The older fixed `ZoneStats`/`ZoneDeltas` (20 × 5% zones) are retained but not used by the CLI.
 - **`internal/trackmap`** — geometry-based corner/straight detection and persistent storage.
 - **`cmd/simapplauncher/analyze.go`** — `RunAnalyze` implements the `analyze` subcommand.
 
@@ -101,6 +102,11 @@ Segments the track into corners and straights using lateral acceleration telemet
 - `seenSessions` — RFC3339 session start dates; used to deduplicate repeated analysis of the same `.ibt` file
 - `detectedFrom` — date of first detection
 - `source` — always `"auto"` currently
+- `geoMethod` — `"lataccel"` or `"latlon"`; absent on old entries (treated as `"lataccel"`)
+
+Each `Segment` in the list has two boundary representations:
+- `entryPct` / `exitPct` — geometric boundaries (where the track physically bends); used for detection, match scoring, and map updates
+- `brakeEntryPct` — average lap-distance fraction where drivers begin braking for that corner/chicane; computed from telemetry and blended with a weighted average as more sessions are seen; omitted (zero) for straights and not-yet-computed corners; used by `SegmentStats` and `SegmentDeltas` so that braking-zone samples are correctly attributed to the corner across all comparison laps
 
 Geometry confidence: `low` (< 3 laps), `moderate` (3–10 laps), `high` (> 10 laps).
 
@@ -108,13 +114,15 @@ Geometry confidence: `low` (< 3 laps), `moderate` (3–10 laps), `high` (> 10 la
 1. Open `.ibt`, extract session metadata and laps
 2. Find best flying lap; collect all flying non-partial-start laps
 3. Load `trackmap.json`; if an entry exists for this track use it, else detect from all flying laps and save
-4. Compute match score against best lap
-5. Increment `lapsUsed`/`sessionsUsed` once per unique session (keyed by `SessionStartDate`)
-6. Print header (Driver / Car / Track / Samples / Map confidence line)
-7. Print lap list
-8. Print segment table or comparison table
+4. Compute match score against best lap (always uses lataccel for consistency)
+5. On new session or if `brakeEntryPct` is missing from any corner: call `ComputeBrakeEntries`, blend result into stored segments with a weighted average, save
+6. Increment `lapsUsed`/`sessionsUsed` once per unique session (keyed by `SessionStartDate`)
+7. Print header (Driver / Car / Track / Samples / Map confidence line)
+8. Print lap list
+9. Print segment table or comparison table; `Entry → Exit` columns show effective (braking-adjusted) boundaries
 
 `-update-map` forces re-detection from the current session regardless of existing data.
+`-geo-method latlon` uses GPS curvature for detection instead of lateral G; falls back to `lataccel` with a warning if `Lat`/`Lon` channels are not present in the file. The method used is stored in `trackmap.json` and shown in the Map: output line.
 
 ## Deployment
 - Binary + config live in `G:\RACING\SimAppLauncher\` (the repo root)
@@ -128,7 +136,7 @@ Geometry confidence: `low` (< 3 laps), `moderate` (3–10 laps), `high` (> 10 la
 - `stop` kills by image name — affects all instances of a process if multiple are running
 - `processName` whitespace is not trimmed — accidental spaces will cause silent match failures
 - `SegmentDeltas` requires both laps to have monotonically increasing `LapDistPct`; laps with backward tracking (e.g. short-cuts) may produce incorrect deltas
-- Segment detection uses only lateral G — pure braking zones with no lateral load appear as straights
+- Segment detection with `lataccel` method only uses lateral G — pure braking zones with no lateral load appear as straights (use `-geo-method latlon` to fix this)
 - S/F line wraparound: if the first and last segments are both straights they are not automatically merged into one
 
 ## Open improvements

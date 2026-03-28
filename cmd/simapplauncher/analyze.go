@@ -22,6 +22,7 @@ func RunAnalyze(args []string, cfg config.Config, trackmapPath string) {
 	lapNum := fs.Int("lap", 0, "lap number to analyze (0 = best completed lap)")
 	compare := fs.String("compare", "", "compare two laps, e.g. -compare 1,2")
 	updateMap := fs.Bool("update-map", false, "ignore existing track map and re-detect from this session")
+	geoMethod := fs.String("geo-method", "lataccel", "segment detection method: lataccel (default) or latlon (GPS curvature)")
 	fs.Usage = func() {
 		fmt.Fprintln(os.Stderr, "Usage: simapplauncher [-config <path>] analyze [flags] <file.ibt>")
 		fmt.Fprintln(os.Stderr)
@@ -29,6 +30,7 @@ func RunAnalyze(args []string, cfg config.Config, trackmapPath string) {
 		fmt.Fprintln(os.Stderr, "  simapplauncher analyze session.ibt")
 		fmt.Fprintln(os.Stderr, "  simapplauncher analyze -lap 2 session.ibt")
 		fmt.Fprintln(os.Stderr, "  simapplauncher analyze -compare 1,2 session.ibt")
+		fmt.Fprintln(os.Stderr, "  simapplauncher analyze -geo-method latlon session.ibt")
 		fmt.Fprintln(os.Stderr)
 		fs.PrintDefaults()
 	}
@@ -84,9 +86,8 @@ func RunAnalyze(args []string, cfg config.Config, trackmapPath string) {
 
 	if useExisting {
 		segs = existingTM.Segments
-		geomConf = existingTM.Confidence()
 
-		// Compute match score from best lap.
+		// Compute match score from best lap (always uses LatAccel for consistency).
 		if bestLap != nil && trackLengthM > 0 {
 			tsamples := make([]trackmap.Sample, len(bestLap.Samples))
 			for i, s := range bestLap.Samples {
@@ -95,17 +96,50 @@ func RunAnalyze(args []string, cfg config.Config, trackmapPath string) {
 			matchScore = trackmap.MatchScore(tsamples, segs, trackLengthM)
 		}
 
-		// Increment usage counters and re-save, but only once per session.
-		if trackmapPath != "" && !existingTM.HasSession(sessionID) {
+		// Effective confidence is the lower of geometry confidence and match confidence.
+		if matchScore >= 0 {
+			geomConf = existingTM.EffectiveConfidence(matchScore)
+		} else {
+			geomConf = existingTM.Confidence()
+		}
+
+		// Update stored map when: (a) this is a new session, or (b) brake entries
+		// haven't been computed yet (e.g. map was created before this feature).
+		isNewSession := !existingTM.HasSession(sessionID)
+		needsBrake := hasMissingBrakeEntries(existingTM.Segments)
+
+		if trackmapPath != "" && (isNewSession || needsBrake) {
 			flyingCount := 0
 			for _, l := range laps {
 				if l.Kind == analysis.KindFlying && !l.IsPartialStart {
 					flyingCount++
 				}
 			}
-			existingTM.LapsUsed += flyingCount
-			existingTM.SessionsUsed++
-			existingTM.AddSession(sessionID)
+
+			// Compute brake entries from this session and blend into stored values.
+			if flyingCount > 0 {
+				newEntries := analysis.ComputeBrakeEntries(laps, segs)
+				oldLaps := existingTM.LapsUsed
+				for i := range existingTM.Segments {
+					seg := &existingTM.Segments[i]
+					if seg.Kind == trackmap.KindStraight {
+						continue
+					}
+					if seg.BrakeEntryPct == 0 || oldLaps == 0 {
+						seg.BrakeEntryPct = newEntries[i]
+					} else if isNewSession {
+						// Weighted average: blend new session into the running estimate.
+						w := float32(oldLaps + flyingCount)
+						seg.BrakeEntryPct = (seg.BrakeEntryPct*float32(oldLaps) + newEntries[i]*float32(flyingCount)) / w
+					}
+				}
+			}
+
+			if isNewSession {
+				existingTM.LapsUsed += flyingCount
+				existingTM.SessionsUsed++
+				existingTM.AddSession(sessionID)
+			}
 			if err := trackmap.Save(trackmapPath, tmf); err != nil {
 				fmt.Fprintf(os.Stderr, "Warning: could not save track map: %v\n", err)
 			}
@@ -120,7 +154,7 @@ func RunAnalyze(args []string, cfg config.Config, trackmapPath string) {
 			}
 			ts := make([]trackmap.Sample, len(l.Samples))
 			for j, s := range l.Samples {
-				ts[j] = trackmap.Sample{LapDistPct: s.LapDistPct, LatAccel: s.LatAccel}
+				ts[j] = trackmap.Sample{LapDistPct: s.LapDistPct, LatAccel: s.LatAccel, Lat: s.Lat, Lon: s.Lon}
 			}
 			allSamples = append(allSamples, ts)
 		}
@@ -128,16 +162,38 @@ func RunAnalyze(args []string, cfg config.Config, trackmapPath string) {
 			// Fallback: use bestLap only (e.g. all laps are partial-start).
 			ts := make([]trackmap.Sample, len(bestLap.Samples))
 			for i, s := range bestLap.Samples {
-				ts[i] = trackmap.Sample{LapDistPct: s.LapDistPct, LatAccel: s.LatAccel}
+				ts[i] = trackmap.Sample{LapDistPct: s.LapDistPct, LatAccel: s.LatAccel, Lat: s.Lat, Lon: s.Lon}
 			}
 			allSamples = [][]trackmap.Sample{ts}
 		}
-		segs = trackmap.DetectFromMultiple(allSamples, trackLengthM)
+		switch *geoMethod {
+		case "latlon":
+			segs = trackmap.DetectFromMultipleLatLon(allSamples, trackLengthM)
+			if segs == nil {
+				fmt.Fprintln(os.Stderr, "Warning: Lat/Lon channels not found in telemetry — falling back to lataccel method.")
+				segs = trackmap.DetectFromMultiple(allSamples, trackLengthM)
+				*geoMethod = "lataccel"
+			}
+		default:
+			segs = trackmap.DetectFromMultiple(allSamples, trackLengthM)
+			*geoMethod = "lataccel"
+		}
+		// Compute brake entries from all flying laps and store in segments.
+		if len(segs) > 0 {
+			newEntries := analysis.ComputeBrakeEntries(laps, segs)
+			for i := range segs {
+				if segs[i].Kind != trackmap.KindStraight {
+					segs[i].BrakeEntryPct = newEntries[i]
+				}
+			}
+		}
+
 		if trackmapPath != "" && len(segs) > 0 {
 			newTM := &trackmap.TrackMap{
 				TrackLengthM: trackLengthM,
 				Source:       "auto",
 				DetectedFrom: trackmap.Today(),
+				GeoMethod:    *geoMethod,
 				LapsUsed:     len(allSamples),
 				SessionsUsed: 1,
 				Segments:     segs,
@@ -169,8 +225,12 @@ func RunAnalyze(args []string, cfg config.Config, trackmapPath string) {
 			if existingTM.SessionsUsed != 1 {
 				sessionWord = "sessions"
 			}
-			fmt.Printf("Map:     %d segs — geometry: %s (%d %s, %d %s) — match: %.0f%%\n\n",
-				len(segs), geomConf,
+			method := existingTM.GeoMethod
+			if method == "" {
+				method = "lataccel"
+			}
+			fmt.Printf("Map:     %d segs [%s] — geometry: %s (%d %s, %d %s) — match: %.0f%%\n\n",
+				len(segs), method, geomConf,
 				existingTM.LapsUsed, lapWord,
 				existingTM.SessionsUsed, sessionWord,
 				matchScore*100)
@@ -187,8 +247,8 @@ func RunAnalyze(args []string, cfg config.Config, trackmapPath string) {
 			if detectedLaps != 1 {
 				lapWord = "laps"
 			}
-			fmt.Printf("Map:     %d segs — geometry: low (%d %s, 1 session) — match: n/a (first detection)\n\n",
-				len(segs), detectedLaps, lapWord)
+			fmt.Printf("Map:     %d segs [%s] — geometry: low (%d %s, 1 session) — match: n/a (first detection)\n\n",
+				len(segs), *geoMethod, detectedLaps, lapWord)
 		}
 
 		// Low match score warning.
@@ -431,4 +491,15 @@ func fallback(s, def string) string {
 func analyzeDie(format string, args ...any) {
 	fmt.Fprintf(os.Stderr, "analyze: "+format+"\n", args...)
 	os.Exit(1)
+}
+
+// hasMissingBrakeEntries reports whether any corner or chicane segment in segs
+// has not yet had its BrakeEntryPct computed (i.e. it is still zero).
+func hasMissingBrakeEntries(segs []trackmap.Segment) bool {
+	for _, seg := range segs {
+		if seg.Kind != trackmap.KindStraight && seg.BrakeEntryPct == 0 {
+			return true
+		}
+	}
+	return false
 }

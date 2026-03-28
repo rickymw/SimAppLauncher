@@ -187,6 +187,8 @@ type SampleData struct {
 	LatAccel      float32 // m/s²; positive = left
 	YawRate       float32 // rad/s
 	ABSActive     bool
+	Lat           float64 // decimal degrees; 0 if not available in telemetry
+	Lon           float64 // decimal degrees; 0 if not available in telemetry
 }
 
 // LapKind classifies a lap based on how it starts and ends.
@@ -353,5 +355,7 @@ func extractSample(s ibt.Sample) SampleData {
 	sd.LatAccel, _ = s.Float32("LatAccel")
 	sd.YawRate, _ = s.Float32("YawRate")
 	sd.ABSActive, _ = s.Bool("BrakeABSactive")
+	sd.Lat, _ = s.Float64("Lat")
+	sd.Lon, _ = s.Float64("Lon")
 	return sd
 }

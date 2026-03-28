@@ -223,6 +223,51 @@ func TestAddSession_AddsAndDeduplicates(t *testing.T) {
 	}
 }
 
+// TestSaveLoad_BrakeEntryRoundtrip verifies that BrakeEntryPct survives a
+// Save/Load cycle and that segments without it (zero value) omit the field.
+func TestSaveLoad_BrakeEntryRoundtrip(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "trackmap.json")
+
+	orig := TrackMapFile{
+		"Sebring International Raceway": {
+			TrackLengthM: 5793.8,
+			Source:       "auto",
+			DetectedFrom: "2026-03-27",
+			LapsUsed:     15,
+			Segments: []Segment{
+				{Name: "S1", Kind: KindStraight, EntryPct: 0.0, ExitPct: 0.065},
+				{Name: "T1", Kind: KindCorner, EntryPct: 0.065, ExitPct: 0.116, BrakeEntryPct: 0.051},
+				{Name: "S2", Kind: KindStraight, EntryPct: 0.116, ExitPct: 0.153},
+				{Name: "T2", Kind: KindCorner, EntryPct: 0.153, ExitPct: 0.208, BrakeEntryPct: 0.142},
+			},
+		},
+	}
+
+	if err := Save(path, orig); err != nil {
+		t.Fatalf("Save: %v", err)
+	}
+
+	loaded, err := Load(path)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	tm := loaded["Sebring International Raceway"]
+
+	// Straight: BrakeEntryPct should be zero (omitempty, not serialised).
+	if tm.Segments[0].BrakeEntryPct != 0 {
+		t.Errorf("S1 BrakeEntryPct: got %v, want 0", tm.Segments[0].BrakeEntryPct)
+	}
+	// Corner T1: BrakeEntryPct must survive the roundtrip.
+	if got := tm.Segments[1].BrakeEntryPct; got != 0.051 {
+		t.Errorf("T1 BrakeEntryPct: got %v, want 0.051", got)
+	}
+	// Corner T2: same.
+	if got := tm.Segments[3].BrakeEntryPct; got != 0.142 {
+		t.Errorf("T2 BrakeEntryPct: got %v, want 0.142", got)
+	}
+}
+
 // ---- DetectFromMultiple tests ----
 
 // TestDetectFromMultiple_MatchesSingleLap verifies that DetectFromMultiple with one
