@@ -262,10 +262,12 @@ func ComputeBrakeEntries(laps []Lap, segs []trackmap.Segment) []float32 {
 			continue
 		}
 
-		// How far back to look: the preceding segment's geometric entry.
+		// How far back to look: the preceding segment's effective entry (uses
+		// BrakeEntryPct for corners, geometric EntryPct for straights). This
+		// prevents the scan from crossing into an adjacent corner's braking zone.
 		var minPct float32
 		if i > 0 {
-			minPct = segs[i-1].EntryPct
+			minPct = effectiveSegEntry(segs[i-1])
 		}
 
 		var totalOnset float32
@@ -279,8 +281,13 @@ func ComputeBrakeEntries(laps []Lap, segs []trackmap.Segment) []float32 {
 
 			// Scan backward from the geometric corner entry to find the start
 			// of the contiguous braking zone immediately before it.
+			// A tolerance of 3 consecutive non-braking samples is allowed so
+			// that brief ABS modulation or trail-braking dips do not terminate
+			// the scan prematurely.
+			const brakeReleaseTolerance = 3
 			onset := seg.EntryPct
 			inBraking := false
+			releaseCount := 0
 			for j := len(lap.Samples) - 1; j >= 0; j-- {
 				s := lap.Samples[j]
 				if s.LapDistPct >= seg.EntryPct {
@@ -291,9 +298,13 @@ func ComputeBrakeEntries(laps []Lap, segs []trackmap.Segment) []float32 {
 				}
 				if s.Brake > brakeEntryThreshold {
 					inBraking = true
+					releaseCount = 0
 					onset = s.LapDistPct // extend onset further back
 				} else if inBraking {
-					break // found the trailing edge of the braking zone
+					releaseCount++
+					if releaseCount > brakeReleaseTolerance {
+						break // found the trailing edge of the braking zone
+					}
 				}
 			}
 

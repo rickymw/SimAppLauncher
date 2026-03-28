@@ -38,6 +38,11 @@ func RunAnalyze(args []string, cfg config.Config, trackmapPath, pbPath string) {
 	}
 	_ = fs.Parse(args)
 
+	if *geoMethod != "latlon" && *geoMethod != "lataccel" {
+		fmt.Fprintf(os.Stderr, "analyze: invalid -geo-method %q: must be \"latlon\" or \"lataccel\"\n", *geoMethod)
+		os.Exit(1)
+	}
+
 	var ibtPath string
 	switch fs.NArg() {
 	case 0:
@@ -106,9 +111,13 @@ func RunAnalyze(args []string, cfg config.Config, trackmapPath, pbPath string) {
 
 	var tmf trackmap.TrackMapFile
 	if trackmapPath != "" {
-		tmf, _ = trackmap.Load(trackmapPath)
-	}
-	if tmf == nil {
+		var loadErr error
+		tmf, loadErr = trackmap.Load(trackmapPath)
+		if loadErr != nil {
+			fmt.Fprintf(os.Stderr, "Warning: could not load trackmap.json: %v\n", loadErr)
+			tmf = trackmap.TrackMapFile{}
+		}
+	} else {
 		tmf = trackmap.TrackMapFile{}
 	}
 
@@ -208,7 +217,7 @@ func RunAnalyze(args []string, cfg config.Config, trackmapPath, pbPath string) {
 				segs = trackmap.DetectFromMultiple(allSamples, trackLengthM)
 				*geoMethod = "lataccel"
 			}
-		default:
+		default: // "lataccel" (validated above)
 			segs = trackmap.DetectFromMultiple(allSamples, trackLengthM)
 			*geoMethod = "lataccel"
 		}

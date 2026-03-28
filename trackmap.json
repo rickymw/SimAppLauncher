@@ -3,10 +3,17 @@
     "trackLengthM": 5793.8,
     "source": "auto",
     "detectedFrom": "2026-03-27",
-    "lapsUsed": 61,
-    "sessionsUsed": 4,
+    "geoMethod": "lataccel",
+    "lapsUsed": 42,
+    "sessionsUsed": 7,
     "seenSessions": [
-      "2026-03-26T21:42:29Z"
+      "2026-03-28T05:42:41Z",
+      "2026-03-28T05:33:54Z",
+      "2026-03-28T05:03:44Z",
+      "2026-03-26T21:42:29Z",
+      "2026-03-26T21:34:22Z",
+      "2026-03-26T21:23:13Z",
+      "2026-03-26T21:15:28Z"
     ],
     "segments": [
       {
@@ -18,131 +25,133 @@
         "exitM": 347.628
       },
       {
-        "name": "T1",
-        "kind": "corner",
+        "name": "T1-2",
+        "kind": "chicane",
         "entryPct": 0.06,
-        "exitPct": 0.142,
+        "exitPct": 0.153,
         "entryM": 347.628,
-        "exitM": 822.7196
-      },
-      {
-        "name": "T2",
-        "kind": "corner",
-        "entryPct": 0.142,
-        "exitPct": 0.219,
-        "entryM": 822.7196,
-        "exitM": 1268.8422
+        "exitM": 886.45135,
+        "brakeEntryPct": 0.050093025
       },
       {
         "name": "T3",
         "kind": "corner",
-        "entryPct": 0.219,
-        "exitPct": 0.287,
-        "entryM": 1268.8422,
-        "exitM": 1662.8206
-      },
-      {
-        "name": "S2",
-        "kind": "straight",
-        "entryPct": 0.287,
-        "exitPct": 0.334,
-        "entryM": 1662.8206,
-        "exitM": 1935.129
+        "entryPct": 0.153,
+        "exitPct": 0.212,
+        "entryM": 886.45135,
+        "exitM": 1228.2855,
+        "brakeEntryPct": 0.14162758
       },
       {
         "name": "T4",
         "kind": "corner",
+        "entryPct": 0.212,
+        "exitPct": 0.283,
+        "entryM": 1228.2855,
+        "exitM": 1639.6453,
+        "brakeEntryPct": 0.18458109
+      },
+      {
+        "name": "S2",
+        "kind": "straight",
+        "entryPct": 0.283,
+        "exitPct": 0.334,
+        "entryM": 1639.6453,
+        "exitM": 1935.129
+      },
+      {
+        "name": "T5",
+        "kind": "corner",
         "entryPct": 0.334,
         "exitPct": 0.36,
         "entryM": 1935.129,
-        "exitM": 2085.768
+        "exitM": 2085.768,
+        "brakeEntryPct": 0.3128535
       },
       {
-        "name": "T5-6",
-        "kind": "chicane",
+        "name": "T6",
+        "kind": "corner",
         "entryPct": 0.36,
-        "exitPct": 0.434,
+        "exitPct": 0.397,
         "entryM": 2085.768,
-        "exitM": 2514.509
-      },
-      {
-        "name": "S3",
-        "kind": "straight",
-        "entryPct": 0.434,
-        "exitPct": 0.469,
-        "entryM": 2514.509,
-        "exitM": 2717.2922
+        "exitM": 2300.1387,
+        "brakeEntryPct": 0.3377434
       },
       {
         "name": "T7",
         "kind": "corner",
-        "entryPct": 0.469,
-        "exitPct": 0.547,
-        "entryM": 2717.2922,
-        "exitM": 3169.2085
+        "entryPct": 0.397,
+        "exitPct": 0.436,
+        "entryM": 2300.1387,
+        "exitM": 2526.0967,
+        "brakeEntryPct": 0.39673057
+      },
+      {
+        "name": "S3",
+        "kind": "straight",
+        "entryPct": 0.436,
+        "exitPct": 0.469,
+        "entryM": 2526.0967,
+        "exitM": 2717.2922
       },
       {
         "name": "T8",
         "kind": "corner",
-        "entryPct": 0.547,
-        "exitPct": 0.576,
-        "entryM": 3169.2085,
-        "exitM": 3337.2285
+        "entryPct": 0.469,
+        "exitPct": 0.575,
+        "entryM": 2717.2922,
+        "exitM": 3331.4348,
+        "brakeEntryPct": 0.45119563
       },
       {
         "name": "S4",
         "kind": "straight",
-        "entryPct": 0.576,
-        "exitPct": 0.623,
-        "entryM": 3337.2285,
-        "exitM": 3609.5374
+        "entryPct": 0.575,
+        "exitPct": 0.625,
+        "entryM": 3331.4348,
+        "exitM": 3621.125
       },
       {
         "name": "T9",
         "kind": "corner",
-        "entryPct": 0.623,
-        "exitPct": 0.669,
-        "entryM": 3609.5374,
-        "exitM": 3876.0522
+        "entryPct": 0.625,
+        "exitPct": 0.679,
+        "entryM": 3621.125,
+        "exitM": 3933.9902,
+        "brakeEntryPct": 0.6237965
       },
       {
         "name": "T10",
         "kind": "corner",
-        "entryPct": 0.669,
-        "exitPct": 0.719,
-        "entryM": 3876.0522,
-        "exitM": 4165.742
-      },
-      {
-        "name": "T11",
-        "kind": "corner",
-        "entryPct": 0.719,
-        "exitPct": 0.75,
-        "entryM": 4165.742,
-        "exitM": 4345.3496
+        "entryPct": 0.679,
+        "exitPct": 0.752,
+        "entryM": 3933.9902,
+        "exitM": 4356.9375,
+        "brakeEntryPct": 0.66751075
       },
       {
         "name": "S5",
         "kind": "straight",
-        "entryPct": 0.75,
-        "exitPct": 0.881,
-        "entryM": 4345.3496,
-        "exitM": 5104.3374
+        "entryPct": 0.752,
+        "exitPct": 0.887,
+        "entryM": 4356.9375,
+        "exitM": 5139.1006
       },
       {
-        "name": "T12",
+        "name": "T11",
         "kind": "corner",
-        "entryPct": 0.881,
-        "exitPct": 0.965,
-        "entryM": 5104.3374,
-        "exitM": 5591.0166
+        "entryPct": 0.887,
+        "exitPct": 0.967,
+        "entryM": 5139.1006,
+        "exitM": 5602.6045,
+        "brakeEntryPct": 0.88227654
       },
       {
         "name": "S6",
         "kind": "straight",
-        "entryPct": 0.965,
+        "entryPct": 0.967,
         "exitPct": 1,
-        "entryM": 5591.0166,
+        "entryM": 5602.6045,
         "exitM": 5793.8
       }
     ]

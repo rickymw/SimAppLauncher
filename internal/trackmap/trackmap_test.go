@@ -1,6 +1,7 @@
 package trackmap
 
 import (
+	"math"
 	"os"
 	"path/filepath"
 	"testing"
@@ -389,5 +390,230 @@ func TestSaveLoad_Roundtrip(t *testing.T) {
 	}
 	if tm.Segments[1].Kind != KindCorner {
 		t.Errorf("Segments[1].Kind = %q, want corner", tm.Segments[1].Kind)
+	}
+}
+
+// ---- MatchConfidence / EffectiveConfidence / confidenceRank tests ----
+
+func TestMatchConfidence_High(t *testing.T) {
+	if got := MatchConfidence(0.95); got != ConfHigh {
+		t.Errorf("MatchConfidence(0.95) = %q, want %q", got, ConfHigh)
+	}
+}
+
+func TestMatchConfidence_Moderate(t *testing.T) {
+	if got := MatchConfidence(0.85); got != ConfModerate {
+		t.Errorf("MatchConfidence(0.85) = %q, want %q", got, ConfModerate)
+	}
+}
+
+func TestMatchConfidence_Low(t *testing.T) {
+	if got := MatchConfidence(0.70); got != ConfLow {
+		t.Errorf("MatchConfidence(0.70) = %q, want %q", got, ConfLow)
+	}
+}
+
+func TestMatchConfidence_Boundaries(t *testing.T) {
+	// Exactly at the thresholds (≥ 0.93 → high, ≥ 0.80 → moderate).
+	if got := MatchConfidence(0.93); got != ConfHigh {
+		t.Errorf("MatchConfidence(0.93) = %q, want %q", got, ConfHigh)
+	}
+	if got := MatchConfidence(0.80); got != ConfModerate {
+		t.Errorf("MatchConfidence(0.80) = %q, want %q", got, ConfModerate)
+	}
+	if got := MatchConfidence(0.79); got != ConfLow {
+		t.Errorf("MatchConfidence(0.79) = %q, want %q", got, ConfLow)
+	}
+}
+
+func TestEffectiveConfidence_TakesLower(t *testing.T) {
+	// Map has been seen 20 laps (high geometry confidence) but match score is only moderate.
+	// Effective confidence should be moderated down to moderate.
+	tm := &TrackMap{LapsUsed: 20}
+	eff := tm.EffectiveConfidence(0.85) // match → moderate
+	if eff != ConfModerate {
+		t.Errorf("EffectiveConfidence = %q, want %q", eff, ConfModerate)
+	}
+}
+
+func TestEffectiveConfidence_GeometryLimits(t *testing.T) {
+	// Map has only 1 lap (low geometry confidence) but match score is perfect.
+	// Effective confidence is limited to low by geometry.
+	tm := &TrackMap{LapsUsed: 1}
+	eff := tm.EffectiveConfidence(0.99) // match → high
+	if eff != ConfLow {
+		t.Errorf("EffectiveConfidence = %q, want %q", eff, ConfLow)
+	}
+}
+
+func TestEffectiveConfidence_BothHigh(t *testing.T) {
+	tm := &TrackMap{LapsUsed: 20}
+	eff := tm.EffectiveConfidence(0.95)
+	if eff != ConfHigh {
+		t.Errorf("EffectiveConfidence = %q, want %q", eff, ConfHigh)
+	}
+}
+
+func TestConfidenceRank_Order(t *testing.T) {
+	// low < moderate < high
+	if confidenceRank(ConfLow) >= confidenceRank(ConfModerate) {
+		t.Error("low rank should be less than moderate rank")
+	}
+	if confidenceRank(ConfModerate) >= confidenceRank(ConfHigh) {
+		t.Error("moderate rank should be less than high rank")
+	}
+}
+
+// ---- AddSession cap test ----
+
+func TestAddSession_CapAt50(t *testing.T) {
+	tm := &TrackMap{}
+	for i := 0; i < 60; i++ {
+		tm.AddSession(string(rune('A' + i%26)) + string(rune('0'+i%10)))
+	}
+	if len(tm.SeenSessions) > maxSeenSessions {
+		t.Errorf("SeenSessions len = %d, want <= %d", len(tm.SeenSessions), maxSeenSessions)
+	}
+}
+
+// ---- project / signedCurvature unit tests ----
+
+func TestProject_Origin(t *testing.T) {
+	x, y := project(37.0, -121.0, 37.0, -121.0)
+	if x != 0 || y != 0 {
+		t.Errorf("project at origin: got (%v,%v), want (0,0)", x, y)
+	}
+}
+
+func TestProject_NorthSouth(t *testing.T) {
+	// Moving 1 degree north should give roughly 111 km north.
+	_, y := project(38.0, -121.0, 37.0, -121.0)
+	if math.Abs(y-111000) > 2000 { // within 2 km of expected
+		t.Errorf("project 1° north: y = %.0f m, want ~111000 m", y)
+	}
+}
+
+func TestSignedCurvature_Straight(t *testing.T) {
+	// Three collinear points → zero curvature.
+	k := signedCurvature(0, 0, 1, 0, 2, 0)
+	if k != 0 {
+		t.Errorf("collinear curvature = %v, want 0", k)
+	}
+}
+
+func TestSignedCurvature_LeftTurn(t *testing.T) {
+	// Points going along a unit circle (radius = 1 m) in CCW (left-turn) order:
+	// A=(1,0), B=(0,1), C=(-1,0) — 90° arc, radius 1 m → κ = 1/r = 1.0 m⁻¹, positive.
+	k := signedCurvature(1, 0, 0, 1, -1, 0)
+	if k <= 0 {
+		t.Errorf("left turn curvature = %v, want positive", k)
+	}
+	if math.Abs(float64(k)-1.0) > 0.1 {
+		t.Errorf("left turn curvature = %v, want ~1.0 m⁻¹", k)
+	}
+}
+
+func TestSignedCurvature_RightTurn(t *testing.T) {
+	// Reverse order → right turn → negative curvature.
+	k := signedCurvature(-1, 0, 0, 1, 1, 0)
+	if k >= 0 {
+		t.Errorf("right turn curvature = %v, want negative", k)
+	}
+}
+
+// ---- DetectFromMultipleLatLon tests ----
+
+// makeOvalSamples builds a synthetic lap around an elongated oval (semi-major 500m,
+// semi-minor 50m) centred at the given lat/lon. The oval has high curvature at the
+// ends (κ ≈ 0.2 m⁻¹) and very low curvature on the sides (κ ≈ 0.0002 m⁻¹), which
+// should produce two corners and two straights when analysed.
+func makeOvalSamples(n int, lat0, lon0 float64) []Sample {
+	const (
+		semiMajor = 500.0 // metres, along y-axis (lat)
+		semiMinor = 50.0  // metres, along x-axis (lon)
+		// 1 degree lat ≈ 111 km; 1 degree lon at lat0 ≈ 111 km * cos(lat0)
+		earthRadius = 6_371_000.0
+	)
+	degPerMetreLat := 180.0 / (math.Pi * earthRadius)
+	degPerMetreLon := degPerMetreLat / math.Cos(lat0*math.Pi/180.0)
+
+	samples := make([]Sample, n)
+	for i := 0; i < n; i++ {
+		t := 2 * math.Pi * float64(i) / float64(n)
+		xM := semiMinor * math.Sin(t)  // x in metres
+		yM := semiMajor * math.Cos(t)  // y in metres
+		samples[i] = Sample{
+			LapDistPct: float32(i) / float32(n),
+			LatAccel:   0, // not used by latlon path
+			Lat:        lat0 + yM*degPerMetreLat,
+			Lon:        lon0 + xM*degPerMetreLon,
+		}
+	}
+	return samples
+}
+
+// Approximate perimeter of the oval (used as trackLengthM).
+func ovalPerimeterM() float64 {
+	a, b := 500.0, 50.0
+	// Ramanujan approximation
+	return math.Pi * (3*(a+b) - math.Sqrt((3*a+b)*(a+3*b)))
+}
+
+func TestDetectFromMultipleLatLon_NoLatLon(t *testing.T) {
+	// All samples have Lat=0, Lon=0 → function must return nil (no GPS data).
+	samples := make([]Sample, 100)
+	for i := range samples {
+		samples[i] = Sample{LapDistPct: float32(i) / 100, LatAccel: 5.0}
+	}
+	segs := DetectFromMultipleLatLon([][]Sample{samples}, 4000.0)
+	if segs != nil {
+		t.Errorf("expected nil (no lat/lon), got %d segments", len(segs))
+	}
+}
+
+func TestDetectFromMultipleLatLon_EmptyInput(t *testing.T) {
+	segs := DetectFromMultipleLatLon(nil, 4000.0)
+	if segs != nil {
+		t.Errorf("expected nil for empty input, got %d segments", len(segs))
+	}
+}
+
+func TestDetectFromMultipleLatLon_OvalProducesSegments(t *testing.T) {
+	samples := makeOvalSamples(1000, 37.0, -121.0)
+	trackLen := ovalPerimeterM()
+	segs := DetectFromMultipleLatLon([][]Sample{samples}, trackLen)
+	if len(segs) == 0 {
+		t.Fatal("DetectFromMultipleLatLon: expected segments from oval, got none")
+	}
+	var corners, straights int
+	for _, s := range segs {
+		switch s.Kind {
+		case KindCorner, KindChicane:
+			corners++
+		case KindStraight:
+			straights++
+		}
+	}
+	if corners == 0 {
+		t.Errorf("expected corners from oval, got 0 (segs: %v)", segs)
+	}
+	if straights == 0 {
+		t.Errorf("expected straights from oval, got 0 (segs: %v)", segs)
+	}
+}
+
+func TestDetectFromMultipleLatLon_MultiLap(t *testing.T) {
+	// Two identical laps should produce the same result as one.
+	samples := makeOvalSamples(1000, 37.0, -121.0)
+	trackLen := ovalPerimeterM()
+
+	segs1 := DetectFromMultipleLatLon([][]Sample{samples}, trackLen)
+	segs2 := DetectFromMultipleLatLon([][]Sample{samples, samples}, trackLen)
+
+	if len(segs1) == 0 {
+		t.Skip("no segments detected for single lap — oval test data may be borderline")
+	}
+	if len(segs1) != len(segs2) {
+		t.Errorf("single-lap segs=%d, two-lap segs=%d (should match)", len(segs1), len(segs2))
 	}
 }

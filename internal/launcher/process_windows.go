@@ -3,6 +3,7 @@
 package launcher
 
 import (
+	"encoding/csv"
 	"fmt"
 	"os/exec"
 	"strconv"
@@ -173,13 +174,20 @@ func enableDebugPrivilege() error {
 func parsePIDFromTasklist(output, processName string) (int, error) {
 	lowerName := strings.ToLower(processName + ".exe")
 	for _, line := range strings.Split(output, "\n") {
-		if strings.HasPrefix(strings.ToLower(strings.TrimSpace(line)), "\""+lowerName+"\"") {
-			fields := strings.Split(strings.TrimSpace(line), ",")
-			if len(fields) >= 2 {
-				if p, err := strconv.Atoi(strings.Trim(fields[1], "\"")); err == nil {
-					return p, nil
-				}
-			}
+		line = strings.TrimSpace(line)
+		if line == "" {
+			continue
+		}
+		r := csv.NewReader(strings.NewReader(line))
+		fields, err := r.Read()
+		if err != nil || len(fields) < 2 {
+			continue
+		}
+		if strings.ToLower(fields[0]) != lowerName {
+			continue
+		}
+		if p, err := strconv.Atoi(fields[1]); err == nil {
+			return p, nil
 		}
 	}
 	return 0, fmt.Errorf("process %q not found", processName)

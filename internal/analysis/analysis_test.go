@@ -1150,3 +1150,71 @@ func TestExtractLaps_ZeroArtifact(t *testing.T) {
 		t.Errorf("lap 2: %d samples, want 50", len(laps[1].Samples))
 	}
 }
+
+// ---- ParseWeather tests ----
+
+func TestParseWeather_AirAndTrack(t *testing.T) {
+	yaml := "WeekendInfo:\n AirTemp: 27 C\n TrackTemp: 40 C\n"
+	got := ParseWeather(yaml)
+	want := "Air 27°C, Track 40°C"
+	if got != want {
+		t.Errorf("ParseWeather = %q, want %q", got, want)
+	}
+}
+
+func TestParseWeather_AirOnly(t *testing.T) {
+	yaml := "WeekendInfo:\n AirTemp: 18 C\n"
+	got := ParseWeather(yaml)
+	want := "Air 18°C"
+	if got != want {
+		t.Errorf("ParseWeather = %q, want %q", got, want)
+	}
+}
+
+func TestParseWeather_TrackSurfaceFallback(t *testing.T) {
+	// Dynamic weather sessions may omit TrackTemp but include TrackSurfaceTemp.
+	yaml := "WeekendInfo:\n AirTemp: 22 C\n TrackSurfaceTemp: 38 C\n"
+	got := ParseWeather(yaml)
+	want := "Air 22°C, Track 38°C"
+	if got != want {
+		t.Errorf("ParseWeather = %q, want %q", got, want)
+	}
+}
+
+func TestParseWeather_TrackTempPreferredOverSurface(t *testing.T) {
+	// When both TrackTemp and TrackSurfaceTemp are present, TrackTemp wins.
+	yaml := "WeekendInfo:\n AirTemp: 22 C\n TrackTemp: 40 C\n TrackSurfaceTemp: 38 C\n"
+	got := ParseWeather(yaml)
+	want := "Air 22°C, Track 40°C"
+	if got != want {
+		t.Errorf("ParseWeather = %q, want %q", got, want)
+	}
+}
+
+func TestParseWeather_TrackOnly(t *testing.T) {
+	// AirTemp missing — dynamic weather scenario.
+	yaml := "WeekendInfo:\n TrackTemp: 45 C\n"
+	got := ParseWeather(yaml)
+	want := "Track 45°C"
+	if got != want {
+		t.Errorf("ParseWeather = %q, want %q", got, want)
+	}
+}
+
+func TestParseWeather_NeitherPresent(t *testing.T) {
+	yaml := "WeekendInfo:\n WeatherType: Mostly Cloudy\n"
+	got := ParseWeather(yaml)
+	if got != "" {
+		t.Errorf("ParseWeather = %q, want empty string", got)
+	}
+}
+
+func TestParseWeather_FractionalTemp(t *testing.T) {
+	yaml := "WeekendInfo:\n AirTemp: 27.3 C\n TrackTemp: 40.7 C\n"
+	got := ParseWeather(yaml)
+	// Formatted with %.0f so fractional parts are rounded.
+	want := "Air 27°C, Track 41°C"
+	if got != want {
+		t.Errorf("ParseWeather = %q, want %q", got, want)
+	}
+}

@@ -69,12 +69,21 @@ func (tm *TrackMap) HasSession(sessionID string) bool {
 	return false
 }
 
+// maxSeenSessions caps the seenSessions list to prevent unbounded growth.
+// Only the most recent entries are retained since the list is used only for
+// deduplication of sessions already counted in LapsUsed/SessionsUsed.
+const maxSeenSessions = 50
+
 // AddSession records sessionID as seen. It is a no-op if sessionID is already present.
+// The list is capped at maxSeenSessions entries (oldest are dropped first).
 func (tm *TrackMap) AddSession(sessionID string) {
 	if tm.HasSession(sessionID) {
 		return
 	}
 	tm.SeenSessions = append(tm.SeenSessions, sessionID)
+	if len(tm.SeenSessions) > maxSeenSessions {
+		tm.SeenSessions = tm.SeenSessions[len(tm.SeenSessions)-maxSeenSessions:]
+	}
 }
 
 // Confidence returns a GeometryConfidence level based on the number of laps
