@@ -39,19 +39,36 @@ func RunAnalyze(args []string, cfg config.Config, trackmapPath string) {
 
 	var ibtPath string
 	switch fs.NArg() {
-	case 1:
-		ibtPath = fs.Arg(0)
 	case 0:
 		if cfg.IbtDir == "" {
 			fs.Usage()
 			os.Exit(1)
 		}
 		var err error
-		ibtPath, err = latestIbtFile(cfg.IbtDir)
+		ibtPath, err = nthLatestIbtFile(cfg.IbtDir, 1)
 		if err != nil {
-			analyzeDie("finding latest .ibt in %s: %v", cfg.IbtDir, err)
+			analyzeDie("%v", err)
 		}
 		fmt.Printf("File:    %s\n", filepath.Base(ibtPath))
+	case 1:
+		arg := fs.Arg(0)
+		if n, err := strconv.Atoi(arg); err == nil {
+			// Numeric argument: treat as 1-based recency index into ibtDir.
+			if cfg.IbtDir == "" {
+				analyzeDie("numeric argument %d requires ibtDir to be set in config", n)
+			}
+			if n < 1 {
+				analyzeDie("file index must be >= 1, got %d", n)
+			}
+			var ferr error
+			ibtPath, ferr = nthLatestIbtFile(cfg.IbtDir, n)
+			if ferr != nil {
+				analyzeDie("%v", ferr)
+			}
+			fmt.Printf("File:    %s\n", filepath.Base(ibtPath))
+		} else {
+			ibtPath = arg
+		}
 	default:
 		fs.Usage()
 		os.Exit(1)
@@ -509,14 +526,19 @@ func analyzeDie(format string, args ...any) {
 	os.Exit(1)
 }
 
-// latestIbtFile returns the path of the most recently modified .ibt file in dir.
-func latestIbtFile(dir string) (string, error) {
+// nthLatestIbtFile returns the path of the nth most recently modified .ibt file
+// in dir (1 = most recent). Returns an error if n exceeds the number of files.
+func nthLatestIbtFile(dir string, n int) (string, error) {
 	entries, err := os.ReadDir(dir)
 	if err != nil {
 		return "", err
 	}
-	var latest string
-	var latestTime time.Time
+
+	type ibtEntry struct {
+		path    string
+		modTime time.Time
+	}
+	var files []ibtEntry
 	for _, e := range entries {
 		if e.IsDir() || filepath.Ext(e.Name()) != ".ibt" {
 			continue
@@ -525,15 +547,29 @@ func latestIbtFile(dir string) (string, error) {
 		if err != nil {
 			continue
 		}
-		if info.ModTime().After(latestTime) {
-			latestTime = info.ModTime()
-			latest = filepath.Join(dir, e.Name())
-		}
+		files = append(files, ibtEntry{
+			path:    filepath.Join(dir, e.Name()),
+			modTime: info.ModTime(),
+		})
 	}
-	if latest == "" {
+
+	if len(files) == 0 {
 		return "", fmt.Errorf("no .ibt files found in %s", dir)
 	}
-	return latest, nil
+
+	// Sort descending by modification time (most recent first).
+	for i := 0; i < len(files)-1; i++ {
+		for j := i + 1; j < len(files); j++ {
+			if files[j].modTime.After(files[i].modTime) {
+				files[i], files[j] = files[j], files[i]
+			}
+		}
+	}
+
+	if n > len(files) {
+		return "", fmt.Errorf("file index %d out of range — only %d .ibt file(s) in %s", n, len(files), dir)
+	}
+	return files[n-1].path, nil
 }
 
 // hasMissingBrakeEntries reports whether any corner or chicane segment in segs
