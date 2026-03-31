@@ -3,7 +3,7 @@ package analysis
 import (
 	"math"
 
-	"github.com/rickymw/SimAppLauncher/internal/trackmap"
+	"github.com/rickymw/MotorHome/internal/trackmap"
 )
 
 const (
@@ -99,9 +99,7 @@ func ZoneStats(lap *Lap) []Zone {
 			gearCounts[s.Gear]++
 		}
 
-		if minSpd < math.MaxFloat32 {
-			z.SpeedMinKPH = minSpd
-		}
+		z.SpeedMinKPH = minSpd
 
 		n := float32(len(samples))
 		z.BrakePct = 100 * float32(brakeOnCounts[i]) / n

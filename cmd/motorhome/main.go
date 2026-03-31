@@ -6,8 +6,8 @@ import (
 	"os"
 	"path/filepath"
 
-	"github.com/rickymw/SimAppLauncher/internal/config"
-	"github.com/rickymw/SimAppLauncher/internal/launcher"
+	"github.com/rickymw/MotorHome/internal/config"
+	"github.com/rickymw/MotorHome/internal/launcher"
 )
 
 func defaultConfigPath() string {
@@ -21,8 +21,8 @@ func defaultConfigPath() string {
 func main() {
 	cfgPath := flag.String("config", defaultConfigPath(), "path to config file")
 	flag.Usage = func() {
-		fmt.Fprintln(os.Stderr, "Usage: simapplauncher [-config <path>] <start|stop|status|analyze>")
-		fmt.Fprintln(os.Stderr, "       simapplauncher analyze [-lap N] [-compare N,M] <file.ibt>")
+		fmt.Fprintln(os.Stderr, "Usage: motorhome [-config <path>] <start|stop|status|analyze|notes>")
+		fmt.Fprintln(os.Stderr, "       motorhome analyze [-lap N] [-compare N,M] <file.ibt>")
 		flag.PrintDefaults()
 	}
 	flag.Parse()
@@ -41,10 +41,13 @@ func main() {
 
 	trackmapPath := filepath.Join(filepath.Dir(*cfgPath), "trackmap.json")
 	pbPath := filepath.Join(filepath.Dir(*cfgPath), "pb.json")
+	notesDir := filepath.Join(filepath.Dir(*cfgPath), "notes")
 
 	switch args[0] {
 	case "analyze":
 		RunAnalyze(args[1:], cfg, trackmapPath, pbPath)
+	case "notes":
+		RunNotes(args[1:], cfg, notesDir, *cfgPath, trackmapPath)
 	default:
 		pm := launcher.NewProcessManager()
 		switch args[0] {

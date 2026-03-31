@@ -16,7 +16,7 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/rickymw/SimAppLauncher/internal/ibt"
+	"github.com/rickymw/MotorHome/internal/ibt"
 )
 
 func main() {

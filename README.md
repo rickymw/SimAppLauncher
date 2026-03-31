@@ -21,13 +21,13 @@ A lightweight Windows CLI tool that launches, monitors, and closes all your sim 
 ## Build
 
 ```powershell
-go build -o simapplauncher.exe ./cmd/simapplauncher
+go build -o motorhome.exe ./cmd/motorhome
 ```
 
 ## Subcommands
 
 ```
-simapplauncher [-config <path>] <start|stop|status|analyze>
+motorhome [-config <path>] <start|stop|status|analyze>
 ```
 
 | Subcommand | Description |
@@ -44,16 +44,16 @@ simapplauncher [-config <path>] <start|stop|status|analyze>
 ### Usage
 
 ```powershell
-.\simapplauncher.exe start
-.\simapplauncher.exe stop
-.\simapplauncher.exe status
-.\simapplauncher.exe -config "D:\other\launcher.config.json" start
+.\motorhome.exe start
+.\motorhome.exe stop
+.\motorhome.exe status
+.\motorhome.exe -config "D:\other\launcher.config.json" start
 ```
 
 ### Example output
 
 ```
-> simapplauncher start
+> motorhome start
   [+] SimHubWPF            ... launched (pid 41512)
   [+] Trading Paints       ... launched (pid 43996)
   [=] iRacingUI            ... already running (pid 43876)
@@ -61,24 +61,24 @@ simapplauncher [-config <path>] <start|stop|status|analyze>
 
 Done. 4/4 apps running.
 
-> simapplauncher status
+> motorhome status
   SimHubWPF            RUNNING  41512
   Trading Paints       RUNNING  43996
   iRacingUI            RUNNING  43876
   MarvinsAIRA          RUNNING  46676
 
-> simapplauncher stop
+> motorhome stop
   [-] SimHubWPF            ... closed
   [-] Trading Paints       ... closed
 ```
 
 ### Stream Deck integration
 
-Use the **Open** action pointing directly at `simapplauncher.exe` — no PowerShell wrapper needed.
+Use the **Open** action pointing directly at `motorhome.exe` — no PowerShell wrapper needed.
 
 | Setting | Value |
 |---|---|
-| App/File | `G:\RACING\SimAppLauncher\simapplauncher.exe` |
+| App/File | `G:\RACING\SimAppLauncher\motorhome.exe` |
 | Arguments | `start` (or `stop`) |
 
 The binary resolves `launcher.config.json` relative to its own location via `os.Executable()`, so the working directory doesn't matter.
@@ -93,16 +93,16 @@ The `analyze` subcommand parses iRacing `.ibt` telemetry and prints a segment-by
 
 ```powershell
 # Best flying lap (auto-selected)
-.\simapplauncher.exe analyze "session.ibt"
+.\motorhome.exe analyze "session.ibt"
 
 # Specific lap number
-.\simapplauncher.exe analyze -lap 3 "session.ibt"
+.\motorhome.exe analyze -lap 3 "session.ibt"
 
 # Side-by-side comparison of two laps
-.\simapplauncher.exe analyze -compare 2,3 "session.ibt"
+.\motorhome.exe analyze -compare 2,3 "session.ibt"
 
 # Force re-detection of track segments from this session
-.\simapplauncher.exe analyze -update-map "session.ibt"
+.\motorhome.exe analyze -update-map "session.ibt"
 ```
 
 ### Example output
@@ -273,7 +273,7 @@ go test -tags e2e -v ./internal/launcher/ -run TestE2E_FullStack -timeout 120s
 
 ```
 cmd/
-  simapplauncher/
+  motorhome/
     main.go              # entry point, flag parsing, subcommand dispatch
     analyze.go           # RunAnalyze — analyze subcommand implementation
     analyze_test.go
@@ -309,7 +309,7 @@ internal/
 
 launcher.config.json
 trackmap.json            # auto-created on first analyze run
-simapplauncher.exe
+motorhome.exe
 ```
 
 ---

@@ -9,11 +9,11 @@ import (
 	"strings"
 	"time"
 
-	"github.com/rickymw/SimAppLauncher/internal/analysis"
-	"github.com/rickymw/SimAppLauncher/internal/config"
-	"github.com/rickymw/SimAppLauncher/internal/ibt"
-	"github.com/rickymw/SimAppLauncher/internal/pb"
-	"github.com/rickymw/SimAppLauncher/internal/trackmap"
+	"github.com/rickymw/MotorHome/internal/analysis"
+	"github.com/rickymw/MotorHome/internal/config"
+	"github.com/rickymw/MotorHome/internal/ibt"
+	"github.com/rickymw/MotorHome/internal/pb"
+	"github.com/rickymw/MotorHome/internal/trackmap"
 )
 
 // RunAnalyze implements the "analyze" subcommand.
@@ -26,13 +26,13 @@ func RunAnalyze(args []string, cfg config.Config, trackmapPath, pbPath string) {
 	updateMap := fs.Bool("update-map", false, "ignore existing track map and re-detect from this session")
 	geoMethod := fs.String("geo-method", "latlon", "segment detection method: latlon (default, GPS curvature) or lataccel")
 	fs.Usage = func() {
-		fmt.Fprintln(os.Stderr, "Usage: simapplauncher [-config <path>] analyze [flags] <file.ibt>")
+		fmt.Fprintln(os.Stderr, "Usage: motorhome [-config <path>] analyze [flags] <file.ibt>")
 		fmt.Fprintln(os.Stderr)
 		fmt.Fprintln(os.Stderr, "Examples:")
-		fmt.Fprintln(os.Stderr, "  simapplauncher analyze session.ibt")
-		fmt.Fprintln(os.Stderr, "  simapplauncher analyze -lap 2 session.ibt")
-		fmt.Fprintln(os.Stderr, "  simapplauncher analyze -compare 1,2 session.ibt")
-		fmt.Fprintln(os.Stderr, "  simapplauncher analyze -geo-method latlon session.ibt")
+		fmt.Fprintln(os.Stderr, "  motorhome analyze session.ibt")
+		fmt.Fprintln(os.Stderr, "  motorhome analyze -lap 2 session.ibt")
+		fmt.Fprintln(os.Stderr, "  motorhome analyze -compare 1,2 session.ibt")
+		fmt.Fprintln(os.Stderr, "  motorhome analyze -geo-method latlon session.ibt")
 		fmt.Fprintln(os.Stderr)
 		fs.PrintDefaults()
 	}
@@ -387,21 +387,37 @@ func analyzeSingleLap(laps []analysis.Lap, lapNum int, segs []trackmap.Segment) 
 
 func analyzeCompareLaps(laps []analysis.Lap, arg string, segs []trackmap.Segment) {
 	parts := strings.SplitN(arg, ",", 2)
-	if len(parts) != 2 {
-		analyzeDie("-compare requires two lap numbers separated by a comma, e.g. -compare 1,2")
-	}
-	n1, e1 := strconv.Atoi(strings.TrimSpace(parts[0]))
-	n2, e2 := strconv.Atoi(strings.TrimSpace(parts[1]))
-	if e1 != nil || e2 != nil {
-		analyzeDie("-compare: invalid lap numbers %q", arg)
-	}
-	lap1 := findAnalyzeLap(laps, n1)
-	lap2 := findAnalyzeLap(laps, n2)
-	if lap1 == nil {
-		analyzeDie("lap %d not found in file", n1)
-	}
-	if lap2 == nil {
-		analyzeDie("lap %d not found in file", n2)
+	var lap1, lap2 *analysis.Lap
+	if len(parts) == 1 {
+		n1, e1 := strconv.Atoi(strings.TrimSpace(parts[0]))
+		if e1 != nil {
+			analyzeDie("-compare: invalid lap number %q", arg)
+		}
+		lap1 = findAnalyzeLap(laps, n1)
+		if lap1 == nil {
+			analyzeDie("lap %d not found in file", n1)
+		}
+		lap2 = bestAnalyzeLap(laps)
+		if lap2 == nil {
+			analyzeDie("no best lap found in session")
+		}
+		if lap1.Number == lap2.Number {
+			fmt.Printf("Note: Lap %d is already the best lap.\n", n1)
+		}
+	} else {
+		n1, e1 := strconv.Atoi(strings.TrimSpace(parts[0]))
+		n2, e2 := strconv.Atoi(strings.TrimSpace(parts[1]))
+		if e1 != nil || e2 != nil {
+			analyzeDie("-compare: invalid lap numbers %q", arg)
+		}
+		lap1 = findAnalyzeLap(laps, n1)
+		lap2 = findAnalyzeLap(laps, n2)
+		if lap1 == nil {
+			analyzeDie("lap %d not found in file", n1)
+		}
+		if lap2 == nil {
+			analyzeDie("lap %d not found in file", n2)
+		}
 	}
 	for _, l := range []*analysis.Lap{lap1, lap2} {
 		if l.Kind != analysis.KindFlying {

@@ -1,11 +1,11 @@
 # CLAUDE.md — SimAppLauncher
 
 ## Project overview
-Windows CLI tool (`simapplauncher.exe`) that launches, monitors, and closes sim racing apps in sequence, and analyses iRacing `.ibt` telemetry files. Designed for Stream Deck integration. Four subcommands: `start`, `stop`, `status`, `analyze`. Accepts an optional `-config <path>` flag.
+Windows CLI tool (`motorhome.exe`) that launches, monitors, and closes sim racing apps in sequence, and analyses iRacing `.ibt` telemetry files. Designed for Stream Deck integration. Four subcommands: `start`, `stop`, `status`, `analyze`. Accepts an optional `-config <path>` flag.
 
 ## Build
 ```powershell
-go build -o simapplauncher.exe ./cmd/simapplauncher
+go build -o motorhome.exe ./cmd/motorhome
 ```
 
 ## Tests
@@ -19,24 +19,24 @@ go test -tags e2e -v ./internal/launcher/ -run TestE2E_FullStack -timeout 120s
 
 ## Usage
 ```powershell
-simapplauncher start                                     # launch all apps in config order
-simapplauncher stop                                      # kill all apps
-simapplauncher status                                    # print running/stopped state
-simapplauncher analyze                                   # analyze most recently modified .ibt in ibtDir
-simapplauncher analyze 2                                 # analyze 2nd most recent .ibt in ibtDir
-simapplauncher analyze session.ibt                       # analyze specific file
-simapplauncher analyze -lap 3 session.ibt                # specific lap
-simapplauncher analyze -compare 2,3 session.ibt          # side-by-side lap comparison
-simapplauncher analyze -update-map session.ibt           # re-detect track segments from this session
-simapplauncher analyze -geo-method lataccel session.ibt  # use lateral G instead of GPS curvature
+motorhome start                                     # launch all apps in config order
+motorhome stop                                      # kill all apps
+motorhome status                                    # print running/stopped state
+motorhome analyze                                   # analyze most recently modified .ibt in ibtDir
+motorhome analyze 2                                 # analyze 2nd most recent .ibt in ibtDir
+motorhome analyze session.ibt                       # analyze specific file
+motorhome analyze -lap 3 session.ibt                # specific lap
+motorhome analyze -compare 2,3 session.ibt          # side-by-side lap comparison
+motorhome analyze -update-map session.ibt           # re-detect track segments from this session
+motorhome analyze -geo-method lataccel session.ibt  # use lateral G instead of GPS curvature
 ```
 
 ## AI Coaching workflow
 When the user asks to be coached, to analyse their session, or to review a lap, use Bash to run the analyze command — do not ask them to paste output.
 
-1. Run `.\simapplauncher.exe analyze` (or with a specific `.ibt` path) to get the lap list
+1. Run `.\motorhome.exe analyze` (or with a specific `.ibt` path) to get the lap list
 2. Identify the **best lap** ("Selecting best lap: Lap N") and the **most recent flying lap** (highest-numbered flying lap that isn't the best)
-3. Run `.\simapplauncher.exe analyze -compare <most-recent-flying>,<best>` to get the segment comparison
+3. Run `.\motorhome.exe analyze -compare <most-recent-flying>,<best>` to get the segment comparison
 4. Read `coach.md` (repo root) for the full coaching framework, column reference, and output format
 5. Deliver per-segment findings and a **Top 3 Actions** list
 
@@ -77,7 +77,7 @@ Parses iRacing `.ibt` binary files and produces per-lap segment statistics.
 - **`internal/analysis/zones.go`** — `SegmentStats` computes per-segment speed, inputs, G-forces, ABS count, and coasting samples. Uses *effective boundaries*: for corners/chicanes with a stored `BrakeEntryPct`, that value is used as the segment entry (instead of the geometric `EntryPct`), and each preceding straight's exit is clipped to the corner's `BrakeEntryPct` so braking-zone samples are attributed to the corner. `SegmentDeltas` uses the same effective boundaries for timing. `ComputeBrakeEntries(laps, segs)` scans flying laps backward from each corner's geometric entry to find the average braking onset (Brake > 5%), returning a `[]float32` of effective entry percentages. The older fixed `ZoneStats`/`ZoneDeltas` (20 × 5% zones) are retained but not used by the CLI. Key `SegZone` fields: `LatGAvg` (average, not peak), `CoastSamples` (raw count; display as `CoastSamples/60` seconds).
 - **`internal/trackmap`** — geometry-based corner/straight detection and persistent storage.
 - **`internal/pb`** — personal-best tracking; see below.
-- **`cmd/simapplauncher/analyze.go`** — `RunAnalyze(args, cfg, trackmapPath, pbPath)` implements the `analyze` subcommand.
+- **`cmd/motorhome/analyze.go`** — `RunAnalyze(args, cfg, trackmapPath, pbPath)` implements the `analyze` subcommand.
 
 #### Out/in lap detection
 A lap is flagged as an **out lap** if the first sample's speed < 5 m/s (rolling from pit/grid). It is flagged as an **in lap** if the last sample's speed < 5 m/s (pulling into pit lane). Both together = **out/in lap**. Out/in laps are shown in the lap list but excluded from best-lap selection and not used as comparison targets unless explicitly requested with `-lap N`.
@@ -169,7 +169,7 @@ All live next to the binary in `G:\RACING\SimAppLauncher\`:
 
 ## Deployment
 - Binary + config live in `G:\RACING\SimAppLauncher\` (the repo root)
-- Stream Deck triggers via the **Open** action pointing directly at `G:\RACING\SimAppLauncher\simapplauncher.exe` with arguments `start` or `stop` — no PowerShell wrapper needed. Config path resolves relative to the exe via `os.Executable()`.
+- Stream Deck triggers via the **Open** action pointing directly at `G:\RACING\SimAppLauncher\motorhome.exe` with arguments `start` or `stop` — no PowerShell wrapper needed. Config path resolves relative to the exe via `os.Executable()`.
 - UAC is set to never-notify on this machine — elevation via `ShellExecuteExW runas` does not work in this environment; use `elevate: false` for all apps
 - SimHub auto-elevates via its own manifest and resists `taskkill` — the `SeDebugPrivilege` fallback in `Kill()` handles this
 

@@ -7,8 +7,8 @@ import (
 	"os"
 	"testing"
 
-	"github.com/rickymw/SimAppLauncher/internal/ibt"
-	"github.com/rickymw/SimAppLauncher/internal/trackmap"
+	"github.com/rickymw/MotorHome/internal/ibt"
+	"github.com/rickymw/MotorHome/internal/trackmap"
 )
 
 // ---- helpers for direct Lap construction ----

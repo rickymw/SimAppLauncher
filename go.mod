@@ -1,3 +1,3 @@
-module github.com/rickymw/SimAppLauncher
+module github.com/rickymw/MotorHome
 
 go 1.25.7

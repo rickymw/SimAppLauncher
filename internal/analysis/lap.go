@@ -6,7 +6,7 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/rickymw/SimAppLauncher/internal/ibt"
+	"github.com/rickymw/MotorHome/internal/ibt"
 )
 
 // SessionMeta holds car, track, and driver info extracted from the iRacing session YAML.

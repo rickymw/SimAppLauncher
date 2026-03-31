@@ -9,7 +9,7 @@ When the user asks you to coach them, analyse their latest session, or review a 
 Run the analyze command to see all laps in the most recent session:
 
 ```
-.\simapplauncher.exe analyze
+.\motorhome.exe analyze
 ```
 
 Read the lap list printed. Identify:
@@ -23,10 +23,10 @@ If both are the same lap (only one flying lap), say so and skip to a single-lap 
 Run analyze with `-compare`, putting the most recent flying lap first and the best lap second:
 
 ```
-.\simapplauncher.exe analyze -compare <most-recent-flying>,<best>
+.\motorhome.exe analyze -compare <most-recent-flying>,<best>
 ```
 
-For example, if Lap 8 is most recent and Lap 5 is best: `.\simapplauncher.exe analyze -compare 8,5`
+For example, if Lap 8 is most recent and Lap 5 is best: `.\motorhome.exe analyze -compare 8,5`
 
 ## Step 3 — Analyse the output
 

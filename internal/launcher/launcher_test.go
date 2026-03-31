@@ -5,7 +5,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/rickymw/SimAppLauncher/internal/config"
+	"github.com/rickymw/MotorHome/internal/config"
 )
 
 // mockPM is a test double for ProcessManager.

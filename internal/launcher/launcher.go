@@ -4,7 +4,7 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/rickymw/SimAppLauncher/internal/config"
+	"github.com/rickymw/MotorHome/internal/config"
 )
 
 // SpawnResult holds the result of launching a single process.

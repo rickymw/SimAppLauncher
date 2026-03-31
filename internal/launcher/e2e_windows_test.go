@@ -12,7 +12,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/rickymw/SimAppLauncher/internal/config"
+	"github.com/rickymw/MotorHome/internal/config"
 )
 
 const (

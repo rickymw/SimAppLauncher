@@ -6,8 +6,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/rickymw/SimAppLauncher/internal/analysis"
-	"github.com/rickymw/SimAppLauncher/internal/trackmap"
+	"github.com/rickymw/MotorHome/internal/analysis"
+	"github.com/rickymw/MotorHome/internal/trackmap"
 )
 
 // makeLap builds a minimal analysis.Lap for bestAnalyzeLap testing.
