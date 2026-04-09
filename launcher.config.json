@@ -1,6 +1,9 @@
 {
   "driver": "Ricky Maw",
   "ibtDir": "C:\\Users\\ricky\\Documents\\iRacing\\telemetry",
+  "hotkey": "HID:3670:0805:9",
+  "whisperPath": "whisper\\whisper-cli.exe",
+  "whisperModel": "whisper\\ggml-base.en.bin",
   "apps": [
     {
       "name": "SimHubWPF",

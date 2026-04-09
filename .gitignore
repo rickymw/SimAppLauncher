@@ -1,6 +1,9 @@
 # iRacing telemetry files
 *.ibt
 
+# Whisper binaries and model files (too large for GitHub)
+whisper/
+
 # Claude Code internals
 .claude/
 

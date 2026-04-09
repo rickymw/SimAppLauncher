@@ -17,10 +17,8 @@ import (
 
 	"github.com/rickymw/MotorHome/internal/audio"
 	"github.com/rickymw/MotorHome/internal/config"
-	"github.com/rickymw/MotorHome/internal/iracing"
 	"github.com/rickymw/MotorHome/internal/notes"
 	"github.com/rickymw/MotorHome/internal/rawinput"
-	"github.com/rickymw/MotorHome/internal/trackmap"
 )
 
 // Windows API constants
@@ -46,6 +44,7 @@ var (
 	procPostQuitMessage     = modUser32.NewProc("PostQuitMessage")
 	procPostThreadMessageW  = modUser32.NewProc("PostThreadMessageW")
 	procGetCurrentThreadId  = modKernel32Notes.NewProc("GetCurrentThreadId")
+	procBeep               = modKernel32Notes.NewProc("Beep")
 )
 
 type winMsg struct {
@@ -69,12 +68,10 @@ type kbdllHookStruct struct {
 // notesCtx holds shared state between the hook callback and the recording worker.
 type notesCtx struct {
 	vkCode       uint32
-	startCh      chan struct{}
-	stopCh       chan struct{}
+	toggleCh     chan struct{} // one message per press toggles recording on/off
 	shutdown     chan struct{}
 	notesDir     string
 	ibtDir       string
-	trackmapPath string
 	whisperPath  string
 	whisperModel string
 }
@@ -82,7 +79,6 @@ type notesCtx struct {
 var globalCtx *notesCtx
 
 // captureVKCh receives the VK code detected by set-hotkey (keyboard).
-// Initialised at declaration so captureKeyProc can safely send even if called early.
 var captureVKCh = make(chan uint32, 1)
 
 // captureHIDCh receives the HIDButton detected by set-hotkey (Raw Input).
@@ -115,15 +111,10 @@ func lowLevelKeyboardProc(nCode int32, wParam uintptr, lParam uintptr) uintptr {
 	if nCode >= 0 && globalCtx != nil {
 		hs := (*kbdllHookStruct)(unsafe.Pointer(lParam))
 		if hs.VkCode == globalCtx.vkCode {
-			switch uint32(wParam) {
-			case wmKeyDown, wmSysKeyDown:
+			// Toggle on key-down only; key-up is ignored.
+			if uint32(wParam) == wmKeyDown || uint32(wParam) == wmSysKeyDown {
 				select {
-				case globalCtx.startCh <- struct{}{}:
-				default:
-				}
-			case wmKeyUp, wmSysKeyUp:
-				select {
-				case globalCtx.stopCh <- struct{}{}:
+				case globalCtx.toggleCh <- struct{}{}:
 				default:
 				}
 			}
@@ -133,17 +124,32 @@ func lowLevelKeyboardProc(nCode int32, wParam uintptr, lParam uintptr) uintptr {
 	return r
 }
 
+// beepStart plays a short ascending two-tone chime (A4 → E5) to signal
+// that recording has begun. Mirrors beepStop in reverse — same two notes,
+// opposite direction.
+func beepStart() {
+	procBeep.Call(440, 80)  // A4
+	procBeep.Call(659, 100) // E5
+}
+
+// beepStop plays a short descending two-tone chime (E5 → A4) to signal
+// that recording has ended. Forms a perfect fourth — settled and final.
+func beepStop() {
+	procBeep.Call(659, 80)  // E5
+	procBeep.Call(440, 120) // A4
+}
+
 // RunNotes dispatches notes subcommands or starts the listener.
-func RunNotes(args []string, cfg config.Config, notesDir, cfgPath, trackmapPath string) {
+func RunNotes(args []string, cfg config.Config, notesDir, cfgPath string) {
 	if len(args) > 0 && args[0] == "set-hotkey" {
 		runSetHotkey(cfg, cfgPath)
 		return
 	}
-	runNotesListener(cfg, notesDir, trackmapPath)
+	runNotesListener(cfg, notesDir)
 }
 
 // runNotesListener starts the voice-notes listener. Blocks until Ctrl+C or process kill.
-func runNotesListener(cfg config.Config, notesDir, trackmapPath string) {
+func runNotesListener(cfg config.Config, notesDir string) {
 	if cfg.Hotkey == "" {
 		fmt.Fprintln(os.Stderr, "notes: no hotkey configured — run \"motorhome notes set-hotkey\" to configure one")
 		os.Exit(1)
@@ -157,12 +163,10 @@ func runNotesListener(cfg config.Config, notesDir, trackmapPath string) {
 
 	shutdown := make(chan struct{})
 	globalCtx = &notesCtx{
-		startCh:      make(chan struct{}, 1),
-		stopCh:       make(chan struct{}, 1),
+		toggleCh:     make(chan struct{}, 1),
 		shutdown:     shutdown,
 		notesDir:     notesDir,
 		ibtDir:       cfg.IbtDir,
-		trackmapPath: trackmapPath,
 		whisperPath:  whisperPath,
 		whisperModel: whisperModel,
 	}
@@ -170,13 +174,9 @@ func runNotesListener(cfg config.Config, notesDir, trackmapPath string) {
 	go recordingWorker(globalCtx)
 
 	// Lock to OS thread — required for Windows hooks and message loop.
-	// Must happen before GetCurrentThreadId so we capture the correct thread.
 	runtime.LockOSThread()
 	defer runtime.UnlockOSThread()
 
-	// PostQuitMessage only works on the calling thread. The signal handler runs
-	// on a different goroutine/OS thread, so use PostThreadMessageW with the
-	// explicit thread ID of the locked message-loop thread instead.
 	loopThreadID, _, _ := procGetCurrentThreadId.Call()
 	sigCh := make(chan os.Signal, 1)
 	signal.Notify(sigCh, os.Interrupt)
@@ -186,10 +186,9 @@ func runNotesListener(cfg config.Config, notesDir, trackmapPath string) {
 		procPostThreadMessageW.Call(loopThreadID, wmQuit, 0, 0)
 	}()
 
-	fmt.Printf("Listening for %s... Ctrl+C to exit\n", cfg.Hotkey)
+	fmt.Printf("Listening for %s (toggle)... Ctrl+C to exit\n", cfg.Hotkey)
 
 	if rawinput.IsHIDHotkey(cfg.Hotkey) {
-		// HID path: Raw Input API for steering wheel buttons.
 		target, ok := rawinput.ParseHIDButton(cfg.Hotkey)
 		if !ok {
 			fmt.Fprintf(os.Stderr, "notes: invalid HID hotkey %q\n", cfg.Hotkey)
@@ -200,11 +199,12 @@ func runNotesListener(cfg config.Config, notesDir, trackmapPath string) {
 			os.Exit(1)
 		}
 		hidState := rawinput.NewState()
+		// releasedCh is a throwaway — toggle mode only cares about button-down.
+		releasedCh := make(chan struct{}, 1)
 		runMessageLoop(func(lParam uintptr) {
-			rawinput.HandleButtonEvent(lParam, target, hidState, globalCtx.startCh, globalCtx.stopCh)
+			rawinput.HandleButtonEvent(lParam, target, hidState, globalCtx.toggleCh, releasedCh)
 		})
 	} else {
-		// Keyboard path: low-level keyboard hook.
 		vk, err := parseVKey(cfg.Hotkey)
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "notes: invalid hotkey %q: %v\n", cfg.Hotkey, err)
@@ -224,61 +224,35 @@ func runNotesListener(cfg config.Config, notesDir, trackmapPath string) {
 }
 
 func recordingWorker(ctx *notesCtx) {
-	// sessionPath is resolved on the first note of the session.
 	var sessionPath string
-
-	// segments is loaded lazily on the first note once we know the track name.
-	// nil means not yet loaded; empty slice means loaded but no map for this track.
-	var segments []trackmap.Segment
-	var segmentsTrack string // track name the segments were loaded for
 
 	for {
 		select {
 		case <-ctx.shutdown:
 			return
-		case <-ctx.startCh:
-			// Drain any stale stop signal from a previous press.
-			select {
-			case <-ctx.stopCh:
-			default:
-			}
-
+		case <-ctx.toggleCh:
+			// First press: start recording.
+			beepStart()
 			rec := &audio.Recorder{}
 			if err := rec.Start(); err != nil {
 				fmt.Fprintf(os.Stderr, "notes: audio start: %v\n", err)
 				continue
 			}
-			fmt.Print("  [recording...] ")
+			fmt.Println("  [recording...]")
 
-			// Wait for key release or shutdown.
+			// Wait for second press or shutdown.
 			select {
-			case <-ctx.stopCh:
+			case <-ctx.toggleCh:
 			case <-ctx.shutdown:
 				_, _ = rec.Stop()
 				return
 			}
 
-			// Capture iRacing context immediately at key release,
-			// before transcription introduces a multi-second delay.
-			live := iracing.ReadLiveData()
-			if !live.Connected && live.ErrMsg != "" {
-				fmt.Fprintf(os.Stderr, "\nnotes: iRacing: %s\n", live.ErrMsg)
-			}
-
-			// Load segment map for this track the first time we see a track name.
-			if live.Track != "" && live.Track != segmentsTrack {
-				segmentsTrack = live.Track
-				segments = nil // reset; will attempt load below
-				if tmf, err := trackmap.Load(ctx.trackmapPath); err == nil {
-					if tm, ok := tmf[live.Track]; ok {
-						segments = tm.Segments
-					}
-				}
-			}
-
+			// Second press: stop recording.
 			pcm, err := rec.Stop()
+			beepStop()
 			if err != nil {
-				fmt.Fprintf(os.Stderr, "\nnotes: audio stop: %v\n", err)
+				fmt.Fprintf(os.Stderr, "notes: audio stop: %v\n", err)
 				continue
 			}
 
@@ -288,35 +262,26 @@ func recordingWorker(ctx *notesCtx) {
 				sessionPath, ibtFile = resolveSessionPath(ctx.notesDir, ctx.ibtDir)
 				session := notes.Session{
 					IbtFile: ibtFile,
-					Track:   live.Track,
-					Car:     live.Car,
 					Start:   time.Now().UTC(),
 					Notes:   []notes.Note{},
 				}
 				if err := notes.SaveSession(sessionPath, session); err != nil {
-					fmt.Fprintf(os.Stderr, "\nnotes: init session: %v\n", err)
-					sessionPath = "" // retry on next note
+					fmt.Fprintf(os.Stderr, "notes: init session: %v\n", err)
+					sessionPath = ""
 					continue
 				}
-				fmt.Printf("\nSession: %s\n", filepath.Base(sessionPath))
+				fmt.Printf("Session: %s\n", filepath.Base(sessionPath))
 			}
 
 			text, err := transcribeLocal(pcm, ctx.whisperPath, ctx.whisperModel)
 			if err != nil {
-				fmt.Fprintf(os.Stderr, "\nnotes: transcribe: %v\n", err)
+				fmt.Fprintf(os.Stderr, "notes: transcribe: %v\n", err)
 				continue
 			}
 
-			seg := segmentAtPct(segments, live.LapDistPct)
 			note := notes.Note{
-				Timestamp:   time.Now().UTC(),
-				Lap:         live.Lap,
-				LapTime:     live.LapTime,
-				LastLapTime: live.LastLapTime,
-				SessionTime: live.SessionTime,
-				TrackPct:    live.LapDistPct,
-				Segment:     seg,
-				Text:        text,
+				Timestamp: time.Now().UTC(),
+				Text:      text,
 			}
 
 			if err := notes.AppendNote(sessionPath, note); err != nil {
@@ -324,19 +289,12 @@ func recordingWorker(ctx *notesCtx) {
 				continue
 			}
 
-			loc := fmt.Sprintf("%.1f%%", live.LapDistPct*100)
-			if seg != "" {
-				loc = seg + " (" + loc + ")"
-			}
-			fmt.Printf("[note] lap %d | %.1fs | %s | %s\n", note.Lap, note.LapTime, loc, note.Text)
+			fmt.Printf("[note] %s\n", note.Text)
 		}
 	}
 }
 
 // resolveSessionPath determines the notes file path for the current session.
-// It scans ibtDir for the most recently modified .ibt (within the last 4 hours)
-// and names the file to match. Falls back to a plain timestamp if none is found.
-// The notes directory is created if it does not exist.
 func resolveSessionPath(notesDir, ibtDir string) (sessionPath, ibtFile string) {
 	if err := os.MkdirAll(notesDir, 0755); err != nil {
 		fmt.Fprintf(os.Stderr, "notes: could not create notes dir: %v\n", err)
@@ -397,12 +355,12 @@ func transcribeLocal(pcm []byte, whisperPath, modelPath string) (string, error) 
 	cmd := exec.Command(whisperPath,
 		"-m", modelPath,
 		"-f", tmpName,
-		"-nt",         // no timestamps in output
-		"--no-prints", // suppress progress output
+		"-nt",
+		"--no-prints",
 		"-l", "en",
 	)
 	out, err := cmd.Output()
-	os.Remove(tmpName) // explicit removal after whisper exits and releases the file
+	os.Remove(tmpName)
 	if err != nil {
 		return "", fmt.Errorf("whisper-cli: %w", err)
 	}
@@ -411,7 +369,6 @@ func transcribeLocal(pcm []byte, whisperPath, modelPath string) (string, error) 
 }
 
 // resolveWhisperPaths validates and resolves whisperPath and whisperModel from config.
-// Relative paths are resolved relative to the binary's directory.
 func resolveWhisperPaths(cfg config.Config) (whisperPath, modelPath string, err error) {
 	if cfg.WhisperPath == "" {
 		return "", "", fmt.Errorf("whisperPath not set in config — download whisper-cli.exe and set the path")
@@ -441,12 +398,10 @@ func resolveWhisperPaths(cfg config.Config) (whisperPath, modelPath string, err 
 	return whisperPath, modelPath, nil
 }
 
-// runSetHotkey waits for a single keyboard key or HID button press and saves it as
-// the hotkey in config. Whichever input arrives first wins.
+// runSetHotkey waits for a single keyboard key or HID button press and saves it as the hotkey.
 func runSetHotkey(cfg config.Config, cfgPath string) {
 	fmt.Println("Press the key or button you want to use for voice notes...")
 
-	// Drain any previously buffered values.
 	select {
 	case <-captureVKCh:
 	default:
@@ -456,8 +411,6 @@ func runSetHotkey(cfg config.Config, cfgPath string) {
 	default:
 	}
 
-	// Register for Raw Input so HID joystick/gamepad buttons are detected.
-	// Non-fatal — keyboard detection continues even if this fails.
 	if err := rawinput.Register(); err != nil {
 		fmt.Fprintf(os.Stderr, "set-hotkey: raw input registration failed (%v) — keyboard-only detection active\n", err)
 	}
@@ -485,7 +438,6 @@ func runSetHotkey(cfg config.Config, cfgPath string) {
 
 	runMessageLoop(onRawInput)
 
-	// Determine which input fired (HID takes priority if both somehow arrived).
 	var hotkey string
 	select {
 	case btn := <-captureHIDCh:
@@ -515,7 +467,6 @@ func runSetHotkey(cfg config.Config, cfgPath string) {
 }
 
 // runMessageLoop runs a Windows message pump until WM_QUIT or an error.
-// onRawInput, if non-nil, is called for each WM_INPUT message before it is dispatched.
 func runMessageLoop(onRawInput func(uintptr)) {
 	var m winMsg
 	for {
@@ -531,8 +482,7 @@ func runMessageLoop(onRawInput func(uintptr)) {
 	}
 }
 
-// namedVKs maps canonical key names (as stored in config) to Windows virtual key codes.
-// This is the single source of truth used by both vkToName and parseVKey.
+// namedVKs maps canonical key names to Windows virtual key codes.
 var namedVKs = map[string]uint32{
 	"ScrollLock": 0x91,
 	"Pause":      0x13,
@@ -557,46 +507,23 @@ func vkToName(vk uint32) string {
 	return fmt.Sprintf("0x%02X", vk)
 }
 
-// segmentAtPct returns the name of the segment that contains pct (0.0–1.0),
-// or "" if segs is empty or no segment covers that position.
-// Handles the wrap-around case where a segment straddles the S/F line
-// (ExitPct < EntryPct).
-func segmentAtPct(segs []trackmap.Segment, pct float32) string {
-	for _, s := range segs {
-		if s.EntryPct <= s.ExitPct {
-			if pct >= s.EntryPct && pct < s.ExitPct {
-				return s.Name
-			}
-		} else {
-			// Segment wraps around the S/F line (e.g. 0.97–0.03).
-			if pct >= s.EntryPct || pct < s.ExitPct {
-				return s.Name
-			}
-		}
-	}
-	return ""
-}
-
 // parseVKey converts a key name string to a Windows virtual key code.
 func parseVKey(s string) (uint32, error) {
 	upper := strings.ToUpper(s)
 
-	// F1–F24
 	if strings.HasPrefix(upper, "F") {
 		n, err := strconv.Atoi(s[1:])
 		if err == nil && n >= 1 && n <= 24 {
-			return uint32(0x6F + n), nil // F1=0x70, F24=0x87
+			return uint32(0x6F + n), nil
 		}
 	}
 
-	// Named keys (case-insensitive)
 	for name, vk := range namedVKs {
 		if strings.ToUpper(name) == upper {
 			return vk, nil
 		}
 	}
 
-	// Hex e.g. "0x91"
 	if strings.HasPrefix(upper, "0X") {
 		n, err := strconv.ParseUint(s[2:], 16, 32)
 		if err == nil {
@@ -604,7 +531,6 @@ func parseVKey(s string) (uint32, error) {
 		}
 	}
 
-	// Decimal
 	n, err := strconv.ParseUint(s, 10, 32)
 	if err == nil {
 		return uint32(n), nil

@@ -6,7 +6,6 @@ import (
 	"os"
 	"path/filepath"
 	"strconv"
-	"strings"
 	"time"
 
 	"github.com/rickymw/MotorHome/internal/analysis"
@@ -22,7 +21,6 @@ import (
 func RunAnalyze(args []string, cfg config.Config, trackmapPath, pbPath string) {
 	fs := flag.NewFlagSet("analyze", flag.ExitOnError)
 	lapNum := fs.Int("lap", 0, "lap number to analyze (0 = best completed lap)")
-	compare := fs.String("compare", "", "compare two laps, e.g. -compare 1,2")
 	updateMap := fs.Bool("update-map", false, "ignore existing track map and re-detect from this session")
 	geoMethod := fs.String("geo-method", "latlon", "segment detection method: latlon (default, GPS curvature) or lataccel")
 	fs.Usage = func() {
@@ -31,7 +29,6 @@ func RunAnalyze(args []string, cfg config.Config, trackmapPath, pbPath string) {
 		fmt.Fprintln(os.Stderr, "Examples:")
 		fmt.Fprintln(os.Stderr, "  motorhome analyze session.ibt")
 		fmt.Fprintln(os.Stderr, "  motorhome analyze -lap 2 session.ibt")
-		fmt.Fprintln(os.Stderr, "  motorhome analyze -compare 1,2 session.ibt")
 		fmt.Fprintln(os.Stderr, "  motorhome analyze -geo-method latlon session.ibt")
 		fmt.Fprintln(os.Stderr)
 		fs.PrintDefaults()
@@ -110,6 +107,7 @@ func RunAnalyze(args []string, cfg config.Config, trackmapPath, pbPath string) {
 	var segs []trackmap.Segment
 
 	var tmf trackmap.TrackMapFile
+	var trf trackmap.TrackRefFile
 	if trackmapPath != "" {
 		var loadErr error
 		tmf, loadErr = trackmap.Load(trackmapPath)
@@ -117,8 +115,16 @@ func RunAnalyze(args []string, cfg config.Config, trackmapPath, pbPath string) {
 			fmt.Fprintf(os.Stderr, "Warning: could not load trackmap.json: %v\n", loadErr)
 			tmf = trackmap.TrackMapFile{}
 		}
+		// Load track reference from the same directory.
+		refPath := filepath.Join(filepath.Dir(trackmapPath), "trackref.json")
+		trf, loadErr = trackmap.LoadTrackRef(refPath)
+		if loadErr != nil {
+			fmt.Fprintf(os.Stderr, "Warning: could not load trackref.json: %v\n", loadErr)
+			trf = trackmap.TrackRefFile{}
+		}
 	} else {
 		tmf = trackmap.TrackMapFile{}
+		trf = trackmap.TrackRefFile{}
 	}
 
 	var geomConf trackmap.GeometryConfidence
@@ -152,16 +158,23 @@ func RunAnalyze(args []string, cfg config.Config, trackmapPath, pbPath string) {
 		needsBrake := hasMissingBrakeEntries(existingTM.Segments)
 
 		if trackmapPath != "" && (isNewSession || needsBrake) {
-			flyingCount := 0
-			for _, l := range laps {
-				if l.Kind == analysis.KindFlying && !l.IsPartialStart {
-					flyingCount++
+			// Only use laps within lapTimeFilterPct of best — avoids slow early-practice
+			// laps skewing brake-entry positions.
+			var goodLaps []analysis.Lap
+			if bestLap != nil {
+				goodLaps = flyingLapsWithinTime(laps, bestLap.LapTime)
+			} else {
+				for _, l := range laps {
+					if l.Kind == analysis.KindFlying && !l.IsPartialStart {
+						goodLaps = append(goodLaps, l)
+					}
 				}
 			}
+			flyingCount := len(goodLaps)
 
 			// Compute brake entries from this session and blend into stored values.
 			if flyingCount > 0 {
-				newEntries := analysis.ComputeBrakeEntries(laps, segs)
+				newEntries := analysis.ComputeBrakeEntries(goodLaps, segs)
 				oldLaps := existingTM.LapsUsed
 				for i := range existingTM.Segments {
 					seg := &existingTM.Segments[i]
@@ -188,16 +201,15 @@ func RunAnalyze(args []string, cfg config.Config, trackmapPath, pbPath string) {
 			}
 		}
 	} else if trackLengthM > 0 && bestLap != nil {
-		// Auto-detect from all flying, non-partial-start laps for more stable boundaries.
+		// Auto-detect from flying laps within lapTimeFilterPct of best — slower early
+		// laps have different braking points and skew segment boundaries.
+		goodLaps := flyingLapsWithinTime(laps, bestLap.LapTime)
 		var allSamples [][]trackmap.Sample
-		for i := range laps {
-			l := &laps[i]
-			if l.Kind != analysis.KindFlying || l.IsPartialStart {
-				continue
-			}
+		for i := range goodLaps {
+			l := &goodLaps[i]
 			ts := make([]trackmap.Sample, len(l.Samples))
 			for j, s := range l.Samples {
-				ts[j] = trackmap.Sample{LapDistPct: s.LapDistPct, LatAccel: s.LatAccel, Lat: s.Lat, Lon: s.Lon}
+				ts[j] = trackmap.Sample{LapDistPct: s.LapDistPct, LatAccel: s.LatAccel, Lat: s.Lat, Lon: s.Lon, Speed: s.Speed, SteerAngle: s.SteeringAngle}
 			}
 			allSamples = append(allSamples, ts)
 		}
@@ -205,13 +217,19 @@ func RunAnalyze(args []string, cfg config.Config, trackmapPath, pbPath string) {
 			// Fallback: use bestLap only (e.g. all laps are partial-start).
 			ts := make([]trackmap.Sample, len(bestLap.Samples))
 			for i, s := range bestLap.Samples {
-				ts[i] = trackmap.Sample{LapDistPct: s.LapDistPct, LatAccel: s.LatAccel, Lat: s.Lat, Lon: s.Lon}
+				ts[i] = trackmap.Sample{LapDistPct: s.LapDistPct, LatAccel: s.LatAccel, Lat: s.Lat, Lon: s.Lon, Speed: s.Speed, SteerAngle: s.SteeringAngle}
 			}
 			allSamples = [][]trackmap.Sample{ts}
 		}
+		// Look up expected corner count from track reference.
+		targetCorners := 0
+		if n, ok := trf.Corners(meta.TrackDisplayName); ok {
+			targetCorners = n
+		}
+
 		switch *geoMethod {
 		case "latlon":
-			segs = trackmap.DetectFromMultipleLatLon(allSamples, trackLengthM)
+			segs = trackmap.DetectFromMultipleLatLon(allSamples, trackLengthM, targetCorners)
 			if segs == nil {
 				fmt.Fprintln(os.Stderr, "Warning: Lat/Lon channels not found in telemetry — falling back to lataccel method.")
 				segs = trackmap.DetectFromMultiple(allSamples, trackLengthM)
@@ -221,9 +239,10 @@ func RunAnalyze(args []string, cfg config.Config, trackmapPath, pbPath string) {
 			segs = trackmap.DetectFromMultiple(allSamples, trackLengthM)
 			*geoMethod = "lataccel"
 		}
-		// Compute brake entries from all flying laps and store in segments.
+
+		// Compute brake entries from filtered laps and store in segments.
 		if len(segs) > 0 {
-			newEntries := analysis.ComputeBrakeEntries(laps, segs)
+			newEntries := analysis.ComputeBrakeEntries(goodLaps, segs)
 			for i := range segs {
 				if segs[i].Kind != trackmap.KindStraight {
 					segs[i].BrakeEntryPct = newEntries[i]
@@ -343,10 +362,6 @@ func RunAnalyze(args []string, cfg config.Config, trackmapPath, pbPath string) {
 	}
 	fmt.Println()
 
-	if *compare != "" {
-		analyzeCompareLaps(laps, *compare, segs)
-		return
-	}
 	analyzeSingleLap(laps, *lapNum, segs)
 }
 
@@ -377,63 +392,10 @@ func analyzeSingleLap(laps []analysis.Lap, lapNum int, segs []trackmap.Segment) 
 	}
 
 	if segs != nil {
-		printSegmentTable(lap, analysis.SegmentStats(lap, segs))
+		phases := analysis.ComputePhases(lap, segs)
+		printPhaseTable(lap, phases)
 	} else {
 		printZoneTable(lap, analysis.ZoneStats(lap))
-	}
-}
-
-// ---- comparison ----
-
-func analyzeCompareLaps(laps []analysis.Lap, arg string, segs []trackmap.Segment) {
-	parts := strings.SplitN(arg, ",", 2)
-	var lap1, lap2 *analysis.Lap
-	if len(parts) == 1 {
-		n1, e1 := strconv.Atoi(strings.TrimSpace(parts[0]))
-		if e1 != nil {
-			analyzeDie("-compare: invalid lap number %q", arg)
-		}
-		lap1 = findAnalyzeLap(laps, n1)
-		if lap1 == nil {
-			analyzeDie("lap %d not found in file", n1)
-		}
-		lap2 = bestAnalyzeLap(laps)
-		if lap2 == nil {
-			analyzeDie("no best lap found in session")
-		}
-		if lap1.Number == lap2.Number {
-			fmt.Printf("Note: Lap %d is already the best lap.\n", n1)
-		}
-	} else {
-		n1, e1 := strconv.Atoi(strings.TrimSpace(parts[0]))
-		n2, e2 := strconv.Atoi(strings.TrimSpace(parts[1]))
-		if e1 != nil || e2 != nil {
-			analyzeDie("-compare: invalid lap numbers %q", arg)
-		}
-		lap1 = findAnalyzeLap(laps, n1)
-		lap2 = findAnalyzeLap(laps, n2)
-		if lap1 == nil {
-			analyzeDie("lap %d not found in file", n1)
-		}
-		if lap2 == nil {
-			analyzeDie("lap %d not found in file", n2)
-		}
-	}
-	for _, l := range []*analysis.Lap{lap1, lap2} {
-		if l.Kind != analysis.KindFlying {
-			fmt.Printf("Note: Lap %d is a %s.\n", l.Number, l.Kind)
-		}
-	}
-
-	if segs != nil {
-		zones1 := analysis.SegmentStats(lap1, segs)
-		zones2 := analysis.SegmentStats(lap2, segs)
-		deltas := analysis.SegmentDeltas(lap1, lap2, segs)
-		printSegmentComparisonTable(lap1, lap2, zones1, zones2, deltas)
-	} else {
-		printComparisonTable(lap1, lap2,
-			analysis.ZoneStats(lap1), analysis.ZoneStats(lap2),
-			analysis.ZoneDeltas(lap1, lap2))
 	}
 }
 
@@ -441,18 +403,17 @@ func analyzeCompareLaps(laps []analysis.Lap, arg string, segs []trackmap.Segment
 
 func printZoneTable(lap *analysis.Lap, zones []analysis.Zone) {
 	fmt.Printf("Lap %d — %s\n\n", lap.Number, analysis.FormatLapTime(lap.LapTime))
-	fmt.Println(" Zone | Dist  | EntSpd | MinSpd | ExtSpd | Gear | Brake | Thr  | LatG | ABS | Coast")
-	fmt.Println("------|-------|--------|--------|--------|------|-------|------|------|-----|------")
+	fmt.Println(" Zone | Dist  | EntSpd | MinSpd | ExtSpd | Brake | Thr  | LatG | ABS | Coast")
+	fmt.Println("------|-------|--------|--------|--------|-------|------|------|-----|------")
 	for _, z := range zones {
 		if z.SampleCount == 0 {
-			fmt.Printf("  %2d  | %3d%%  |    --- |    --- |    --- |   -- |    -- |   -- |   -- |  -- |   ---\n",
+			fmt.Printf("  %2d  | %3d%%  |    --- |    --- |    --- |    -- |   -- |   -- |  -- |   ---\n",
 				z.Index+1, (z.Index+1)*5)
 			continue
 		}
-		fmt.Printf("  %2d  | %3d%%  | %6.1f | %6.1f | %6.1f |  %3d | %5.0f%% | %4.0f%% | %4.2f | %3d | %5d\n",
+		fmt.Printf("  %2d  | %3d%%  | %6.1f | %6.1f | %6.1f | %5.0f%% | %4.0f%% | %4.2f | %3d | %5d\n",
 			z.Index+1, (z.Index+1)*5,
 			z.SpeedEntryKPH, z.SpeedMinKPH, z.SpeedExitKPH,
-			z.DominantGear,
 			z.BrakePct, z.ThrottlePct,
 			z.LatGAvg,
 			z.ABSCount, z.CoastSamples)
@@ -460,89 +421,60 @@ func printZoneTable(lap *analysis.Lap, zones []analysis.Zone) {
 	fmt.Println()
 }
 
-func printComparisonTable(lap1, lap2 *analysis.Lap, zones1, zones2 []analysis.Zone, deltas []float32) {
-	fmt.Printf("Lap A: Lap %d (%s)  ↔  Lap B: Lap %d (%s)\n",
-		lap1.Number, analysis.FormatLapTime(lap1.LapTime),
-		lap2.Number, analysis.FormatLapTime(lap2.LapTime))
-	fmt.Printf("Overall delta (B−A): %+.3fs\n\n", lap2.LapTime-lap1.LapTime)
-	fmt.Println(" Zone | Dist  | A.Min | B.Min | A.Brk | B.Brk | A.Thr | B.Thr | A.ABS | B.ABS |   Δ(s)")
-	fmt.Println("------|-------|-------|-------|-------|-------|-------|-------|-------|-------|-------")
-	for i, z1 := range zones1 {
-		z2 := zones2[i]
-		d := float32(0)
-		if i < len(deltas) {
-			d = deltas[i]
-		}
-		fmt.Printf("  %2d  | %3d%%  | %5.1f | %5.1f | %5.0f%% | %5.0f%% | %5.0f%% | %5.0f%% | %5d | %5d | %+6.3f\n",
-			i+1, (i+1)*5,
-			z1.SpeedMinKPH, z2.SpeedMinKPH,
-			z1.BrakePct, z2.BrakePct,
-			z1.ThrottlePct, z2.ThrottlePct,
-			z1.ABSCount, z2.ABSCount, d)
-	}
-	fmt.Println()
-}
-
-// printSegmentTable prints a single-lap zone table using geometry-based segments.
-//
-// Example output:
-//
-//	Lap 5 — 2:11.367
-//
-//	 Seg  | Name         |  Entry →   Exit | EntSpd | MinSpd | ExtSpd | Gear | Brake |  Thr  | LatG | ABS | Coast
-//	------|--------------|-----------------|--------|--------|--------|------|-------|-------|------|-----|------
-//	   1  | S1           |  0.0% →   3.2%  |  202.7 |  202.7 |  241.3 |    5 |    0% |  100% | 0.31 |   0 |     0
-func printSegmentTable(lap *analysis.Lap, zones []analysis.SegZone) {
+func printPhaseTable(lap *analysis.Lap, phases []analysis.Phase) {
 	fmt.Printf("Lap %d — %s\n\n", lap.Number, analysis.FormatLapTime(lap.LapTime))
-	fmt.Println(" Seg  | Name         | EntSpd | MinSpd | ExtSpd | Gear | Brk%  | PkBrk | FThr% | AvgLatG | ABS | Coast")
-	fmt.Println("------|--------------|--------|--------|--------|------|-------|-------|-------|---------|-----|------")
-	for i, z := range zones {
-		if z.SampleCount == 0 {
-			fmt.Printf("  %2d  | %-12s |    --- |    --- |    --- |   -- |    -- |    -- |    -- |      -- |  -- |    --\n",
-				i+1, z.Name)
+	fmt.Println(" Seg | Name         | Phase | Spd         | Brk | PkBrk | Thr | TC% | LatG | Steer° | Corr | ABS  | Lock | Spin | Coast")
+	fmt.Println("-----|--------------|-------|-------------|-----|-------|-----|-----|------|--------|------|------|------|------|------")
+	for _, p := range phases {
+		if p.SampleCount == 0 {
 			continue
 		}
-		coastSecs := float32(z.CoastSamples) / 60.0
-		fmt.Printf("  %2d  | %-12s | %6.1f | %6.1f | %6.1f |  %3d | %4.0f%% | %4.0f%% | %4.0f%% |    %4.2f | %3d | %5.2fs\n",
-			i+1, z.Name,
-			z.SpeedEntryKPH, z.SpeedMinKPH, z.SpeedExitKPH,
-			z.DominantGear,
-			z.BrakePct, z.PeakBrakePct, z.ThrottlePct,
-			z.LatGAvg,
-			z.ABSCount, coastSecs)
-	}
-	fmt.Println()
-}
-
-// printSegmentComparisonTable prints a side-by-side lap comparison using geometry-based segments.
-func printSegmentComparisonTable(lap1, lap2 *analysis.Lap, zones1, zones2 []analysis.SegZone, deltas []float32) {
-	fmt.Printf("Lap A: Lap %d (%s)  ↔  Lap B: Lap %d (%s)\n",
-		lap1.Number, analysis.FormatLapTime(lap1.LapTime),
-		lap2.Number, analysis.FormatLapTime(lap2.LapTime))
-	fmt.Printf("Overall delta (B−A): %+.3fs\n\n", lap2.LapTime-lap1.LapTime)
-	fmt.Println(" Seg  | Name         | A.Min | B.Min | A.Brk%| B.Brk%|A.PkBk |B.PkBk |A.FThr%|B.FThr%| A.ABS | B.ABS |   Δ(s)")
-	fmt.Println("------|--------------|-------|-------|-------|-------|-------|-------|-------|-------|-------|-------|-------")
-	for i, z1 := range zones1 {
-		var z2 analysis.SegZone
-		if i < len(zones2) {
-			z2 = zones2[i]
-		}
-		d := float32(0)
-		if i < len(deltas) {
-			d = deltas[i]
-		}
-		fmt.Printf("  %2d  | %-12s | %5.1f | %5.1f | %4.0f%% | %4.0f%% | %4.0f%% | %4.0f%% | %4.0f%% | %4.0f%% | %5d | %5d | %+6.3f\n",
-			i+1, z1.Name,
-			z1.SpeedMinKPH, z2.SpeedMinKPH,
-			z1.BrakePct, z2.BrakePct,
-			z1.PeakBrakePct, z2.PeakBrakePct,
-			z1.ThrottlePct, z2.ThrottlePct,
-			z1.ABSCount, z2.ABSCount, d)
+		coastSecs := float32(p.CoastSamples) / 60.0
+		fmt.Printf(" %3d | %-12s | %-5s | %5.0f→%5.0f | %2.0f%% | %4.0f%% | %2.0f%% | %2.0f%% | %4.2f | %6.1f | %4d | %4d | %4d | %4d | %5.2fs\n",
+			p.SegIndex+1, p.SegName, p.Kind,
+			p.SpeedEntryKPH, p.SpeedExitKPH,
+			p.BrakePct, p.PeakBrakePct, p.ThrottlePct, p.TCPct,
+			p.LatGAvg,
+			p.PeakSteerDeg, p.Corrections,
+			p.ABSCount, p.LockupSamples, p.WheelspinSamples, coastSecs)
 	}
 	fmt.Println()
 }
 
 // ---- helpers ----
+
+// lapTimeFilterDelta is the maximum number of seconds a lap may be slower than the
+// session best before it is excluded from trackmap detection and brake-entry blending.
+const lapTimeFilterDelta float32 = 1.5
+
+// flyingLapsWithinTime returns flying, non-partial-start laps whose lap time is
+// within lapTimeFilterDelta of bestTime. This excludes early slow laps that would
+// skew corner boundaries and brake-entry positions.
+// Falls back to all valid flying laps only if none pass the filter.
+func flyingLapsWithinTime(laps []analysis.Lap, bestTime float32) []analysis.Lap {
+	threshold := bestTime + lapTimeFilterDelta
+	var result []analysis.Lap
+	for i := range laps {
+		l := &laps[i]
+		if l.Kind != analysis.KindFlying || l.IsPartialStart || l.LapTime <= 0 {
+			continue
+		}
+		if l.LapTime <= threshold {
+			result = append(result, *l)
+		}
+	}
+	if len(result) == 0 {
+		// Fallback: return all valid flying laps (bestLap itself always passes
+		// since threshold = bestTime + delta >= bestTime).
+		for i := range laps {
+			l := &laps[i]
+			if l.Kind == analysis.KindFlying && !l.IsPartialStart && l.LapTime > 0 {
+				result = append(result, *l)
+			}
+		}
+	}
+	return result
+}
 
 func findAnalyzeLap(laps []analysis.Lap, number int) *analysis.Lap {
 	for i := range laps {

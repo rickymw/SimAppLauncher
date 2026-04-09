@@ -20,6 +20,16 @@ const (
 	// brakeEntryThreshold is the minimum brake pressure (0.0–1.0) that marks
 	// the start of a braking zone when scanning backward from a corner entry.
 	brakeEntryThreshold = float32(0.05)
+
+	// tcCutThreshold is the minimum ThrottleRaw−Throttle difference that
+	// counts as active traction control intervention.
+	tcCutThreshold = float32(0.02)
+
+	// lockupRatio: a wheel is locking if its speed < this fraction of vehicle speed.
+	lockupRatio = float32(0.95)
+
+	// wheelspinRatio: a wheel is spinning if its speed > this fraction of vehicle speed.
+	wheelspinRatio = float32(1.05)
 )
 
 // Zone holds computed statistics for one 5%-of-track section.
@@ -37,6 +47,14 @@ type Zone struct {
 	ABSCount      int     // samples where ABS was active
 	CoastSamples  int     // samples with throttle < 5% AND brake < 5%
 	SampleCount   int     // total samples bucketed into this zone
+
+	// TC intervention: ThrottleRaw − Throttle when TC is cutting power.
+	TCInterventionPct float32 // % of samples where TC is active (cut > 2%)
+	PeakTCCut         float32 // max (ThrottleRaw − Throttle) × 100
+
+	// Wheel lockup/spin detection.
+	LockupSamples   int // samples where any wheel speed < 95% of vehicle speed under braking
+	WheelspinSamples int // samples where any wheel speed > 105% of vehicle speed under power
 }
 
 // ZoneStats computes per-zone statistics for a single lap.
@@ -52,6 +70,7 @@ func ZoneStats(lap *Lap) []Zone {
 	zones := make([]Zone, NumZones)
 	brakeOnCounts := make([]int, NumZones)
 	thrFullCounts := make([]int, NumZones)
+	tcActiveCounts := make([]int, NumZones)
 
 	for i, samples := range buckets {
 		z := &zones[i]
@@ -96,6 +115,31 @@ func ZoneStats(lap *Lap) []Zone {
 				z.CoastSamples++
 			}
 
+			// TC intervention: ThrottleRaw − Throttle > tcCutThreshold.
+			tcCut := s.ThrottleRaw - s.Throttle
+			if tcCut > tcCutThreshold {
+				tcActiveCounts[i]++
+				if tcCut*100 > z.PeakTCCut {
+					z.PeakTCCut = tcCut * 100
+				}
+			}
+
+			// Lockup: any wheel speed < 95% of vehicle speed while braking.
+			if s.Brake > brakeOnThreshold && s.Speed > 5 {
+				minWheel := min32(s.LFspeed, s.RFspeed, s.LRspeed, s.RRspeed)
+				if minWheel < s.Speed*lockupRatio {
+					z.LockupSamples++
+				}
+			}
+
+			// Wheelspin: any wheel speed > 105% of vehicle speed under power.
+			if s.Throttle > 0.5 && s.Speed > 5 {
+				maxWheel := max32(s.LFspeed, s.RFspeed, s.LRspeed, s.RRspeed)
+				if maxWheel > s.Speed*wheelspinRatio {
+					z.WheelspinSamples++
+				}
+			}
+
 			gearCounts[s.Gear]++
 		}
 
@@ -105,6 +149,7 @@ func ZoneStats(lap *Lap) []Zone {
 		z.BrakePct = 100 * float32(brakeOnCounts[i]) / n
 		z.ThrottlePct = 100 * float32(thrFullCounts[i]) / n
 		z.LatGAvg /= n
+		z.TCInterventionPct = 100 * float32(tcActiveCounts[i]) / n
 
 		// Dominant gear: modal value, preferring forward gears (>0) over neutral/reverse.
 		bestGear, bestCount := int32(0), 0
@@ -127,70 +172,6 @@ func ZoneStats(lap *Lap) []Zone {
 	return zones
 }
 
-// ZoneDeltas computes the per-zone time contribution of the delta between
-// two laps. A negative value means lap2 was faster through that zone;
-// a positive value means lap1 was faster.
-//
-// The algorithm:
-//  1. Compute the lap time reached at each of 21 zone boundaries (0%, 5%, …, 100%)
-//     for both laps using linear interpolation of LapCurrentLapTime vs LapDistPct.
-//  2. The time each lap spent in zone z = cumulative[z+1] − cumulative[z].
-//  3. Delta[z] = (lap2 time in zone z) − (lap1 time in zone z).
-func ZoneDeltas(lap1, lap2 *Lap) []float32 {
-	deltas := make([]float32, NumZones)
-	if len(lap1.Samples) == 0 || len(lap2.Samples) == 0 {
-		return deltas
-	}
-
-	var cum1, cum2 [NumZones + 1]float32
-	for k := 0; k <= NumZones; k++ {
-		pct := float32(k) / float32(NumZones)
-		cum1[k] = timeAtPct(lap1, pct)
-		cum2[k] = timeAtPct(lap2, pct)
-	}
-
-	for z := 0; z < NumZones; z++ {
-		zoneTime1 := cum1[z+1] - cum1[z]
-		zoneTime2 := cum2[z+1] - cum2[z]
-		deltas[z] = zoneTime2 - zoneTime1
-	}
-
-	return deltas
-}
-
-// timeAtPct returns the elapsed time since lap start (in seconds) when
-// LapDistPct reaches targetPct, using linear interpolation of SessionTime.
-// SessionTime is used because iRacing's LapCurrentLapTime does not reset
-// at the S/F line; SessionTime is a monotonically increasing, reliable clock.
-func timeAtPct(lap *Lap, targetPct float32) float32 {
-	if len(lap.Samples) == 0 {
-		return 0
-	}
-
-	elapsedAt := func(s SampleData) float32 {
-		return float32(s.SessionTime - lap.StartSessionTime)
-	}
-
-	first := lap.Samples[0]
-	if targetPct <= first.LapDistPct {
-		return elapsedAt(first)
-	}
-	for i := 1; i < len(lap.Samples); i++ {
-		prev := lap.Samples[i-1]
-		curr := lap.Samples[i]
-		if prev.LapDistPct <= targetPct && curr.LapDistPct >= targetPct {
-			span := curr.LapDistPct - prev.LapDistPct
-			if span < 1e-6 {
-				return elapsedAt(prev)
-			}
-			frac := (targetPct - prev.LapDistPct) / span
-			return elapsedAt(prev) + frac*(elapsedAt(curr)-elapsedAt(prev))
-		}
-	}
-	// targetPct is beyond the last sample.
-	return elapsedAt(lap.Samples[len(lap.Samples)-1])
-}
-
 // zoneIdx maps a LapDistPct value (0.0–1.0) to a zone index (0–NumZones-1).
 func zoneIdx(pct float32) int {
 	zi := int(pct * NumZones)
@@ -211,6 +192,28 @@ func abs32(x float32) float32 {
 	return x
 }
 
+// min32 returns the minimum of the given float32 values.
+func min32(vals ...float32) float32 {
+	m := vals[0]
+	for _, v := range vals[1:] {
+		if v < m {
+			m = v
+		}
+	}
+	return m
+}
+
+// max32 returns the maximum of the given float32 values.
+func max32(vals ...float32) float32 {
+	m := vals[0]
+	for _, v := range vals[1:] {
+		if v > m {
+			m = v
+		}
+	}
+	return m
+}
+
 // SegZone holds computed statistics for one geometry-based track segment.
 // Speed fields are in km/h; input fields are 0–100%; G-force fields are in g.
 type SegZone struct {
@@ -229,6 +232,20 @@ type SegZone struct {
 	ABSCount      int     // samples where ABS was active
 	CoastSamples  int     // samples with throttle<5% AND brake<5%
 	SampleCount   int     // total samples in the segment
+
+	// TC intervention
+	TCInterventionPct float32 // % of samples where TC is active (ThrottleRaw−Throttle > 2%)
+	PeakTCCut         float32 // max (ThrottleRaw − Throttle) × 100
+
+	// Wheel lockup/spin
+	LockupSamples    int // samples where any wheel speed < 95% of vehicle speed under braking
+	WheelspinSamples int // samples where any wheel speed > 105% of vehicle speed under power
+
+	// Tyre temps — average carcass middle temp per corner (°C)
+	AvgTyreTempLF float32
+	AvgTyreTempRF float32
+	AvgTyreTempLR float32
+	AvgTyreTempRR float32
 }
 
 // effectiveSegEntry returns the effective entry percentage for a segment.
@@ -376,6 +393,8 @@ func SegmentStats(lap *Lap, segs []trackmap.Segment) []SegZone {
 	latGSums := make([]float32, len(segs))
 	brakeOnCounts := make([]int, len(segs))
 	thrFullCounts := make([]int, len(segs))
+	tcActiveCounts := make([]int, len(segs))
+	tyreTempSums := make([][4]float32, len(segs)) // LF, RF, LR, RR mid-carcass sums
 	// minGear / maxGear track the lowest and highest forward gear (≥1) per segment.
 	minGears := make([]int32, len(segs))
 	maxGears := make([]int32, len(segs))
@@ -428,6 +447,37 @@ func SegmentStats(lap *Lap, segs []trackmap.Segment) []SegZone {
 			}
 		}
 
+		// TC intervention.
+		tcCut := s.ThrottleRaw - s.Throttle
+		if tcCut > tcCutThreshold {
+			tcActiveCounts[idx]++
+			if tcCut*100 > z.PeakTCCut {
+				z.PeakTCCut = tcCut * 100
+			}
+		}
+
+		// Lockup detection.
+		if s.Brake > brakeOnThreshold && s.Speed > 5 {
+			minWheel := min32(s.LFspeed, s.RFspeed, s.LRspeed, s.RRspeed)
+			if minWheel < s.Speed*lockupRatio {
+				z.LockupSamples++
+			}
+		}
+
+		// Wheelspin detection.
+		if s.Throttle > 0.5 && s.Speed > 5 {
+			maxWheel := max32(s.LFspeed, s.RFspeed, s.LRspeed, s.RRspeed)
+			if maxWheel > s.Speed*wheelspinRatio {
+				z.WheelspinSamples++
+			}
+		}
+
+		// Tyre temps (mid-carcass).
+		tyreTempSums[idx][0] += s.LFtempCM
+		tyreTempSums[idx][1] += s.RFtempCM
+		tyreTempSums[idx][2] += s.LRtempCM
+		tyreTempSums[idx][3] += s.RRtempCM
+
 		z.SampleCount++
 	}
 
@@ -442,6 +492,13 @@ func SegmentStats(lap *Lap, segs []trackmap.Segment) []SegZone {
 		zones[idx].BrakePct = 100 * float32(brakeOnCounts[idx]) / n
 		zones[idx].ThrottlePct = 100 * float32(thrFullCounts[idx]) / n
 		zones[idx].LatGAvg = latGSums[idx] / n
+		zones[idx].TCInterventionPct = 100 * float32(tcActiveCounts[idx]) / n
+
+		// Average tyre temps.
+		zones[idx].AvgTyreTempLF = tyreTempSums[idx][0] / n
+		zones[idx].AvgTyreTempRF = tyreTempSums[idx][1] / n
+		zones[idx].AvgTyreTempLR = tyreTempSums[idx][2] / n
+		zones[idx].AvgTyreTempRR = tyreTempSums[idx][3] / n
 
 		// Gear selection depends on segment kind:
 		//   Straight → highest gear reached (max speed gear)
@@ -461,35 +518,3 @@ func SegmentStats(lap *Lap, segs []trackmap.Segment) []SegZone {
 	return zones
 }
 
-// SegmentDeltas computes the per-segment time delta between two laps.
-// A negative value means lap2 was faster through that segment.
-// Returns one delta per segment (time of lap2 at segment entry minus time of lap1).
-func SegmentDeltas(lap1, lap2 *Lap, segs []trackmap.Segment) []float32 {
-	deltas := make([]float32, len(segs))
-	if len(lap1.Samples) == 0 || len(lap2.Samples) == 0 || len(segs) == 0 {
-		return deltas
-	}
-
-	// Build boundary pct values using effective entries so that the time delta
-	// for each segment matches the sample attribution in SegmentStats.
-	boundaries := make([]float32, len(segs)+1)
-	for i, seg := range segs {
-		boundaries[i] = effectiveSegEntry(seg)
-	}
-	boundaries[len(segs)] = 1.0
-
-	cum1 := make([]float32, len(segs)+1)
-	cum2 := make([]float32, len(segs)+1)
-	for k, pct := range boundaries {
-		cum1[k] = timeAtPct(lap1, pct)
-		cum2[k] = timeAtPct(lap2, pct)
-	}
-
-	for z := 0; z < len(segs); z++ {
-		zoneTime1 := cum1[z+1] - cum1[z]
-		zoneTime2 := cum2[z+1] - cum2[z]
-		deltas[z] = zoneTime2 - zoneTime1
-	}
-
-	return deltas
-}

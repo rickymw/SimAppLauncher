@@ -1,4 +1,106 @@
 {
+  "Donington Park Racing Circuit": {
+    "trackLengthM": 3161.2,
+    "source": "auto",
+    "detectedFrom": "2026-04-08",
+    "geoMethod": "latlon",
+    "lapsUsed": 16,
+    "sessionsUsed": 4,
+    "seenSessions": [
+      "2026-04-06T04:37:31Z",
+      "2026-04-08T05:35:40Z",
+      "2026-04-08T21:28:06Z",
+      "2026-04-08T22:09:46Z"
+    ],
+    "segments": [
+      {
+        "name": "S1",
+        "kind": "straight",
+        "entryPct": 0,
+        "exitPct": 0.088,
+        "entryM": 0,
+        "exitM": 278.1856
+      },
+      {
+        "name": "T1",
+        "kind": "corner",
+        "entryPct": 0.088,
+        "exitPct": 0.27,
+        "entryM": 278.1856,
+        "exitM": 853.52405,
+        "brakeEntryPct": 0.06855586
+      },
+      {
+        "name": "T2-3",
+        "kind": "chicane",
+        "entryPct": 0.27,
+        "exitPct": 0.419,
+        "entryM": 853.52405,
+        "exitM": 1324.5427,
+        "brakeEntryPct": 0.114896536
+      },
+      {
+        "name": "T4",
+        "kind": "corner",
+        "entryPct": 0.419,
+        "exitPct": 0.524,
+        "entryM": 1324.5427,
+        "exitM": 1656.4688,
+        "brakeEntryPct": 0.31525615
+      },
+      {
+        "name": "T5",
+        "kind": "corner",
+        "entryPct": 0.524,
+        "exitPct": 0.585,
+        "entryM": 1656.4688,
+        "exitM": 1849.3019,
+        "brakeEntryPct": 0.51136583
+      },
+      {
+        "name": "S2",
+        "kind": "straight",
+        "entryPct": 0.585,
+        "exitPct": 0.639,
+        "entryM": 1849.3019,
+        "exitM": 2020.0067
+      },
+      {
+        "name": "T6",
+        "kind": "corner",
+        "entryPct": 0.639,
+        "exitPct": 0.73,
+        "entryM": 2020.0067,
+        "exitM": 2307.676,
+        "brakeEntryPct": 0.6287638
+      },
+      {
+        "name": "S3",
+        "kind": "straight",
+        "entryPct": 0.73,
+        "exitPct": 0.873,
+        "entryM": 2307.676,
+        "exitM": 2759.7275
+      },
+      {
+        "name": "T7",
+        "kind": "corner",
+        "entryPct": 0.873,
+        "exitPct": 0.935,
+        "entryM": 2759.7275,
+        "exitM": 2955.722,
+        "brakeEntryPct": 0.84586525
+      },
+      {
+        "name": "S4",
+        "kind": "straight",
+        "entryPct": 0.935,
+        "exitPct": 1,
+        "entryM": 2955.722,
+        "exitM": 3161.2
+      }
+    ]
+  },
   "Sebring International Raceway": {
     "trackLengthM": 5793.8,
     "source": "auto",

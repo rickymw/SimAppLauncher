@@ -204,24 +204,75 @@ func yamlField(yaml, key string) string {
 	return ""
 }
 
-// SampleData holds the subset of telemetry channels used for analysis.
-// Units: Speed m/s, Accel m/s², SteeringAngle rad, SessionTime s.
+// SampleData holds telemetry channels used for analysis.
+// Units: Speed/WheelSpeed m/s, Accel m/s², SteeringAngle rad, SessionTime s,
+// Temps °C, Pressures kPa, BrakeLinePress bar, Fuel litres, Wear 0–1.
 type SampleData struct {
-	LapDistPct    float32 // 0.0–1.0
-	SessionTime   float64 // absolute seconds since session start
-	Speed         float32 // m/s
-	Throttle      float32 // 0.0–1.0
-	Brake         float32 // 0.0–1.0
+	// Core timing & position
+	LapDistPct  float32 // 0.0–1.0
+	SessionTime float64 // absolute seconds since session start
+	Speed       float32 // m/s
+	Lat         float64 // decimal degrees; 0 if not available
+	Lon         float64 // decimal degrees; 0 if not available
+
+	// Driver inputs (processed by car systems)
+	Throttle      float32 // 0.0–1.0 (after TC)
+	Brake         float32 // 0.0–1.0 (after ABS)
 	Clutch        float32 // 0.0–1.0
 	Gear          int32   // -1=R, 0=N, 1–8
-	RPM           float32
 	SteeringAngle float32 // rad
-	LongAccel     float32 // m/s²; positive = forward
-	LatAccel      float32 // m/s²; positive = left
-	YawRate       float32 // rad/s
-	ABSActive     bool
-	Lat           float64 // decimal degrees; 0 if not available in telemetry
-	Lon           float64 // decimal degrees; 0 if not available in telemetry
+
+	// Raw driver inputs (before car systems)
+	ThrottleRaw float32 // 0.0–1.0 (pedal position, before TC)
+	BrakeRaw    float32 // 0.0–1.0 (pedal position, before ABS)
+
+	// Engine
+	RPM float32
+
+	// Vehicle dynamics
+	LongAccel float32 // m/s²; positive = forward
+	LatAccel  float32 // m/s²; positive = left
+	YawRate   float32 // rad/s
+
+	// Driver aids
+	ABSActive  bool
+	ABSCutPct  float32 // 0–1; fraction of brake cut by ABS
+	BrakeBias  float32 // driver-adjustable brake bias
+	TCSetting  float32 // traction control level
+	TCSettng2  float32 // traction control level 2 (some cars)
+	ABSSetting float32 // ABS level
+
+	// Wheel speeds (m/s)
+	LFspeed float32
+	RFspeed float32
+	LRspeed float32
+	RRspeed float32
+
+	// Tyre carcass temperatures (°C) — inner/middle/outer across tread
+	LFtempCL, LFtempCM, LFtempCR float32
+	RFtempCL, RFtempCM, RFtempCR float32
+	LRtempCL, LRtempCM, LRtempCR float32
+	RRtempCL, RRtempCM, RRtempCR float32
+
+	// Tyre wear (0–1, 1 = new)
+	LFwearL, LFwearM, LFwearR float32
+	RFwearL, RFwearM, RFwearR float32
+	LRwearL, LRwearM, LRwearR float32
+	RRwearL, RRwearM, RRwearR float32
+
+	// Tyre pressures (kPa, hot)
+	LFpressure, RFpressure, LRpressure, RRpressure float32
+
+	// Brake line pressures (bar, per corner)
+	LFbrakeLinePress, RFbrakeLinePress float32
+	LRbrakeLinePress, RRbrakeLinePress float32
+
+	// Fuel
+	FuelLevel      float32 // litres
+	FuelUsePerHour float32 // kg/h
+
+	// Steering feedback
+	SteeringWheelTorque float32 // N·m
 }
 
 // LapKind classifies a lap based on how it starts and ends.
@@ -256,16 +307,15 @@ const pitSpeedThreshold = float32(5.0)
 // Lap boundaries are identified by a large backward jump in LapDistPct
 // (>0.5), which corresponds to crossing the start/finish line.
 //
-// NOTE: iRacing's LapCurrentLapTime does NOT reset at the S/F line —
-// it accumulates from when the lap started in the session. SessionTime
-// is used for all timing calculations instead.
-//
-// LapTime is the duration of the portion captured in the recording.
-// For a lap that started before the recording began, LapTime underestimates
-// the true lap time; IsPartialStart flags this case.
+// LapTime is authoritative: it is set from LapLastLapTime (the game's
+// official time, captured at the S/F crossing) when that channel is present,
+// otherwise it falls back to SessionTime[last] − SessionTime[first].
+// IsPartialStart flags laps where recording began mid-lap; those are excluded
+// from best-lap selection.
 type Lap struct {
 	Number           int
-	LapTime          float32 // seconds: SessionTime of last sample − first sample
+	LapTime          float32 // seconds: official (LapLastLapTime) or SessionTime diff
+	OfficialLapTime  float32 // raw LapLastLapTime from the crossing frame; 0 if absent
 	Kind             LapKind
 	StartSessionTime float64 // SessionTime of first sample (for timeAtPct)
 	IsPartialStart   bool    // true if recording started mid-lap (DistPct > 0.05)
@@ -305,11 +355,16 @@ func ExtractLaps(f *ibt.File) ([]Lap, error) {
 		// exact S/F crossing frame. It has DistPct=0.0000 but the surrounding
 		// samples sit at ~0.03-0.04, so it's easily filtered.
 		if i > 0 && prevDist > sfDropThreshold && sd.LapDistPct == 0 {
-			// This is the crossing artifact frame. Start a new lap but don't
-			// include this stale sample in either lap.
-			if cur != nil && len(cur.Samples) >= MinSamplesForValidLap {
-				finalizeLap(cur)
-				laps = append(laps, *cur)
+			// This is the crossing artifact frame. iRacing updates LapLastLapTime
+			// on this frame — capture it before discarding the sample.
+			if cur != nil {
+				if lt, ok := s.Float32("LapLastLapTime"); ok && lt > 0 {
+					cur.OfficialLapTime = lt
+				}
+				if len(cur.Samples) >= MinSamplesForValidLap {
+					finalizeLap(cur)
+					laps = append(laps, *cur)
+				}
 			}
 			cur = &Lap{Number: len(laps) + 1}
 			// Don't append this sample; prevDist stays as-is so next sample
@@ -319,10 +374,16 @@ func ExtractLaps(f *ibt.File) ([]Lap, error) {
 
 		// Normal S/F crossing (no zero-frame artifact):
 		// DistPct jumps backward by more than 0.5 in consecutive samples.
+		// LapLastLapTime is updated on the first frame of the new lap (sd here).
 		if prevDist >= 0 && prevDist-sd.LapDistPct > sfDropThreshold {
-			if cur != nil && len(cur.Samples) >= MinSamplesForValidLap {
-				finalizeLap(cur)
-				laps = append(laps, *cur)
+			if cur != nil {
+				if lt, ok := s.Float32("LapLastLapTime"); ok && lt > 0 {
+					cur.OfficialLapTime = lt
+				}
+				if len(cur.Samples) >= MinSamplesForValidLap {
+					finalizeLap(cur)
+					laps = append(laps, *cur)
+				}
 			}
 			cur = &Lap{Number: len(laps) + 1}
 		}
@@ -349,13 +410,19 @@ func ExtractLaps(f *ibt.File) ([]Lap, error) {
 }
 
 // finalizeLap sets LapTime and Kind from the samples.
+// LapTime prefers OfficialLapTime (from LapLastLapTime at the S/F crossing)
+// over the SessionTime diff, which misses fractional time at the boundaries.
 func finalizeLap(lap *Lap) {
 	if len(lap.Samples) == 0 {
 		return
 	}
 	first := lap.Samples[0]
 	last := lap.Samples[len(lap.Samples)-1]
-	lap.LapTime = float32(last.SessionTime - first.SessionTime)
+	if lap.OfficialLapTime > 0 {
+		lap.LapTime = lap.OfficialLapTime
+	} else {
+		lap.LapTime = float32(last.SessionTime - first.SessionTime)
+	}
 
 	slowStart := first.Speed < pitSpeedThreshold
 	slowEnd := last.Speed < pitSpeedThreshold
@@ -375,20 +442,93 @@ func finalizeLap(lap *Lap) {
 // Missing channels (ok == false) result in zero values, which is safe.
 func extractSample(s ibt.Sample) SampleData {
 	var sd SampleData
+
+	// Core timing & position
 	sd.LapDistPct, _ = s.Float32("LapDistPct")
 	sd.SessionTime, _ = s.Float64("SessionTime")
 	sd.Speed, _ = s.Float32("Speed")
+	sd.Lat, _ = s.Float64("Lat")
+	sd.Lon, _ = s.Float64("Lon")
+
+	// Driver inputs (processed)
 	sd.Throttle, _ = s.Float32("Throttle")
 	sd.Brake, _ = s.Float32("Brake")
 	sd.Clutch, _ = s.Float32("Clutch")
 	sd.Gear, _ = s.Int("Gear")
-	sd.RPM, _ = s.Float32("RPM")
 	sd.SteeringAngle, _ = s.Float32("SteeringWheelAngle")
+
+	// Raw driver inputs (before car systems)
+	sd.ThrottleRaw, _ = s.Float32("ThrottleRaw")
+	sd.BrakeRaw, _ = s.Float32("BrakeRaw")
+
+	// Engine
+	sd.RPM, _ = s.Float32("RPM")
+
+	// Vehicle dynamics
 	sd.LongAccel, _ = s.Float32("LongAccel")
 	sd.LatAccel, _ = s.Float32("LatAccel")
 	sd.YawRate, _ = s.Float32("YawRate")
+
+	// Driver aids
 	sd.ABSActive, _ = s.Bool("BrakeABSactive")
-	sd.Lat, _ = s.Float64("Lat")
-	sd.Lon, _ = s.Float64("Lon")
+	sd.ABSCutPct, _ = s.Float32("BrakeABScutPct")
+	sd.BrakeBias, _ = s.Float32("dcBrakeBias")
+	sd.TCSetting, _ = s.Float32("dcTractionControl")
+	sd.TCSettng2, _ = s.Float32("dcTractionControl2")
+	sd.ABSSetting, _ = s.Float32("dcABS")
+
+	// Wheel speeds
+	sd.LFspeed, _ = s.Float32("LFspeed")
+	sd.RFspeed, _ = s.Float32("RFspeed")
+	sd.LRspeed, _ = s.Float32("LRspeed")
+	sd.RRspeed, _ = s.Float32("RRspeed")
+
+	// Tyre carcass temperatures
+	sd.LFtempCL, _ = s.Float32("LFtempCL")
+	sd.LFtempCM, _ = s.Float32("LFtempCM")
+	sd.LFtempCR, _ = s.Float32("LFtempCR")
+	sd.RFtempCL, _ = s.Float32("RFtempCL")
+	sd.RFtempCM, _ = s.Float32("RFtempCM")
+	sd.RFtempCR, _ = s.Float32("RFtempCR")
+	sd.LRtempCL, _ = s.Float32("LRtempCL")
+	sd.LRtempCM, _ = s.Float32("LRtempCM")
+	sd.LRtempCR, _ = s.Float32("LRtempCR")
+	sd.RRtempCL, _ = s.Float32("RRtempCL")
+	sd.RRtempCM, _ = s.Float32("RRtempCM")
+	sd.RRtempCR, _ = s.Float32("RRtempCR")
+
+	// Tyre wear
+	sd.LFwearL, _ = s.Float32("LFwearL")
+	sd.LFwearM, _ = s.Float32("LFwearM")
+	sd.LFwearR, _ = s.Float32("LFwearR")
+	sd.RFwearL, _ = s.Float32("RFwearL")
+	sd.RFwearM, _ = s.Float32("RFwearM")
+	sd.RFwearR, _ = s.Float32("RFwearR")
+	sd.LRwearL, _ = s.Float32("LRwearL")
+	sd.LRwearM, _ = s.Float32("LRwearM")
+	sd.LRwearR, _ = s.Float32("LRwearR")
+	sd.RRwearL, _ = s.Float32("RRwearL")
+	sd.RRwearM, _ = s.Float32("RRwearM")
+	sd.RRwearR, _ = s.Float32("RRwearR")
+
+	// Tyre pressures
+	sd.LFpressure, _ = s.Float32("LFpressure")
+	sd.RFpressure, _ = s.Float32("RFpressure")
+	sd.LRpressure, _ = s.Float32("LRpressure")
+	sd.RRpressure, _ = s.Float32("RRpressure")
+
+	// Brake line pressures
+	sd.LFbrakeLinePress, _ = s.Float32("LFbrakeLinePress")
+	sd.RFbrakeLinePress, _ = s.Float32("RFbrakeLinePress")
+	sd.LRbrakeLinePress, _ = s.Float32("LRbrakeLinePress")
+	sd.RRbrakeLinePress, _ = s.Float32("RRbrakeLinePress")
+
+	// Fuel
+	sd.FuelLevel, _ = s.Float32("FuelLevel")
+	sd.FuelUsePerHour, _ = s.Float32("FuelUsePerHour")
+
+	// Steering feedback
+	sd.SteeringWheelTorque, _ = s.Float32("SteeringWheelTorque")
+
 	return sd
 }

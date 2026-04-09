@@ -651,59 +651,6 @@ func TestParseTrackLength_Malformed(t *testing.T) {
 	}
 }
 
-// ---- ZoneDeltas ----
-
-// timedLap builds a lap where LapDistPct goes linearly from 0 to 1 and
-// SessionTime goes from 0 to lapDuration (in seconds).
-func timedLap(n int, lapDuration float64) *Lap {
-	samples := make([]SampleData, n)
-	for i := range samples {
-		frac := float64(i) / float64(n-1)
-		samples[i] = SampleData{
-			LapDistPct:  float32(frac),
-			SessionTime: frac * lapDuration,
-			Speed:       30,
-		}
-	}
-	return &Lap{
-		StartSessionTime: 0,
-		Samples:          samples,
-	}
-}
-
-func TestZoneDeltas_IdenticalLaps(t *testing.T) {
-	lap := timedLap(200, 100.0)
-	deltas := ZoneDeltas(lap, lap)
-	for i, d := range deltas {
-		if math.Abs(float64(d)) > 0.01 {
-			t.Errorf("zone %d: delta = %v, want ~0", i, d)
-		}
-	}
-}
-
-func TestZoneDeltas_UniformSpeedup(t *testing.T) {
-	// lap1 = 100s, lap2 = 90s → each zone should show lap2 0.5s faster (delta = −0.5)
-	lap1 := timedLap(500, 100.0)
-	lap2 := timedLap(500, 90.0)
-	deltas := ZoneDeltas(lap1, lap2)
-
-	for i, d := range deltas {
-		const wantDelta = float32(-0.5)
-		if math.Abs(float64(d-wantDelta)) > 0.05 {
-			t.Errorf("zone %d: delta = %+.3f, want ~%.3f", i, d, wantDelta)
-		}
-	}
-
-	// Sum should equal overall difference: 90 − 100 = −10s
-	var sum float32
-	for _, d := range deltas {
-		sum += d
-	}
-	if math.Abs(float64(sum+10)) > 0.1 {
-		t.Errorf("sum of deltas = %+.3f, want ~−10.000", sum)
-	}
-}
-
 // ---- SegmentStats ----
 
 // segLap builds a lap with samples spanning two explicit segments.
@@ -812,20 +759,6 @@ func TestSegmentStats_GearSelection(t *testing.T) {
 	}
 }
 
-func TestSegmentDeltas_IdenticalLaps(t *testing.T) {
-	segs := []trackmap.Segment{
-		{Name: "S1", Kind: trackmap.KindStraight, EntryPct: 0.0, ExitPct: 0.5},
-		{Name: "T1", Kind: trackmap.KindCorner, EntryPct: 0.5, ExitPct: 1.0},
-	}
-	lap := timedLap(200, 100.0)
-	deltas := SegmentDeltas(lap, lap, segs)
-	for i, d := range deltas {
-		if math.Abs(float64(d)) > 0.01 {
-			t.Errorf("segment %d: delta = %v, want ~0", i, d)
-		}
-	}
-}
-
 // ---- LapKind.String ----
 
 func TestLapKind_String(t *testing.T) {
@@ -897,9 +830,10 @@ type lbRawVarHeader struct {
 
 // lbSample is one row of data for the lap builder file.
 type lbSample struct {
-	LapDistPct  float32
-	Speed       float32
-	SessionTime float64
+	LapDistPct      float32
+	Speed           float32
+	SessionTime     float64
+	LapLastLapTime  float32 // 0 means "not set" (channel present but zero)
 }
 
 func lbPad32(s string) [32]byte { var b [32]byte; copy(b[:], s); return b }
@@ -909,9 +843,9 @@ const (
 	lbSessionInfoOffset = 144
 	lbSessionInfoLen    = 64
 	lbVarHeaderOffset   = 208
-	lbNumVars           = 3
-	lbBufLen            = 16 // LapDistPct(4) + Speed(4) + SessionTime(8)
-	lbDataOffset        = lbVarHeaderOffset + lbNumVars*144 // 208 + 432 = 640
+	lbNumVars           = 4
+	lbBufLen            = 20 // LapDistPct(4) + Speed(4) + SessionTime(8) + LapLastLapTime(4)
+	lbDataOffset        = lbVarHeaderOffset + lbNumVars*144 // 208 + 576 = 784
 
 	// VarType constants (mirroring ibt package values)
 	lbVarTypeFloat  int32 = 4
@@ -952,6 +886,7 @@ func buildLapIBTFile(t *testing.T, samples []lbSample) string {
 		{Type: lbVarTypeFloat, Offset: 0, Count: 1, Name: lbPad32("LapDistPct"), Desc: lbPad64("Lap pct"), Unit: lbPad32("")},
 		{Type: lbVarTypeFloat, Offset: 4, Count: 1, Name: lbPad32("Speed"), Desc: lbPad64("Speed"), Unit: lbPad32("m/s")},
 		{Type: lbVarTypeDouble, Offset: 8, Count: 1, Name: lbPad32("SessionTime"), Desc: lbPad64("Session time"), Unit: lbPad32("s")},
+		{Type: lbVarTypeFloat, Offset: 16, Count: 1, Name: lbPad32("LapLastLapTime"), Desc: lbPad64("Last lap time"), Unit: lbPad32("s")},
 	}
 	for _, vh := range varHeaders {
 		if err := binary.Write(&buf, binary.LittleEndian, vh); err != nil {
@@ -964,6 +899,7 @@ func buildLapIBTFile(t *testing.T, samples []lbSample) string {
 		binary.LittleEndian.PutUint32(row[0:], math.Float32bits(s.LapDistPct))
 		binary.LittleEndian.PutUint32(row[4:], math.Float32bits(s.Speed))
 		binary.LittleEndian.PutUint64(row[8:], math.Float64bits(s.SessionTime))
+		binary.LittleEndian.PutUint32(row[16:], math.Float32bits(s.LapLastLapTime))
 		buf.Write(row)
 	}
 
@@ -1151,6 +1087,74 @@ func TestExtractLaps_ZeroArtifact(t *testing.T) {
 	}
 }
 
+func TestExtractLaps_OfficialLapTime(t *testing.T) {
+	// LapLastLapTime on the first frame of the new lap should become LapTime.
+	// SessionTime diff would give (lap1N-1)/60 ≈ 5.317s; official time is 5.500s.
+	const lap1N = 320
+	lap1 := makeLapSamples(lap1N, 0.01, 0.99, 30, 0)
+
+	// First frame of lap 2 carries LapLastLapTime = 5.5 (the official time for lap 1).
+	lap2 := makeLapSamples(50, 0.02, 0.30, 30, float64(lap1N)/60.0)
+	lap2[0].LapLastLapTime = 5.5
+
+	samples := append(lap1, lap2...)
+
+	path := buildLapIBTFile(t, samples)
+	f, err := ibt.Open(path)
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	defer f.Close()
+
+	laps, err := ExtractLaps(f)
+	if err != nil {
+		t.Fatalf("ExtractLaps: %v", err)
+	}
+	if len(laps) != 2 {
+		t.Fatalf("expected 2 laps, got %d", len(laps))
+	}
+	if laps[0].OfficialLapTime != 5.5 {
+		t.Errorf("lap 1: OfficialLapTime=%.3f, want 5.500", laps[0].OfficialLapTime)
+	}
+	if laps[0].LapTime != 5.5 {
+		t.Errorf("lap 1: LapTime=%.3f, want 5.500 (official should win)", laps[0].LapTime)
+	}
+}
+
+func TestExtractLaps_OfficialLapTime_ZeroArtifact(t *testing.T) {
+	// When the zero-artifact frame carries LapLastLapTime, it must be captured
+	// even though the frame is not appended to either lap.
+	const lap1N = 320
+	lap1 := makeLapSamples(lap1N, 0.01, 0.99, 30, 0)
+
+	artifact := lbSample{LapDistPct: 0.0, Speed: 30, SessionTime: float64(lap1N) / 60.0, LapLastLapTime: 5.6}
+	lap2 := makeLapSamples(50, 0.01, 0.30, 30, float64(lap1N+1)/60.0)
+
+	samples := append(lap1, artifact)
+	samples = append(samples, lap2...)
+
+	path := buildLapIBTFile(t, samples)
+	f, err := ibt.Open(path)
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	defer f.Close()
+
+	laps, err := ExtractLaps(f)
+	if err != nil {
+		t.Fatalf("ExtractLaps: %v", err)
+	}
+	if len(laps) != 2 {
+		t.Fatalf("expected 2 laps, got %d", len(laps))
+	}
+	if laps[0].OfficialLapTime != 5.6 {
+		t.Errorf("lap 1: OfficialLapTime=%.3f, want 5.600", laps[0].OfficialLapTime)
+	}
+	if laps[0].LapTime != 5.6 {
+		t.Errorf("lap 1: LapTime=%.3f, want 5.600 (official should win)", laps[0].LapTime)
+	}
+}
+
 // ---- ParseWeather tests ----
 
 func TestParseWeather_AirAndTrack(t *testing.T) {
@@ -1216,5 +1220,169 @@ func TestParseWeather_FractionalTemp(t *testing.T) {
 	want := "Air 27°C, Track 41°C"
 	if got != want {
 		t.Errorf("ParseWeather = %q, want %q", got, want)
+	}
+}
+
+// ---- TC Intervention ----
+
+func TestZoneStats_TCIntervention(t *testing.T) {
+	// 40 samples, zone 0 (dist 0–5%): ThrottleRaw > Throttle (TC active).
+	// Zone 1 (dist 5–10%): ThrottleRaw == Throttle (no TC).
+	samples := make([]SampleData, 40)
+	for i := range samples {
+		pct := float32(i) / float32(len(samples))
+		samples[i] = SampleData{
+			LapDistPct:  pct,
+			SessionTime: float64(i),
+			Speed:       30,
+			Throttle:    0.80,
+			ThrottleRaw: 0.80,
+		}
+		if pct < 0.05 {
+			samples[i].ThrottleRaw = 1.0 // TC cutting 20%
+		}
+	}
+	lap := &Lap{Samples: samples}
+	finalizeLap(lap)
+	zones := ZoneStats(lap)
+
+	if zones[0].TCInterventionPct <= 0 {
+		t.Error("zone 0: expected TC intervention, got 0")
+	}
+	if zones[0].PeakTCCut < 15 {
+		t.Errorf("zone 0: PeakTCCut = %.1f, want >= 15", zones[0].PeakTCCut)
+	}
+	if zones[1].TCInterventionPct != 0 {
+		t.Errorf("zone 1: TCInterventionPct = %.1f, want 0", zones[1].TCInterventionPct)
+	}
+}
+
+// ---- Lockup / Wheelspin ----
+
+func TestZoneStats_LockupDetection(t *testing.T) {
+	// All samples in zone 0: braking with one wheel speed < 95% of vehicle speed.
+	samples := make([]SampleData, 40)
+	for i := range samples {
+		pct := float32(i) / float32(len(samples))
+		samples[i] = SampleData{
+			LapDistPct: pct,
+			SessionTime: float64(i),
+			Speed:       40, // m/s
+			Brake:       0.5,
+			LFspeed:     40,
+			RFspeed:     40,
+			LRspeed:     40,
+			RRspeed:     40,
+		}
+		if pct < 0.05 {
+			// LF locking: 37 m/s < 40 * 0.95 = 38 m/s
+			samples[i].LFspeed = 37
+		}
+	}
+	lap := &Lap{Samples: samples}
+	finalizeLap(lap)
+	zones := ZoneStats(lap)
+
+	if zones[0].LockupSamples == 0 {
+		t.Error("zone 0: expected lockup samples, got 0")
+	}
+	if zones[1].LockupSamples != 0 {
+		t.Errorf("zone 1: LockupSamples = %d, want 0", zones[1].LockupSamples)
+	}
+}
+
+func TestZoneStats_WheelspinDetection(t *testing.T) {
+	// All samples in zone 0: accelerating with rear wheel speed > 105% of vehicle speed.
+	samples := make([]SampleData, 40)
+	for i := range samples {
+		pct := float32(i) / float32(len(samples))
+		samples[i] = SampleData{
+			LapDistPct: pct,
+			SessionTime: float64(i),
+			Speed:       30, // m/s
+			Throttle:    0.9,
+			LFspeed:     30,
+			RFspeed:     30,
+			LRspeed:     30,
+			RRspeed:     30,
+		}
+		if pct < 0.05 {
+			// RR spinning: 33 m/s > 30 * 1.05 = 31.5 m/s
+			samples[i].RRspeed = 33
+		}
+	}
+	lap := &Lap{Samples: samples}
+	finalizeLap(lap)
+	zones := ZoneStats(lap)
+
+	if zones[0].WheelspinSamples == 0 {
+		t.Error("zone 0: expected wheelspin samples, got 0")
+	}
+	if zones[1].WheelspinSamples != 0 {
+		t.Errorf("zone 1: WheelspinSamples = %d, want 0", zones[1].WheelspinSamples)
+	}
+}
+
+// ---- SegmentStats new metrics ----
+
+func TestSegmentStats_TCIntervention(t *testing.T) {
+	segs := []trackmap.Segment{
+		{Name: "S1", Kind: trackmap.KindStraight, EntryPct: 0.0, ExitPct: 0.5},
+		{Name: "T1", Kind: trackmap.KindCorner, EntryPct: 0.5, ExitPct: 1.0},
+	}
+	samples := make([]SampleData, 200)
+	for i := range samples {
+		pct := float32(i) / float32(len(samples))
+		samples[i] = SampleData{
+			LapDistPct:  pct,
+			SessionTime: float64(i) / 60,
+			Speed:       40,
+			Throttle:    0.8,
+			ThrottleRaw: 0.8,
+			LFspeed:     40, RFspeed: 40, LRspeed: 40, RRspeed: 40,
+		}
+		// TC active in corner segment only
+		if pct >= 0.5 {
+			samples[i].ThrottleRaw = 1.0
+		}
+	}
+	lap := makeFlyingLap(samples)
+	zones := SegmentStats(&lap, segs)
+
+	if zones[0].TCInterventionPct != 0 {
+		t.Errorf("S1: TCInterventionPct = %.1f, want 0", zones[0].TCInterventionPct)
+	}
+	if zones[1].TCInterventionPct <= 0 {
+		t.Error("T1: expected TC intervention, got 0")
+	}
+	if zones[1].PeakTCCut < 15 {
+		t.Errorf("T1: PeakTCCut = %.1f, want >= 15", zones[1].PeakTCCut)
+	}
+}
+
+func TestSegmentStats_TyreTemps(t *testing.T) {
+	segs := []trackmap.Segment{
+		{Name: "S1", Kind: trackmap.KindStraight, EntryPct: 0.0, ExitPct: 1.0},
+	}
+	samples := make([]SampleData, 200)
+	for i := range samples {
+		pct := float32(i) / float32(len(samples))
+		samples[i] = SampleData{
+			LapDistPct:  pct,
+			SessionTime: float64(i) / 60,
+			Speed:       40,
+			Throttle:    1.0,
+			LFtempCM:    85, RFtempCM: 83, LRtempCM: 91, RRtempCM: 89,
+			LFspeed:     40, RFspeed: 40, LRspeed: 40, RRspeed: 40,
+		}
+	}
+	lap := makeFlyingLap(samples)
+	zones := SegmentStats(&lap, segs)
+
+	if math.Abs(float64(zones[0].AvgTyreTempLF-85)) > 1 {
+		t.Errorf("AvgTyreTempLF = %.1f, want ~85", zones[0].AvgTyreTempLF)
+	}
+	if math.Abs(float64(zones[0].AvgTyreTempLR-91)) > 1 {
+		t.Errorf("AvgTyreTempLR = %.1f, want ~91", zones[0].AvgTyreTempLR)
 	}
 }

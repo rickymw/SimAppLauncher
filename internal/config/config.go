@@ -6,9 +6,12 @@ import (
 )
 
 type Config struct {
-	Driver string `json:"driver"` // iRacing UserName used by lapanalyze to identify the player's car
-	IbtDir string `json:"ibtDir"` // directory to search for .ibt files when none is specified on the command line
-	Apps   []App  `json:"apps"`
+	Driver       string `json:"driver"`       // iRacing UserName used by lapanalyze to identify the player's car
+	IbtDir       string `json:"ibtDir"`       // directory to search for .ibt files when none is specified on the command line
+	Hotkey       string `json:"hotkey"`       // key name for voice notes, e.g. "F13", "ScrollLock", "0x91"
+	WhisperPath  string `json:"whisperPath"`  // path to whisper-cli.exe (absolute, or relative to the binary)
+	WhisperModel string `json:"whisperModel"` // path to whisper .bin model file (e.g. ggml-base.en.bin)
+	Apps         []App  `json:"apps"`
 }
 
 type App struct {

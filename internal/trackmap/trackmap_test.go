@@ -72,27 +72,30 @@ func TestDetect_EmptySamples(t *testing.T) {
 func TestDetect_ChicaneDetection(t *testing.T) {
 	// Build 1000 samples (1:1 with buckets) with pattern:
 	//   [0,200)   straight  lat=0
-	//   [200,350)  left corner  lat=+15
-	//   [350,365)  very short straight lat=0  (15 buckets < threshold of 18)
-	//   [365,500) right corner lat=-15
-	//   [500,1000) straight lat=0
+	//   [200,250)  left corner  lat=+15   (50 buckets × 4 m = 200 m)
+	//   [250,265)  very short straight lat=0  (15 buckets = 60 m < gap threshold)
+	//   [265,315) right corner lat=-15   (50 buckets = 200 m)
+	//   [315,1000) straight lat=0
+	// Total chicane: 115 buckets × 4 m = 460 m — but the corners themselves are
+	// 50+15+50 = 115 buckets = 380 m at this track length, under the 400 m limit.
 	n := 1000
+	trackLen := 3300.0 // each bucket ≈ 3.3 m → 115 buckets ≈ 380 m (< 400 m max)
 	samples := make([]Sample, n)
 	for i := 0; i < n; i++ {
 		pct := float32(i) / float32(n)
 		var lat float32
 		switch {
-		case i >= 200 && i < 350:
+		case i >= 200 && i < 250:
 			lat = 15.0
-		case i >= 350 && i < 365:
+		case i >= 250 && i < 265:
 			lat = 0.0
-		case i >= 365 && i < 500:
+		case i >= 265 && i < 315:
 			lat = -15.0
 		}
 		samples[i] = Sample{LapDistPct: pct, LatAccel: lat}
 	}
 
-	segs := Detect(samples, 4000.0)
+	segs := Detect(samples, trackLen)
 	if len(segs) == 0 {
 		t.Fatal("expected segments, got none")
 	}
@@ -565,14 +568,14 @@ func TestDetectFromMultipleLatLon_NoLatLon(t *testing.T) {
 	for i := range samples {
 		samples[i] = Sample{LapDistPct: float32(i) / 100, LatAccel: 5.0}
 	}
-	segs := DetectFromMultipleLatLon([][]Sample{samples}, 4000.0)
+	segs := DetectFromMultipleLatLon([][]Sample{samples}, 4000.0, 0)
 	if segs != nil {
 		t.Errorf("expected nil (no lat/lon), got %d segments", len(segs))
 	}
 }
 
 func TestDetectFromMultipleLatLon_EmptyInput(t *testing.T) {
-	segs := DetectFromMultipleLatLon(nil, 4000.0)
+	segs := DetectFromMultipleLatLon(nil, 4000.0, 0)
 	if segs != nil {
 		t.Errorf("expected nil for empty input, got %d segments", len(segs))
 	}
@@ -581,7 +584,7 @@ func TestDetectFromMultipleLatLon_EmptyInput(t *testing.T) {
 func TestDetectFromMultipleLatLon_OvalProducesSegments(t *testing.T) {
 	samples := makeOvalSamples(1000, 37.0, -121.0)
 	trackLen := ovalPerimeterM()
-	segs := DetectFromMultipleLatLon([][]Sample{samples}, trackLen)
+	segs := DetectFromMultipleLatLon([][]Sample{samples}, trackLen, 0)
 	if len(segs) == 0 {
 		t.Fatal("DetectFromMultipleLatLon: expected segments from oval, got none")
 	}
@@ -607,13 +610,399 @@ func TestDetectFromMultipleLatLon_MultiLap(t *testing.T) {
 	samples := makeOvalSamples(1000, 37.0, -121.0)
 	trackLen := ovalPerimeterM()
 
-	segs1 := DetectFromMultipleLatLon([][]Sample{samples}, trackLen)
-	segs2 := DetectFromMultipleLatLon([][]Sample{samples, samples}, trackLen)
+	segs1 := DetectFromMultipleLatLon([][]Sample{samples}, trackLen, 0)
+	segs2 := DetectFromMultipleLatLon([][]Sample{samples, samples}, trackLen, 0)
 
 	if len(segs1) == 0 {
 		t.Skip("no segments detected for single lap — oval test data may be borderline")
 	}
 	if len(segs1) != len(segs2) {
 		t.Errorf("single-lap segs=%d, two-lap segs=%d (should match)", len(segs1), len(segs2))
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Post-detection validation tests
+// ---------------------------------------------------------------------------
+
+// TestTrimWraparoundCorner_RemovesTinyCornerAtStart verifies that a small
+// GPS-artifact corner at bucket 0 is merged into the following straight.
+func TestTrimWraparoundCorner_RemovesTinyCornerAtStart(t *testing.T) {
+	segs := []rawSeg{
+		{isCorner: true, start: 0, end: 4, latSign: 0.5},   // 5 buckets = tiny
+		{isCorner: false, start: 5, end: 100, latSign: 0},   // straight
+		{isCorner: true, start: 101, end: 200, latSign: -1},  // real corner
+		{isCorner: false, start: 201, end: 999, latSign: 0},  // straight
+	}
+	result := trimWraparoundCorner(segs, 3000.0) // 5 buckets × 3m = 15m < 50m threshold
+	// First segment should now be a straight (the tiny corner was merged).
+	if len(result) < 1 {
+		t.Fatal("expected segments, got none")
+	}
+	if result[0].isCorner {
+		t.Error("expected first segment to be a straight after trimming GPS artifact")
+	}
+}
+
+// TestTrimWraparoundCorner_PreservesLargeCorner verifies that a real corner
+// at the start of the track (longer than the threshold) is preserved.
+func TestTrimWraparoundCorner_PreservesLargeCorner(t *testing.T) {
+	segs := []rawSeg{
+		{isCorner: true, start: 0, end: 80, latSign: 0.5},  // 81 buckets ≈ 243m > 50m
+		{isCorner: false, start: 81, end: 999, latSign: 0},
+	}
+	result := trimWraparoundCorner(segs, 3000.0)
+	if !result[0].isCorner {
+		t.Error("large corner at start should be preserved")
+	}
+}
+
+// TestConfirmCorners_RejectsNoSteerNoLatG verifies that a corner with neither
+// meaningful steering nor lateral G is reclassified as a straight.
+func TestConfirmCorners_RejectsNoSteerNoLatG(t *testing.T) {
+	segs := []rawSeg{
+		{isCorner: false, start: 0, end: 99, latSign: 0},
+		{isCorner: true, start: 100, end: 200, latSign: 1.0}, // "corner" with no real data
+		{isCorner: false, start: 201, end: 999, latSign: 0},
+	}
+	// Profiles: near-zero steering and near-zero lateral G in the corner region.
+	steerAvg := make([]float64, numBuckets)
+	latAccAvg := make([]float64, numBuckets)
+	for i := 0; i < numBuckets; i++ {
+		steerAvg[i] = 0.01 // ~0.6 degrees — well below 10° threshold
+		latAccAvg[i] = 0.5 // well below 2.0 m/s²
+	}
+
+	result := confirmCorners(segs, steerAvg, latAccAvg, 3000.0)
+	for _, s := range result {
+		if s.isCorner && s.start <= 200 && s.end >= 100 {
+			t.Error("expected false corner to be reclassified as straight")
+		}
+	}
+}
+
+// TestConfirmCorners_KeepsRealCorner verifies that a corner with meaningful
+// steering is preserved even if lateral G is low.
+func TestConfirmCorners_KeepsRealCorner(t *testing.T) {
+	segs := []rawSeg{
+		{isCorner: false, start: 0, end: 99, latSign: 0},
+		{isCorner: true, start: 100, end: 200, latSign: 1.0},
+		{isCorner: false, start: 201, end: 999, latSign: 0},
+	}
+	steerAvg := make([]float64, numBuckets)
+	latAccAvg := make([]float64, numBuckets)
+	for i := 0; i < numBuckets; i++ {
+		latAccAvg[i] = 0.5 // low lat-G
+	}
+	// Strong steering in the corner zone.
+	for i := 100; i <= 200; i++ {
+		steerAvg[i] = 0.35 // ~20 degrees — well above threshold
+	}
+
+	result := confirmCorners(segs, steerAvg, latAccAvg, 3000.0)
+	hasCorner := false
+	for _, s := range result {
+		if s.isCorner && s.start >= 80 && s.end <= 220 {
+			hasCorner = true
+		}
+	}
+	if !hasCorner {
+		t.Error("real corner with strong steering should be preserved")
+	}
+}
+
+// TestValidateCornerSpeed_FlatSpeedReclassified verifies that a "corner" with
+// flat speed throughout is reclassified as a straight.
+func TestValidateCornerSpeed_FlatSpeedReclassified(t *testing.T) {
+	segs := []rawSeg{
+		{isCorner: false, start: 0, end: 99, latSign: 0},
+		{isCorner: true, start: 100, end: 200, latSign: 1.0},
+		{isCorner: false, start: 201, end: 999, latSign: 0},
+	}
+	speedAvg := make([]float64, numBuckets)
+	for i := range speedAvg {
+		speedAvg[i] = 50.0 // constant 50 m/s everywhere
+	}
+
+	result := validateCornerSpeed(segs, speedAvg, 3000.0)
+	for _, s := range result {
+		if s.isCorner && s.start <= 200 && s.end >= 100 {
+			t.Error("corner with flat speed should be reclassified as straight")
+		}
+	}
+}
+
+// TestValidateCornerSpeed_KeepsRealCorner verifies that a corner with a clear
+// speed drop is preserved.
+func TestValidateCornerSpeed_KeepsRealCorner(t *testing.T) {
+	segs := []rawSeg{
+		{isCorner: false, start: 0, end: 99, latSign: 0},
+		{isCorner: true, start: 100, end: 200, latSign: 1.0},
+		{isCorner: false, start: 201, end: 999, latSign: 0},
+	}
+	speedAvg := make([]float64, numBuckets)
+	for i := range speedAvg {
+		speedAvg[i] = 50.0
+	}
+	// Create a speed dip in the corner (50 → 30 → 50 m/s).
+	for i := 130; i <= 170; i++ {
+		speedAvg[i] = 30.0
+	}
+
+	result := validateCornerSpeed(segs, speedAvg, 3000.0)
+	hasCorner := false
+	for _, s := range result {
+		if s.isCorner && s.start >= 80 && s.end <= 220 {
+			hasCorner = true
+		}
+	}
+	if !hasCorner {
+		t.Error("corner with clear speed drop should be preserved")
+	}
+}
+
+// TestSplitLargeCorners_TwoTroughs verifies that a long corner with two
+// distinct speed troughs is split into two separate corners.
+func TestSplitLargeCorners_TwoTroughs(t *testing.T) {
+	// Single large corner spanning 400 buckets on a 3000m track = 1200m.
+	segs := []rawSeg{
+		{isCorner: false, start: 0, end: 99, latSign: 0},
+		{isCorner: true, start: 100, end: 500, latSign: 1.0},
+		{isCorner: false, start: 501, end: 999, latSign: 0},
+	}
+	speedAvg := make([]float64, numBuckets)
+	signAvg := make([]float64, numBuckets)
+	for i := range speedAvg {
+		speedAvg[i] = 50.0
+		signAvg[i] = 0.0
+	}
+	// Two speed troughs at buckets 200 and 400, with a peak at 300.
+	for i := 100; i <= 500; i++ {
+		signAvg[i] = 1.0
+	}
+	for i := 150; i <= 250; i++ {
+		speedAvg[i] = 50.0 - 20.0*math.Abs(float64(i-200)/50.0) // trough at 200: min=30
+		if speedAvg[i] < 30.0 {
+			speedAvg[i] = 30.0
+		}
+	}
+	for i := 250; i <= 350; i++ {
+		speedAvg[i] = 50.0 // peak: re-acceleration to 50 m/s
+	}
+	for i := 350; i <= 450; i++ {
+		speedAvg[i] = 50.0 - 20.0*math.Abs(float64(i-400)/50.0) // trough at 400: min=30
+		if speedAvg[i] < 30.0 {
+			speedAvg[i] = 30.0
+		}
+	}
+
+	result := splitLargeCorners(segs, speedAvg, signAvg, 3000.0)
+	cornerCount := 0
+	for _, s := range result {
+		if s.isCorner {
+			cornerCount++
+		}
+	}
+	if cornerCount < 2 {
+		t.Errorf("expected at least 2 corners after splitting, got %d", cornerCount)
+		for _, s := range result {
+			kind := "straight"
+			if s.isCorner {
+				kind = "corner"
+			}
+			t.Logf("  %s [%d-%d]", kind, s.start, s.end)
+		}
+	}
+}
+
+// TestSplitLargeCorners_SingleTrough verifies that a long corner with only
+// one speed trough is NOT split.
+func TestSplitLargeCorners_SingleTrough(t *testing.T) {
+	segs := []rawSeg{
+		{isCorner: false, start: 0, end: 99, latSign: 0},
+		{isCorner: true, start: 100, end: 500, latSign: 1.0},
+		{isCorner: false, start: 501, end: 999, latSign: 0},
+	}
+	speedAvg := make([]float64, numBuckets)
+	signAvg := make([]float64, numBuckets)
+	for i := range speedAvg {
+		speedAvg[i] = 50.0
+	}
+	// Single trough at bucket 300: 50 → 30 → 50.
+	for i := 200; i <= 400; i++ {
+		speedAvg[i] = 50.0 - 20.0*(1.0-math.Abs(float64(i-300)/100.0))
+		if speedAvg[i] > 50.0 {
+			speedAvg[i] = 50.0
+		}
+	}
+	for i := 100; i <= 500; i++ {
+		signAvg[i] = 1.0
+	}
+
+	result := splitLargeCorners(segs, speedAvg, signAvg, 3000.0)
+	cornerCount := 0
+	for _, s := range result {
+		if s.isCorner {
+			cornerCount++
+		}
+	}
+	if cornerCount != 1 {
+		t.Errorf("expected 1 corner (no split for single trough), got %d", cornerCount)
+	}
+}
+
+// TestMergeChicanes_RejectsOversizedChicane verifies that two corners
+// separated by a short straight are NOT merged if the total length exceeds
+// the chicane maximum.
+func TestMergeChicanes_RejectsOversizedChicane(t *testing.T) {
+	// Two 200-bucket corners with a 10-bucket gap on a 2000m track.
+	// Total = 410 buckets × 2m = 820m >> 400m limit.
+	segs := []rawSeg{
+		{isCorner: false, start: 0, end: 99, latSign: 0},
+		{isCorner: true, start: 100, end: 300, latSign: 1.0},  // 201 buckets
+		{isCorner: false, start: 301, end: 310, latSign: 0},    // 10-bucket gap
+		{isCorner: true, start: 311, end: 510, latSign: -1.0},  // 200 buckets
+		{isCorner: false, start: 511, end: 999, latSign: 0},
+	}
+
+	result := mergeChicanes(segs, 2000.0)
+	for _, s := range result {
+		if s.isChicane {
+			t.Error("oversized corner pair should not be merged into a chicane")
+		}
+	}
+}
+
+// TestLoadTrackRef_Missing verifies that LoadTrackRef returns an empty map
+// (not error) for a nonexistent file.
+func TestLoadTrackRef_Missing(t *testing.T) {
+	trf, err := LoadTrackRef("nonexistent_trackref_xyzzy.json")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(trf) != 0 {
+		t.Errorf("expected empty map, got %d entries", len(trf))
+	}
+}
+
+// TestLoadTrackRef_Roundtrip verifies LoadTrackRef reads a valid JSON file.
+func TestLoadTrackRef_Roundtrip(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "trackref.json")
+	data := []byte(`{"Test Track":{"corners":5,"comment":"test"}}`)
+	if err := os.WriteFile(path, data, 0644); err != nil {
+		t.Fatal(err)
+	}
+	trf, err := LoadTrackRef(path)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	n, ok := trf.Corners("Test Track")
+	if !ok || n != 5 {
+		t.Errorf("expected 5 corners for 'Test Track', got %d (ok=%v)", n, ok)
+	}
+	_, ok = trf.Corners("Unknown Track")
+	if ok {
+		t.Error("expected false for unknown track")
+	}
+}
+
+// TestSearchThresholds_MatchesTarget verifies that the threshold search
+// produces the expected corner count when given a target.
+func TestSearchThresholds_MatchesTarget(t *testing.T) {
+	// Build a synthetic curvature profile with 3 clear corners.
+	absAvg := make([]float64, numBuckets)
+	signAvg := make([]float64, numBuckets)
+	counts := make([]int, numBuckets)
+	for i := range counts {
+		counts[i] = 1
+	}
+
+	// Three corner regions with strong curvature.
+	corners := [][2]int{{100, 200}, {400, 500}, {700, 800}}
+	for _, c := range corners {
+		for i := c[0]; i < c[1]; i++ {
+			absAvg[i] = 0.01 // well above default enter threshold
+			signAvg[i] = 1.0
+		}
+	}
+
+	// Identity post-processing (no-op).
+	noop := func(segs []rawSeg) []rawSeg { return segs }
+
+	result := searchThresholds(absAvg, signAvg, counts, 4000.0, 3, noop)
+	got := countCornerSegs(result)
+	if got != 3 {
+		t.Errorf("expected 3 corners, got %d", got)
+	}
+}
+
+// TestRefineBoundaries_AbsorbsFalseStraight verifies that a short "straight"
+// with active cornering (high steering) between two corners gets absorbed.
+func TestRefineBoundaries_AbsorbsFalseStraight(t *testing.T) {
+	// Two corners with a 10-bucket "straight" gap that has high steering.
+	segs := []rawSeg{
+		{isCorner: false, start: 0, end: 99, latSign: 0},
+		{isCorner: true, start: 100, end: 200, latSign: 1.0},
+		{isCorner: false, start: 201, end: 210, latSign: 0}, // 10-bucket "straight"
+		{isCorner: true, start: 211, end: 300, latSign: -1.0},
+		{isCorner: false, start: 301, end: 999, latSign: 0},
+	}
+
+	steerAvg := make([]float64, numBuckets)
+	latAccAvg := make([]float64, numBuckets)
+	signAvg := make([]float64, numBuckets)
+	// High steering through the "straight" gap.
+	for i := 100; i <= 300; i++ {
+		steerAvg[i] = 0.30 // ~17 degrees
+	}
+
+	result := refineBoundaries(segs, steerAvg, latAccAvg, signAvg, 3000.0)
+	// The false straight should be absorbed — we should have fewer segments.
+	straightCount := 0
+	for _, s := range result {
+		if !s.isCorner && s.start >= 100 && s.end <= 300 {
+			straightCount++
+		}
+	}
+	if straightCount > 0 {
+		t.Error("false straight with high steering should have been absorbed by adjacent corners")
+		for _, s := range result {
+			kind := "straight"
+			if s.isCorner {
+				kind = "corner"
+			}
+			t.Logf("  %s [%d-%d]", kind, s.start, s.end)
+		}
+	}
+}
+
+// TestRefineBoundaries_ShrinksCornerWithStraightEntry verifies that a corner
+// whose leading buckets have no cornering activity gets trimmed.
+func TestRefineBoundaries_ShrinksCornerWithStraightEntry(t *testing.T) {
+	segs := []rawSeg{
+		{isCorner: false, start: 0, end: 99, latSign: 0},
+		{isCorner: true, start: 100, end: 300, latSign: 1.0},
+		{isCorner: false, start: 301, end: 999, latSign: 0},
+	}
+
+	steerAvg := make([]float64, numBuckets)
+	latAccAvg := make([]float64, numBuckets)
+	signAvg := make([]float64, numBuckets)
+	// No steering in the first 50 buckets of the corner (100-149).
+	// Strong steering only from bucket 150 onwards.
+	for i := 150; i <= 300; i++ {
+		steerAvg[i] = 0.30
+	}
+
+	result := refineBoundaries(segs, steerAvg, latAccAvg, signAvg, 3000.0)
+	// The corner should start later (around 150, not 100).
+	for _, s := range result {
+		if s.isCorner {
+			if s.start < 140 {
+				t.Errorf("expected corner start to shift right (to ~150), got %d", s.start)
+			}
+			break
+		}
 	}
 }

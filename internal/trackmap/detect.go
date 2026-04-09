@@ -1,9 +1,6 @@
 package trackmap
 
-import (
-	"fmt"
-	"math"
-)
+import "math"
 
 const numBuckets = 1000 // 0.1% resolution
 
@@ -21,16 +18,50 @@ const (
 	curvExitThresh  = 0.0015
 )
 
+// Post-detection validation constants (latlon path only).
+const (
+	// S/F wraparound: corners shorter than this at the track boundary are GPS artifacts.
+	wraparoundMaxM = 50.0
+
+	// Steering/lat-G confirmation: a corner must exceed at least one of these
+	// to survive validation. Corners with neither meaningful steering nor lateral
+	// load are reclassified as straights.
+	confirmSteerThreshRad = 0.175 // ~10 degrees
+	confirmLatAccelThresh = 2.0   // m/s²
+
+	// Speed-profile validation: corners with less speed variation than this are
+	// reclassified as straights (no real deceleration occurred).
+	speedDropThreshMPS = 2.8 // ~10 km/h
+
+	// Oversized corner splitting: only corners longer than splitMinCornerM are
+	// candidates. A split occurs when speed rises by at least splitReaccelMPS
+	// between two distinct speed troughs.
+	splitMinCornerM   = 200.0
+	splitReaccelMPS   = 5.6 // ~20 km/h
+	splitSpeedSmoothM = 30.0
+
+	// Boundary refinement: thresholds for detecting cornering activity.
+	// A bucket is "cornering" if steering exceeds this OR lat-G exceeds this.
+	refineSteerThreshRad = 0.12  // ~7 degrees
+	refineLatAccThresh   = 2.5   // m/s²
+	// Minimum straight length after refinement — straights shorter than this
+	// get absorbed into adjacent corners.
+	refineMinStraightM = 30.0
+)
+
 const earthRadiusM = 6_371_000.0
 
 // Sample is the minimal telemetry data required for corner detection.
 // Lat and Lon are only used by DetectFromMultipleLatLon; they are zero-valued
 // (and ignored) when using the default lataccel method.
+// Speed and SteerAngle are used by post-detection validation in the latlon path.
 type Sample struct {
 	LapDistPct float32
 	LatAccel   float32 // m/s²; positive = left
 	Lat        float64 // decimal degrees; 0 = not available
 	Lon        float64 // decimal degrees; 0 = not available
+	Speed      float32 // m/s; used by speed-based validation (0 = not available)
+	SteerAngle float32 // radians; used by steering confirmation filter (0 = not available)
 }
 
 // rawSeg is an intermediate segment used during detection before final labelling.
@@ -44,47 +75,12 @@ type rawSeg struct {
 
 func (r rawSeg) length() int { return r.end - r.start + 1 }
 
-// buildProfile buckets abs(LatAccel) and LatAccel sign for a single lap's
-// samples into numBuckets bins. Returns per-bucket average abs values,
-// per-bucket average sign values, and per-bucket sample counts.
-func buildProfile(samples []Sample) (latAbs []float64, latSign []float64, counts []int) {
-	absSum := make([]float64, numBuckets)
-	signSum := make([]float64, numBuckets)
-	counts = make([]int, numBuckets)
-
-	for _, s := range samples {
-		b := int(s.LapDistPct * numBuckets)
-		if b < 0 {
-			b = 0
-		}
-		if b >= numBuckets {
-			b = numBuckets - 1
-		}
-		absSum[b] += math.Abs(float64(s.LatAccel))
-		if s.LatAccel > 0 {
-			signSum[b] += 1.0
-		} else if s.LatAccel < 0 {
-			signSum[b] -= 1.0
-		}
-		counts[b]++
-	}
-
-	latAbs = make([]float64, numBuckets)
-	latSign = make([]float64, numBuckets)
-	for i := 0; i < numBuckets; i++ {
-		if counts[i] > 0 {
-			latAbs[i] = absSum[i] / float64(counts[i])
-			latSign[i] = signSum[i] / float64(counts[i])
-		}
-	}
-	return latAbs, latSign, counts
-}
-
-// detectFromProfiles runs the shared detection pipeline on pre-built averaged
-// abs and sign profiles. counts indicates which buckets had data; zero-count
-// buckets are forward-filled. enterThresh and exitThresh are the hysteresis
-// thresholds in the same units as absAvg (m/s² for lataccel, 1/m for latlon).
-func detectFromProfiles(absAvg, signAvg []float64, counts []int, trackLengthM, enterThresh, exitThresh float64) []Segment {
+// detectRawFromProfiles runs the shared detection pipeline on pre-built averaged
+// abs and sign profiles, returning intermediate rawSegs before labelling.
+// counts indicates which buckets had data; zero-count buckets are forward-filled.
+// enterThresh and exitThresh are the hysteresis thresholds in the same units as
+// absAvg (m/s² for lataccel, 1/m for latlon).
+func detectRawFromProfiles(absAvg, signAvg []float64, counts []int, trackLengthM, enterThresh, exitThresh float64) []rawSeg {
 	// Forward-fill empty buckets.
 	fillGaps(absAvg, counts)
 	fillGaps(signAvg, counts)
@@ -107,6 +103,13 @@ func detectFromProfiles(absAvg, signAvg []float64, counts []int, trackLengthM, e
 	// Merge chicanes: [corner, short-straight, corner] with opposite signs.
 	rawSegs = mergeChicanes(rawSegs, trackLengthM)
 
+	return rawSegs
+}
+
+// detectFromProfiles runs the full pipeline and returns labelled Segments.
+// Used by the lataccel path and MatchScore which don't need post-processing.
+func detectFromProfiles(absAvg, signAvg []float64, counts []int, trackLengthM, enterThresh, exitThresh float64) []Segment {
+	rawSegs := detectRawFromProfiles(absAvg, signAvg, counts, trackLengthM, enterThresh, exitThresh)
 	return labelSegments(rawSegs, trackLengthM)
 }
 
@@ -160,59 +163,6 @@ func Detect(samples []Sample, trackLengthM float64) []Segment {
 	return DetectFromMultiple([][]Sample{samples}, trackLengthM)
 }
 
-// project converts (lat, lon) in decimal degrees to local (x, y) in metres
-// relative to the origin (lat0, lon0), using an equirectangular projection.
-func project(lat, lon, lat0, lon0 float64) (x, y float64) {
-	cosLat0 := math.Cos(lat0 * math.Pi / 180.0)
-	x = (lon - lon0) * math.Pi / 180.0 * cosLat0 * earthRadiusM
-	y = (lat - lat0) * math.Pi / 180.0 * earthRadiusM
-	return
-}
-
-// signedCurvature returns the signed curvature (1/m) of the arc through three
-// consecutive XY points A→B→C. Positive = left turn. Returns 0 for degenerate
-// input (coincident points or collinear within floating-point precision).
-func signedCurvature(ax, ay, bx, by, cx, cy float64) float64 {
-	abx, aby := bx-ax, by-ay
-	bcx, bcy := cx-bx, cy-by
-	acx, acy := cx-ax, cy-ay
-	cross := abx*bcy - aby*bcx
-	ab := math.Hypot(abx, aby)
-	bc := math.Hypot(bcx, bcy)
-	ac := math.Hypot(acx, acy)
-	denom := ab * bc * ac
-	if denom < 1e-10 {
-		return 0
-	}
-	return 2 * cross / denom
-}
-
-// buildPositionProfile accumulates projected XY positions for a single lap's
-// samples into numBuckets bins. Returns per-bucket XY sums and sample counts.
-// Samples with Lat==0 and Lon==0 are skipped. lat0/lon0 is the projection origin.
-func buildPositionProfile(samples []Sample, lat0, lon0 float64) (xSum, ySum []float64, counts []int) {
-	xSum = make([]float64, numBuckets)
-	ySum = make([]float64, numBuckets)
-	counts = make([]int, numBuckets)
-	for _, s := range samples {
-		if s.Lat == 0 && s.Lon == 0 {
-			continue
-		}
-		b := int(s.LapDistPct * numBuckets)
-		if b < 0 {
-			b = 0
-		}
-		if b >= numBuckets {
-			b = numBuckets - 1
-		}
-		x, y := project(s.Lat, s.Lon, lat0, lon0)
-		xSum[b] += x
-		ySum[b] += y
-		counts[b]++
-	}
-	return
-}
-
 // DetectFromMultipleLatLon detects track segments using geometric curvature
 // derived from GPS (lat/lon) positions rather than lateral acceleration.
 // This correctly identifies pure-braking zones that produce little lateral load.
@@ -221,9 +171,13 @@ func buildPositionProfile(samples []Sample, lat0, lon0 float64) (xSum, ySum []fl
 // which eliminates GPS quantisation noise that would otherwise dominate
 // consecutive 60 Hz samples separated by less than 1 m of arc.
 //
+// If trackName matches a known track in the reference table, the detection
+// iteratively adjusts curvature thresholds to produce the expected number of
+// corner segments. Otherwise it uses default thresholds.
+//
 // Returns nil if no lat/lon data is available in the samples (Lat==0 and
 // Lon==0 for every sample), allowing the caller to fall back to DetectFromMultiple.
-func DetectFromMultipleLatLon(allSamples [][]Sample, trackLengthM float64) []Segment {
+func DetectFromMultipleLatLon(allSamples [][]Sample, trackLengthM float64, targetCorners int) []Segment {
 	if len(allSamples) == 0 {
 		return nil
 	}
@@ -246,16 +200,40 @@ func DetectFromMultipleLatLon(allSamples [][]Sample, trackLengthM float64) []Seg
 	lat0 := latSum / float64(nPos)
 	lon0 := lonSum / float64(nPos)
 
-	// Step 2: accumulate bin-averaged XY positions across all laps.
+	// Step 2: accumulate bin-averaged XY positions, speed, steering, and
+	// latAccel profiles across all laps.
 	xTotal := make([]float64, numBuckets)
 	yTotal := make([]float64, numBuckets)
 	anyCounts := make([]int, numBuckets) // total samples per bin across all laps
+
+	speedTotal := make([]float64, numBuckets)
+	speedCounts := make([]int, numBuckets)
+	steerTotal := make([]float64, numBuckets)
+	steerCounts := make([]int, numBuckets)
+	latAccTotal := make([]float64, numBuckets)
+	latAccCounts := make([]int, numBuckets)
+
 	for _, samples := range allSamples {
 		xs, ys, cnts := buildPositionProfile(samples, lat0, lon0)
+		spd, spdC := buildSpeedProfile(samples)
+		str, strC := buildSteerProfile(samples)
+		la, _, laC := buildProfile(samples) // abs(LatAccel) profile
 		for i := 0; i < numBuckets; i++ {
 			xTotal[i] += xs[i]
 			yTotal[i] += ys[i]
 			anyCounts[i] += cnts[i]
+			speedTotal[i] += spd[i]
+			if spdC[i] > 0 {
+				speedCounts[i]++
+			}
+			steerTotal[i] += str[i]
+			if strC[i] > 0 {
+				steerCounts[i]++
+			}
+			latAccTotal[i] += la[i]
+			if laC[i] > 0 {
+				latAccCounts[i]++
+			}
 		}
 	}
 
@@ -300,333 +278,118 @@ func DetectFromMultipleLatLon(allSamples [][]Sample, trackLengthM float64) []Seg
 		}
 	}
 
-	return detectFromProfiles(absAvg, signAvg, anyCounts, trackLengthM, curvEnterThresh, curvExitThresh)
-}
-
-// fillGaps fills zero-count buckets from neighbouring non-empty values.
-// A forward pass propagates the last known value rightward; a backward pass
-// then fills any leading zeros (buckets before the first non-empty one) from
-// the earliest known value.
-func fillGaps(vals []float64, counts []int) {
-	// Forward pass: propagate rightward.
-	last := 0.0
-	for i := 0; i < len(vals); i++ {
-		if counts[i] > 0 {
-			last = vals[i]
-		} else {
-			vals[i] = last
+	// Step 5: average the validation profiles across laps.
+	speedAvg := make([]float64, numBuckets)
+	steerAbsAvg := make([]float64, numBuckets)
+	latAccAbsAvg := make([]float64, numBuckets)
+	for i := 0; i < numBuckets; i++ {
+		if speedCounts[i] > 0 {
+			speedAvg[i] = speedTotal[i] / float64(speedCounts[i])
+		}
+		if steerCounts[i] > 0 {
+			steerAbsAvg[i] = steerTotal[i] / float64(steerCounts[i])
+		}
+		if latAccCounts[i] > 0 {
+			latAccAbsAvg[i] = latAccTotal[i] / float64(latAccCounts[i])
 		}
 	}
-	// Backward pass: fill any leading zeros that the forward pass left as 0.
-	last = 0.0
-	for i := len(vals) - 1; i >= 0; i-- {
-		if counts[i] > 0 {
-			last = vals[i]
-		} else if vals[i] == 0.0 {
-			vals[i] = last
-		}
+	fillGaps(speedAvg, speedCounts)
+	fillGaps(steerAbsAvg, steerCounts)
+	fillGaps(latAccAbsAvg, latAccCounts)
+
+	// postProcess runs the full validation pipeline on raw segments.
+	postProcess := func(segs []rawSeg) []rawSeg {
+		segs = trimWraparoundCorner(segs, trackLengthM)
+		segs = confirmCorners(segs, steerAbsAvg, latAccAbsAvg, trackLengthM)
+		segs = splitLargeCorners(segs, speedAvg, signAvg, trackLengthM)
+		segs = validateCornerSpeed(segs, speedAvg, trackLengthM)
+		segs = refineBoundaries(segs, steerAbsAvg, latAccAbsAvg, signAvg, trackLengthM)
+		return segs
 	}
+
+	// Step 6: detect segments. If a target corner count is known, search
+	// across curvature thresholds for the best match.
+	if targetCorners <= 0 {
+		// No reference — use default thresholds.
+		rawSegs := detectRawFromProfiles(absAvg, signAvg, anyCounts, trackLengthM, curvEnterThresh, curvExitThresh)
+		rawSegs = postProcess(rawSegs)
+		return labelSegments(rawSegs, trackLengthM)
+	}
+
+	rawSegs := searchThresholds(absAvg, signAvg, anyCounts, trackLengthM, targetCorners, postProcess)
+	return labelSegments(rawSegs, trackLengthM)
 }
 
-// boxSmooth applies a circular box (moving average) filter with the given window.
-// The window is centred on each bucket, wrapping around at boundaries.
-// The effective width is 2*(window/2)+1 elements (odd, to keep the centre bucket).
-func boxSmooth(vals []float64, window int) []float64 {
-	n := len(vals)
-	out := make([]float64, n)
-	half := window / 2
-	width := float64(2*half + 1) // actual number of elements summed
-	for i := 0; i < n; i++ {
-		sum := 0.0
-		for j := -half; j <= half; j++ {
-			idx := (i + j + n) % n
-			sum += vals[idx]
-		}
-		out[i] = sum / width
-	}
-	return out
-}
+// ---------------------------------------------------------------------------
+// Threshold search for target-guided detection
+// ---------------------------------------------------------------------------
 
-// hysteresis classifies each bucket as corner (true) or straight (false).
-// State flips to true when value >= enter, back to false when value < exit.
-func hysteresis(vals []float64, enter, exit float64) []bool {
-	result := make([]bool, len(vals))
-	inCorner := false
-	for i, v := range vals {
-		if !inCorner && v >= enter {
-			inCorner = true
-		} else if inCorner && v < exit {
-			inCorner = false
-		}
-		result[i] = inCorner
+// searchThresholds tries a range of curvature enter thresholds and returns the
+// raw segments whose corner count best matches targetCorners. The exit threshold
+// is kept proportional to the enter threshold (same ratio as the defaults).
+// postProcess is called on each candidate to apply validation steps.
+func searchThresholds(absAvg, signAvg []float64, counts []int, trackLengthM float64, targetCorners int, postProcess func([]rawSeg) []rawSeg) []rawSeg {
+	// Threshold candidates: from very sensitive to very strict.
+	// The default ratio exit/enter = 0.0015/0.004 = 0.375.
+	const exitRatio = 0.375
+	candidates := []float64{
+		0.0015, 0.002, 0.0025, 0.003, 0.0035,
+		0.004, // default
+		0.0045, 0.005, 0.006, 0.007, 0.008,
 	}
-	return result
-}
 
-// groupBuckets converts a bool slice into rawSeg structs.
-func groupBuckets(isCorner []bool, signAvg []float64) []rawSeg {
-	if len(isCorner) == 0 {
-		return nil
+	type result struct {
+		segs  []rawSeg
+		diff  int
+		enter float64
 	}
-	var segs []rawSeg
-	cur := rawSeg{isCorner: isCorner[0], start: 0}
-	for i := 1; i < len(isCorner); i++ {
-		if isCorner[i] != cur.isCorner {
-			cur.end = i - 1
-			cur.latSign = avgSign(signAvg, cur.start, cur.end)
-			segs = append(segs, cur)
-			cur = rawSeg{isCorner: isCorner[i], start: i}
-		}
-	}
-	cur.end = len(isCorner) - 1
-	cur.latSign = avgSign(signAvg, cur.start, cur.end)
-	segs = append(segs, cur)
-	return segs
-}
 
-// avgSign computes the average of signAvg[start..end] (inclusive).
-func avgSign(signAvg []float64, start, end int) float64 {
-	sum := 0.0
-	for i := start; i <= end; i++ {
-		sum += signAvg[i]
-	}
-	n := end - start + 1
-	if n == 0 {
-		return 0
-	}
-	return sum / float64(n)
-}
+	var best *result
+	for _, enter := range candidates {
+		exit := enter * exitRatio
 
-// mergeShort iteratively merges segments that are too short until stable.
-func mergeShort(segs []rawSeg, minStraight, minCorner int) []rawSeg {
-	for {
-		merged := false
-		for i := 0; i < len(segs); i++ {
-			s := segs[i]
-			minLen := minStraight
-			if s.isCorner {
-				minLen = minCorner
-			}
-			if s.length() < minLen {
-				segs = mergeAt(segs, mergeIdx(segs, i))
-				merged = true
-				break // restart scan
-			}
+		// Work on copies since detectRawFromProfiles mutates the profile slices
+		// (fillGaps modifies in-place). Clone them for each iteration.
+		absCopy := make([]float64, len(absAvg))
+		copy(absCopy, absAvg)
+		signCopy := make([]float64, len(signAvg))
+		copy(signCopy, signAvg)
+		countsCopy := make([]int, len(counts))
+		copy(countsCopy, counts)
+
+		rawSegs := detectRawFromProfiles(absCopy, signCopy, countsCopy, trackLengthM, enter, exit)
+		rawSegs = postProcess(rawSegs)
+		corners := countCornerSegs(rawSegs)
+		diff := corners - targetCorners
+		if diff < 0 {
+			diff = -diff
 		}
-		if !merged {
+
+		if best == nil || diff < best.diff || (diff == best.diff && math.Abs(enter-curvEnterThresh) < math.Abs(best.enter-curvEnterThresh)) {
+			best = &result{segs: rawSegs, diff: diff, enter: enter}
+		}
+
+		// Perfect match — stop early.
+		if diff == 0 {
 			break
 		}
 	}
-	return segs
+
+	if best != nil {
+		return best.segs
+	}
+	// Shouldn't happen, but fall back to defaults.
+	rawSegs := detectRawFromProfiles(absAvg, signAvg, counts, trackLengthM, curvEnterThresh, curvExitThresh)
+	return postProcess(rawSegs)
 }
 
-// mergeIdx returns the index at which to call mergeAt for segment i.
-// If i is first → merge with next (return 0).
-// If i is last  → merge with prev (return len-2).
-// Otherwise     → merge with the smaller neighbor.
-func mergeIdx(segs []rawSeg, i int) int {
-	if i == 0 {
-		return 0
-	}
-	if i == len(segs)-1 {
-		return len(segs) - 2
-	}
-	// Merge with the smaller neighbor.
-	if segs[i-1].length() <= segs[i+1].length() {
-		return i - 1
-	}
-	return i
-}
-
-// mergeAt merges segs[i] and segs[i+1] into a single rawSeg.
-// The merged segment inherits isCorner from whichever half is longer;
-// latSign is the length-weighted average; start/end span both.
-func mergeAt(segs []rawSeg, i int) []rawSeg {
-	if i < 0 || i+1 >= len(segs) {
-		return segs
-	}
-	a, b := segs[i], segs[i+1]
-	merged := rawSeg{
-		start: a.start,
-		end:   b.end,
-	}
-	// isCorner from the longer half.
-	if a.length() >= b.length() {
-		merged.isCorner = a.isCorner
-	} else {
-		merged.isCorner = b.isCorner
-	}
-	// length-weighted latSign.
-	total := float64(a.length() + b.length())
-	merged.latSign = (a.latSign*float64(a.length()) + b.latSign*float64(b.length())) / total
-
-	result := make([]rawSeg, 0, len(segs)-1)
-	result = append(result, segs[:i]...)
-	result = append(result, merged)
-	result = append(result, segs[i+2:]...)
-	return result
-}
-
-// mergeChicanes scans for [corner, short-straight, corner] triplets where
-// the two corners have opposite latSign (product < 0) and the gap straight is
-// short enough. The gap threshold scales with track length (target ~100 m).
-// Merges all three into a single chicane rawSeg.
-func mergeChicanes(segs []rawSeg, trackLengthM float64) []rawSeg {
-	// Scale chicane gap with track length: target 100 m.
-	const targetGapM = 100.0
-	maxGap := int(0.018 * numBuckets) // fallback: 1.8% ≈ 18 buckets
-	if trackLengthM > 0 {
-		maxGap = max(1, int(targetGapM/trackLengthM*float64(numBuckets)))
-	}
-
-	i := 0
-	for i+2 < len(segs) {
-		a, mid, b := segs[i], segs[i+1], segs[i+2]
-		if !a.isCorner || mid.isCorner || !b.isCorner ||
-			mid.length() > maxGap || a.latSign*b.latSign >= 0 {
-			i++
-			continue
-		}
-		// Merge all three into one chicane segment.
-		total := float64(a.length() + mid.length() + b.length())
-		merged := rawSeg{
-			isCorner:  true,
-			isChicane: true,
-			start:     a.start,
-			end:       b.end,
-			latSign:   (a.latSign*float64(a.length()) + mid.latSign*float64(mid.length()) + b.latSign*float64(b.length())) / total,
-		}
-		result := make([]rawSeg, 0, len(segs)-2)
-		result = append(result, segs[:i]...)
-		result = append(result, merged)
-		result = append(result, segs[i+3:]...)
-		segs = result
-		// Do not increment i — re-check this position in case of back-to-back chicanes.
-	}
-	return segs
-}
-
-// MatchScore computes how well the given lap samples match the stored segment
-// boundaries. For each segment boundary (entry pct of each segment after the
-// first), it checks whether the current lap also shows a corner/straight
-// transition within a tolerance of ±0.02 (2% of lap distance). Returns a
-// value 0.0–1.0 where 1.0 = all boundaries matched.
-//
-// trackLengthM is used to scale the smoothing window (same as Detect).
-// If len(segs) <= 1, returns 1.0 (no interior boundaries to check).
-func MatchScore(samples []Sample, segs []Segment, trackLengthM float64) float32 {
-	if len(segs) <= 1 {
-		return 1.0
-	}
-
-	// Re-run the same classification pipeline as Detect on the current lap.
-	absSum := make([]float64, numBuckets)
-	signSum := make([]float64, numBuckets)
-	counts := make([]int, numBuckets)
-
-	for _, s := range samples {
-		b := int(s.LapDistPct * numBuckets)
-		if b < 0 {
-			b = 0
-		}
-		if b >= numBuckets {
-			b = numBuckets - 1
-		}
-		absSum[b] += math.Abs(float64(s.LatAccel))
-		if s.LatAccel > 0 {
-			signSum[b] += 1.0
-		} else if s.LatAccel < 0 {
-			signSum[b] -= 1.0
-		}
-		counts[b]++
-	}
-
-	absAvg := make([]float64, numBuckets)
-	signAvg := make([]float64, numBuckets)
-	for i := 0; i < numBuckets; i++ {
-		if counts[i] > 0 {
-			absAvg[i] = absSum[i] / float64(counts[i])
-			signAvg[i] = signSum[i] / float64(counts[i])
+// countCornerSegs returns the number of corner segments (including chicanes).
+func countCornerSegs(segs []rawSeg) int {
+	n := 0
+	for _, s := range segs {
+		if s.isCorner {
+			n++
 		}
 	}
-
-	fillGaps(absAvg, counts)
-	fillGaps(signAvg, counts)
-
-	// Use the same window as Detect: ~15m scaled to track length.
-	window := max(1, int(15.0/trackLengthM*numBuckets))
-	smoothed := boxSmooth(absAvg, window)
-	isCorner := hysteresis(smoothed, 5.0, 2.5)
-
-	// Build a bool slice of transitions: transition[i] = true if isCorner[i] != isCorner[i-1].
-	hasTransition := make([]bool, numBuckets)
-	for i := 1; i < numBuckets; i++ {
-		if isCorner[i] != isCorner[i-1] {
-			hasTransition[i] = true
-		}
-	}
-
-	// Check each interior boundary (segments[1], segments[2], ...).
-	const tolerance = 20 // ±2% = ±20 buckets
-	matched := 0
-	total := len(segs) - 1
-	for _, seg := range segs[1:] {
-		b := int(seg.EntryPct * float32(numBuckets))
-		lo := b - tolerance
-		if lo < 0 {
-			lo = 0
-		}
-		hi := b + tolerance
-		if hi >= numBuckets {
-			hi = numBuckets - 1
-		}
-		for j := lo; j <= hi; j++ {
-			if hasTransition[j] {
-				matched++
-				break
-			}
-		}
-	}
-
-	return float32(matched) / float32(total)
-}
-
-// labelSegments converts rawSegs to named Segments with pct and metre values.
-func labelSegments(rawSegs []rawSeg, trackLengthM float64) []Segment {
-	segments := make([]Segment, 0, len(rawSegs))
-	tNum := 0 // corner counter
-	sNum := 0 // straight counter
-
-	for _, r := range rawSegs {
-		entryPct := float32(r.start) / float32(numBuckets)
-		exitPct := float32(r.end+1) / float32(numBuckets)
-		if exitPct > 1.0 {
-			exitPct = 1.0
-		}
-
-		seg := Segment{
-			EntryPct: entryPct,
-			ExitPct:  exitPct,
-			EntryM:   entryPct * float32(trackLengthM),
-			ExitM:    exitPct * float32(trackLengthM),
-		}
-
-		if !r.isCorner {
-			sNum++
-			seg.Name = fmt.Sprintf("S%d", sNum)
-			seg.Kind = KindStraight
-		} else if r.isChicane {
-			tNum++
-			seg.Name = fmt.Sprintf("T%d-%d", tNum, tNum+1)
-			seg.Kind = KindChicane
-			tNum++ // chicane consumes two turn numbers
-		} else {
-			tNum++
-			seg.Name = fmt.Sprintf("T%d", tNum)
-			seg.Kind = KindCorner
-		}
-
-		segments = append(segments, seg)
-	}
-	return segments
+	return n
 }

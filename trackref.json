@@ -1,0 +1,10 @@
+{
+  "Donington Park Racing Circuit": {
+    "corners": 7,
+    "comment": "National: Redgate, Hollywood+Craner (chicane), Old Hairpin, McLeans, Coppice, Starkey's Bridge, Goddards"
+  },
+  "Sebring International Raceway": {
+    "corners": 10,
+    "comment": "Full: T1-2 (chicane), T3, T4, T5, T6, T7, Tower Turn, T9, T10, T11"
+  }
+}

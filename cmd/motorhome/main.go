@@ -22,7 +22,8 @@ func main() {
 	cfgPath := flag.String("config", defaultConfigPath(), "path to config file")
 	flag.Usage = func() {
 		fmt.Fprintln(os.Stderr, "Usage: motorhome [-config <path>] <start|stop|status|analyze|notes>")
-		fmt.Fprintln(os.Stderr, "       motorhome analyze [-lap N] [-compare N,M] <file.ibt>")
+		fmt.Fprintln(os.Stderr, "       motorhome analyze [-lap N] [-compare N,M] [-update-map] [-geo-method latlon|lataccel] [file.ibt]")
+		fmt.Fprintln(os.Stderr, "       motorhome notes [set-hotkey]")
 		flag.PrintDefaults()
 	}
 	flag.Parse()
@@ -47,7 +48,7 @@ func main() {
 	case "analyze":
 		RunAnalyze(args[1:], cfg, trackmapPath, pbPath)
 	case "notes":
-		RunNotes(args[1:], cfg, notesDir, *cfgPath, trackmapPath)
+		RunNotes(args[1:], cfg, notesDir, *cfgPath)
 	default:
 		pm := launcher.NewProcessManager()
 		switch args[0] {
