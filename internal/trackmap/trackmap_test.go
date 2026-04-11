@@ -7,30 +7,16 @@ import (
 	"testing"
 )
 
-// TestDetect_ProducesStraightsAndCorners builds a synthetic sample set with
-// alternating straight (LatAccel≈0) and corner (LatAccel=15) sections and
-// verifies that Detect returns segments of alternating kinds with the right count.
-func TestDetect_ProducesStraightsAndCorners(t *testing.T) {
-	// Build 2000 samples: 4 sections of 500 each, alternating straight/corner.
-	// Sections: [0,500) straight, [500,1000) corner, [1000,1500) straight, [1500,2000) corner.
-	n := 2000
-	samples := make([]Sample, n)
-	for i := 0; i < n; i++ {
-		pct := float32(i) / float32(n)
-		section := int(pct * 4)
-		var lat float32
-		if section%2 == 1 {
-			lat = 15.0 // well above enter threshold of 5.0
-		}
-		samples[i] = Sample{LapDistPct: pct, LatAccel: lat}
-	}
-
-	segs := Detect(samples, 4000.0)
+// TestDetectFromMultipleLatLon_ProducesStraightsAndCorners verifies that GPS-based
+// detection on a synthetic oval returns corners and straights.
+func TestDetectFromMultipleLatLon_ProducesStraightsAndCorners(t *testing.T) {
+	samples := makeOvalSamples(2000, 51.0, -1.5)
+	trackLen := ovalPerimeterM()
+	segs := DetectFromMultipleLatLon([][]Sample{samples}, trackLen, 0)
 	if len(segs) == 0 {
 		t.Fatal("expected at least one segment, got none")
 	}
 
-	// Count corners and straights.
 	var corners, straights int
 	for _, s := range segs {
 		switch s.Kind {
@@ -40,79 +26,31 @@ func TestDetect_ProducesStraightsAndCorners(t *testing.T) {
 			straights++
 		}
 	}
-
 	if corners == 0 {
 		t.Error("expected at least one corner, got 0")
 	}
 	if straights == 0 {
 		t.Error("expected at least one straight, got 0")
 	}
-
-	// Verify alternating: first segment kind should differ from second.
-	if len(segs) >= 2 {
-		k1, k2 := segs[0].Kind, segs[1].Kind
-		isCorner1 := k1 == KindCorner || k1 == KindChicane
-		isCorner2 := k2 == KindCorner || k2 == KindChicane
-		if isCorner1 == isCorner2 {
-			t.Errorf("expected alternating straight/corner, got %v then %v", k1, k2)
-		}
-	}
 }
 
-// TestDetect_EmptySamples verifies that Detect(nil, 6000) returns nil without panic.
-func TestDetect_EmptySamples(t *testing.T) {
-	segs := Detect(nil, 6000)
+// TestDetectFromMultipleLatLon_EmptySamples verifies nil is returned without panic.
+func TestDetectFromMultipleLatLon_EmptySamples(t *testing.T) {
+	segs := DetectFromMultipleLatLon(nil, 6000, 0)
 	if segs != nil {
 		t.Errorf("expected nil, got %v", segs)
 	}
 }
 
-// TestDetect_ChicaneDetection builds samples with left corner, short straight,
-// right corner (LatAccel flips sign) and verifies a chicane is detected.
-func TestDetect_ChicaneDetection(t *testing.T) {
-	// Build 1000 samples (1:1 with buckets) with pattern:
-	//   [0,200)   straight  lat=0
-	//   [200,250)  left corner  lat=+15   (50 buckets × 4 m = 200 m)
-	//   [250,265)  very short straight lat=0  (15 buckets = 60 m < gap threshold)
-	//   [265,315) right corner lat=-15   (50 buckets = 200 m)
-	//   [315,1000) straight lat=0
-	// Total chicane: 115 buckets × 4 m = 460 m — but the corners themselves are
-	// 50+15+50 = 115 buckets = 380 m at this track length, under the 400 m limit.
-	n := 1000
-	trackLen := 3300.0 // each bucket ≈ 3.3 m → 115 buckets ≈ 380 m (< 400 m max)
-	samples := make([]Sample, n)
-	for i := 0; i < n; i++ {
-		pct := float32(i) / float32(n)
-		var lat float32
-		switch {
-		case i >= 200 && i < 250:
-			lat = 15.0
-		case i >= 250 && i < 265:
-			lat = 0.0
-		case i >= 265 && i < 315:
-			lat = -15.0
-		}
-		samples[i] = Sample{LapDistPct: pct, LatAccel: lat}
+// TestDetectFromMultipleLatLon_NoGPS verifies nil is returned when GPS data is absent.
+func TestDetectFromMultipleLatLon_NoGPS(t *testing.T) {
+	samples := make([]Sample, 100)
+	for i := range samples {
+		samples[i] = Sample{LapDistPct: float32(i) / 100}
 	}
-
-	segs := Detect(samples, trackLen)
-	if len(segs) == 0 {
-		t.Fatal("expected segments, got none")
-	}
-
-	var hasChicane bool
-	for _, s := range segs {
-		if s.Kind == KindChicane {
-			hasChicane = true
-			break
-		}
-	}
-	if !hasChicane {
-		t.Log("segments detected:")
-		for _, s := range segs {
-			t.Logf("  %s (%s) %.1f%%–%.1f%%", s.Name, s.Kind, s.EntryPct*100, s.ExitPct*100)
-		}
-		t.Error("expected a chicane segment to be detected")
+	segs := DetectFromMultipleLatLon([][]Sample{samples}, 4000, 0)
+	if segs != nil {
+		t.Errorf("expected nil when no GPS data, got %v segs", len(segs))
 	}
 }
 
@@ -152,40 +90,27 @@ func TestConfidence_High(t *testing.T) {
 
 // ---- MatchScore tests ----
 
-// TestMatchScore_PerfectMatch builds samples that match the stored segments
-// exactly (LatAccel=15 in corner buckets, 0 in straight buckets).
-// Expects a score >= 0.85.
-func TestMatchScore_PerfectMatch(t *testing.T) {
-	// Segments: S1 [0.0, 0.25), T1 [0.25, 0.50), S2 [0.50, 0.75), T2 [0.75, 1.0)
+// TestMatchScore_NoGPS verifies that MatchScore returns 1.0 when samples have no GPS data.
+func TestMatchScore_NoGPS(t *testing.T) {
 	segs := []Segment{
 		{Name: "S1", Kind: KindStraight, EntryPct: 0.00, ExitPct: 0.25},
 		{Name: "T1", Kind: KindCorner, EntryPct: 0.25, ExitPct: 0.50},
 		{Name: "S2", Kind: KindStraight, EntryPct: 0.50, ExitPct: 0.75},
 		{Name: "T2", Kind: KindCorner, EntryPct: 0.75, ExitPct: 1.00},
 	}
-
-	// Build 1000 samples (1 per bucket) with LatAccel=15 in corner regions,
-	// 0 in straight regions.
-	n := 1000
-	samples := make([]Sample, n)
-	for i := 0; i < n; i++ {
-		pct := float32(i) / float32(n)
-		var lat float32
-		// Corner buckets: [250,500) and [750,1000)
-		if (i >= 250 && i < 500) || (i >= 750 && i < 1000) {
-			lat = 15.0
-		}
-		samples[i] = Sample{LapDistPct: pct, LatAccel: lat}
+	// Samples without lat/lon — should return 1.0 (no evidence of mismatch).
+	samples := make([]Sample, 100)
+	for i := range samples {
+		samples[i] = Sample{LapDistPct: float32(i) / 100}
 	}
-
 	score := MatchScore(samples, segs, 4000.0)
-	if score < 0.85 {
-		t.Errorf("MatchScore() = %.3f, want >= 0.85", score)
+	if score != 1.0 {
+		t.Errorf("MatchScore (no GPS) = %.3f, want 1.0", score)
 	}
 }
 
 func TestMatchScore_NoSegments(t *testing.T) {
-	samples := []Sample{{LapDistPct: 0.5, LatAccel: 5.0}}
+	samples := []Sample{{LapDistPct: 0.5}}
 	score := MatchScore(samples, nil, 4000.0)
 	if score != 1.0 {
 		t.Errorf("MatchScore(samples, nil) = %.3f, want 1.0", score)
@@ -196,7 +121,7 @@ func TestMatchScore_SingleSegment(t *testing.T) {
 	segs := []Segment{
 		{Name: "S1", Kind: KindStraight, EntryPct: 0.0, ExitPct: 1.0},
 	}
-	samples := []Sample{{LapDistPct: 0.5, LatAccel: 0.0}}
+	samples := []Sample{{LapDistPct: 0.5}}
 	score := MatchScore(samples, segs, 4000.0)
 	if score != 1.0 {
 		t.Errorf("MatchScore(samples, oneSegment) = %.3f, want 1.0", score)
@@ -227,112 +152,68 @@ func TestAddSession_AddsAndDeduplicates(t *testing.T) {
 	}
 }
 
-// TestSaveLoad_BrakeEntryRoundtrip verifies that BrakeEntryPct survives a
-// Save/Load cycle and that segments without it (zero value) omit the field.
-func TestSaveLoad_BrakeEntryRoundtrip(t *testing.T) {
+// TestLoad_LegacyBrakeEntryPct verifies that old trackmap.json files containing
+// brakeEntryPct on segments are loaded without error and the field is silently dropped.
+func TestLoad_LegacyBrakeEntryPct(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "trackmap.json")
 
-	orig := TrackMapFile{
-		"Sebring International Raceway": {
-			TrackLengthM: 5793.8,
-			Source:       "auto",
-			DetectedFrom: "2026-03-27",
-			LapsUsed:     15,
-			Segments: []Segment{
-				{Name: "S1", Kind: KindStraight, EntryPct: 0.0, ExitPct: 0.065},
-				{Name: "T1", Kind: KindCorner, EntryPct: 0.065, ExitPct: 0.116, BrakeEntryPct: 0.051},
-				{Name: "S2", Kind: KindStraight, EntryPct: 0.116, ExitPct: 0.153},
-				{Name: "T2", Kind: KindCorner, EntryPct: 0.153, ExitPct: 0.208, BrakeEntryPct: 0.142},
-			},
-		},
-	}
-
-	if err := Save(path, orig); err != nil {
-		t.Fatalf("Save: %v", err)
+	// Write raw JSON that includes the old brakeEntryPct field.
+	legacy := `{
+  "Test Track": {
+    "trackLengthM": 3000,
+    "source": "auto",
+    "detectedFrom": "2026-01-01",
+    "lapsUsed": 5,
+    "sessionsUsed": 1,
+    "seenSessions": [],
+    "segments": [
+      {"name": "S1", "kind": "straight", "entryPct": 0.0, "exitPct": 0.3, "entryM": 0, "exitM": 900},
+      {"name": "T1", "kind": "corner", "entryPct": 0.3, "exitPct": 0.6, "entryM": 900, "exitM": 1800, "brakeEntryPct": 0.271},
+      {"name": "S2", "kind": "straight", "entryPct": 0.6, "exitPct": 1.0, "entryM": 1800, "exitM": 3000}
+    ]
+  }
+}`
+	if err := os.WriteFile(path, []byte(legacy), 0644); err != nil {
+		t.Fatalf("WriteFile: %v", err)
 	}
 
 	loaded, err := Load(path)
 	if err != nil {
-		t.Fatalf("Load: %v", err)
+		t.Fatalf("Load returned error for legacy JSON: %v", err)
 	}
-	tm := loaded["Sebring International Raceway"]
-
-	// Straight: BrakeEntryPct should be zero (omitempty, not serialised).
-	if tm.Segments[0].BrakeEntryPct != 0 {
-		t.Errorf("S1 BrakeEntryPct: got %v, want 0", tm.Segments[0].BrakeEntryPct)
+	tm, ok := loaded["Test Track"]
+	if !ok {
+		t.Fatal("track not found in loaded map")
 	}
-	// Corner T1: BrakeEntryPct must survive the roundtrip.
-	if got := tm.Segments[1].BrakeEntryPct; got != 0.051 {
-		t.Errorf("T1 BrakeEntryPct: got %v, want 0.051", got)
+	if len(tm.Segments) != 3 {
+		t.Fatalf("expected 3 segments, got %d", len(tm.Segments))
 	}
-	// Corner T2: same.
-	if got := tm.Segments[3].BrakeEntryPct; got != 0.142 {
-		t.Errorf("T2 BrakeEntryPct: got %v, want 0.142", got)
+	// Verify the segment geometry was preserved.
+	if tm.Segments[1].Name != "T1" {
+		t.Errorf("seg[1].Name = %q, want T1", tm.Segments[1].Name)
 	}
+	if tm.Segments[1].EntryPct != 0.3 {
+		t.Errorf("seg[1].EntryPct = %v, want 0.3", tm.Segments[1].EntryPct)
+	}
+	// brakeEntryPct must not be stored on the Segment anymore — the field doesn't exist.
+	// This test just confirms that loading didn't fail and geometry is intact.
 }
 
-// ---- DetectFromMultiple tests ----
+// TestDetectFromMultipleLatLon_MultiLapConsistent verifies that detection using two
+// consistent GPS laps produces a stable segment count.
+func TestDetectFromMultipleLatLon_MultiLapConsistent(t *testing.T) {
+	trackLen := ovalPerimeterM()
+	lap1 := makeOvalSamples(2000, 51.0, -1.5)
+	lap2 := makeOvalSamples(2000, 51.0, -1.5)
 
-// TestDetectFromMultiple_MatchesSingleLap verifies that DetectFromMultiple with one
-// lap produces the same segments as Detect with those same samples.
-func TestDetectFromMultiple_MatchesSingleLap(t *testing.T) {
-	n := 2000
-	samples := make([]Sample, n)
-	for i := 0; i < n; i++ {
-		pct := float32(i) / float32(n)
-		section := int(pct * 4)
-		var lat float32
-		if section%2 == 1 {
-			lat = 15.0
-		}
-		samples[i] = Sample{LapDistPct: pct, LatAccel: lat}
-	}
-
-	segsDetect := Detect(samples, 4000.0)
-	segsMulti := DetectFromMultiple([][]Sample{samples}, 4000.0)
-
-	if len(segsDetect) != len(segsMulti) {
-		t.Errorf("segment count mismatch: Detect=%d DetectFromMultiple=%d", len(segsDetect), len(segsMulti))
-		return
-	}
-	for i := range segsDetect {
-		if segsDetect[i].Kind != segsMulti[i].Kind {
-			t.Errorf("seg[%d] kind: Detect=%s DetectFromMultiple=%s", i, segsDetect[i].Kind, segsMulti[i].Kind)
-		}
-		if segsDetect[i].EntryPct != segsMulti[i].EntryPct {
-			t.Errorf("seg[%d] entryPct: Detect=%v DetectFromMultiple=%v", i, segsDetect[i].EntryPct, segsMulti[i].EntryPct)
-		}
-	}
-}
-
-// TestDetectFromMultiple_MultiLap verifies that DetectFromMultiple with two consistent
-// laps produces the same segment count as single-lap detection.
-func TestDetectFromMultiple_MultiLap(t *testing.T) {
-	// Build two laps with the same corner positions but slight noise variation.
-	makeLap := func(noise float32) []Sample {
-		n := 2000
-		s := make([]Sample, n)
-		for i := 0; i < n; i++ {
-			pct := float32(i) / float32(n)
-			section := int(pct * 4)
-			var lat float32
-			if section%2 == 1 {
-				lat = 15.0 + noise
-			}
-			s[i] = Sample{LapDistPct: pct, LatAccel: lat}
-		}
-		return s
-	}
-
-	lap1 := makeLap(0)
-	lap2 := makeLap(0.5)
-
-	segsSingle := Detect(lap1, 4000.0)
-	segsMulti := DetectFromMultiple([][]Sample{lap1, lap2}, 4000.0)
-
+	segsMulti := DetectFromMultipleLatLon([][]Sample{lap1, lap2}, trackLen, 0)
 	if len(segsMulti) == 0 {
-		t.Fatal("DetectFromMultiple returned no segments")
+		t.Fatal("DetectFromMultipleLatLon returned no segments")
+	}
+	segsSingle := DetectFromMultipleLatLon([][]Sample{lap1}, trackLen, 0)
+	if len(segsSingle) == 0 {
+		t.Fatal("DetectFromMultipleLatLon (single lap) returned no segments")
 	}
 	if len(segsSingle) != len(segsMulti) {
 		t.Errorf("segment count: single=%d multi=%d (expected equal)", len(segsSingle), len(segsMulti))
@@ -547,7 +428,6 @@ func makeOvalSamples(n int, lat0, lon0 float64) []Sample {
 		yM := semiMajor * math.Cos(t)  // y in metres
 		samples[i] = Sample{
 			LapDistPct: float32(i) / float32(n),
-			LatAccel:   0, // not used by latlon path
 			Lat:        lat0 + yM*degPerMetreLat,
 			Lon:        lon0 + xM*degPerMetreLon,
 		}
@@ -566,7 +446,7 @@ func TestDetectFromMultipleLatLon_NoLatLon(t *testing.T) {
 	// All samples have Lat=0, Lon=0 → function must return nil (no GPS data).
 	samples := make([]Sample, 100)
 	for i := range samples {
-		samples[i] = Sample{LapDistPct: float32(i) / 100, LatAccel: 5.0}
+		samples[i] = Sample{LapDistPct: float32(i) / 100}
 	}
 	segs := DetectFromMultipleLatLon([][]Sample{samples}, 4000.0, 0)
 	if segs != nil {
@@ -657,107 +537,41 @@ func TestTrimWraparoundCorner_PreservesLargeCorner(t *testing.T) {
 	}
 }
 
-// TestConfirmCorners_RejectsNoSteerNoLatG verifies that a corner with neither
-// meaningful steering nor lateral G is reclassified as a straight.
-func TestConfirmCorners_RejectsNoSteerNoLatG(t *testing.T) {
+// TestFilterShortArcs_RemovesShortCorner verifies that a corner whose arc is
+// shorter than minCornerArcM is reclassified as a straight.
+func TestFilterShortArcs_RemovesShortCorner(t *testing.T) {
+	// 3000 m track, each bucket = 3 m. 5-bucket corner = 15 m < minCornerArcM (30 m).
 	segs := []rawSeg{
 		{isCorner: false, start: 0, end: 99, latSign: 0},
-		{isCorner: true, start: 100, end: 200, latSign: 1.0}, // "corner" with no real data
-		{isCorner: false, start: 201, end: 999, latSign: 0},
+		{isCorner: true, start: 100, end: 104, latSign: 1.0}, // 5 buckets × 3m = 15m
+		{isCorner: false, start: 105, end: 999, latSign: 0},
 	}
-	// Profiles: near-zero steering and near-zero lateral G in the corner region.
-	steerAvg := make([]float64, numBuckets)
-	latAccAvg := make([]float64, numBuckets)
-	for i := 0; i < numBuckets; i++ {
-		steerAvg[i] = 0.01 // ~0.6 degrees — well below 10° threshold
-		latAccAvg[i] = 0.5 // well below 2.0 m/s²
-	}
-
-	result := confirmCorners(segs, steerAvg, latAccAvg, 3000.0)
+	result := filterShortArcs(segs, 3000.0)
 	for _, s := range result {
-		if s.isCorner && s.start <= 200 && s.end >= 100 {
-			t.Error("expected false corner to be reclassified as straight")
+		if s.isCorner && s.start >= 100 && s.end <= 104 {
+			t.Error("expected short corner to be reclassified as straight")
 		}
 	}
 }
 
-// TestConfirmCorners_KeepsRealCorner verifies that a corner with meaningful
-// steering is preserved even if lateral G is low.
-func TestConfirmCorners_KeepsRealCorner(t *testing.T) {
+// TestFilterShortArcs_KeepsLongCorner verifies that a corner with arc >= minCornerArcM
+// is preserved.
+func TestFilterShortArcs_KeepsLongCorner(t *testing.T) {
+	// 3000 m track, each bucket = 3 m. 20-bucket corner = 60 m > minCornerArcM (30 m).
 	segs := []rawSeg{
 		{isCorner: false, start: 0, end: 99, latSign: 0},
-		{isCorner: true, start: 100, end: 200, latSign: 1.0},
-		{isCorner: false, start: 201, end: 999, latSign: 0},
+		{isCorner: true, start: 100, end: 119, latSign: 1.0}, // 20 buckets × 3m = 60m
+		{isCorner: false, start: 120, end: 999, latSign: 0},
 	}
-	steerAvg := make([]float64, numBuckets)
-	latAccAvg := make([]float64, numBuckets)
-	for i := 0; i < numBuckets; i++ {
-		latAccAvg[i] = 0.5 // low lat-G
-	}
-	// Strong steering in the corner zone.
-	for i := 100; i <= 200; i++ {
-		steerAvg[i] = 0.35 // ~20 degrees — well above threshold
-	}
-
-	result := confirmCorners(segs, steerAvg, latAccAvg, 3000.0)
+	result := filterShortArcs(segs, 3000.0)
 	hasCorner := false
 	for _, s := range result {
-		if s.isCorner && s.start >= 80 && s.end <= 220 {
+		if s.isCorner {
 			hasCorner = true
 		}
 	}
 	if !hasCorner {
-		t.Error("real corner with strong steering should be preserved")
-	}
-}
-
-// TestValidateCornerSpeed_FlatSpeedReclassified verifies that a "corner" with
-// flat speed throughout is reclassified as a straight.
-func TestValidateCornerSpeed_FlatSpeedReclassified(t *testing.T) {
-	segs := []rawSeg{
-		{isCorner: false, start: 0, end: 99, latSign: 0},
-		{isCorner: true, start: 100, end: 200, latSign: 1.0},
-		{isCorner: false, start: 201, end: 999, latSign: 0},
-	}
-	speedAvg := make([]float64, numBuckets)
-	for i := range speedAvg {
-		speedAvg[i] = 50.0 // constant 50 m/s everywhere
-	}
-
-	result := validateCornerSpeed(segs, speedAvg, 3000.0)
-	for _, s := range result {
-		if s.isCorner && s.start <= 200 && s.end >= 100 {
-			t.Error("corner with flat speed should be reclassified as straight")
-		}
-	}
-}
-
-// TestValidateCornerSpeed_KeepsRealCorner verifies that a corner with a clear
-// speed drop is preserved.
-func TestValidateCornerSpeed_KeepsRealCorner(t *testing.T) {
-	segs := []rawSeg{
-		{isCorner: false, start: 0, end: 99, latSign: 0},
-		{isCorner: true, start: 100, end: 200, latSign: 1.0},
-		{isCorner: false, start: 201, end: 999, latSign: 0},
-	}
-	speedAvg := make([]float64, numBuckets)
-	for i := range speedAvg {
-		speedAvg[i] = 50.0
-	}
-	// Create a speed dip in the corner (50 → 30 → 50 m/s).
-	for i := 130; i <= 170; i++ {
-		speedAvg[i] = 30.0
-	}
-
-	result := validateCornerSpeed(segs, speedAvg, 3000.0)
-	hasCorner := false
-	for _, s := range result {
-		if s.isCorner && s.start >= 80 && s.end <= 220 {
-			hasCorner = true
-		}
-	}
-	if !hasCorner {
-		t.Error("corner with clear speed drop should be preserved")
+		t.Error("corner with arc >= minCornerArcM should be preserved")
 	}
 }
 
@@ -937,72 +751,3 @@ func TestSearchThresholds_MatchesTarget(t *testing.T) {
 	}
 }
 
-// TestRefineBoundaries_AbsorbsFalseStraight verifies that a short "straight"
-// with active cornering (high steering) between two corners gets absorbed.
-func TestRefineBoundaries_AbsorbsFalseStraight(t *testing.T) {
-	// Two corners with a 10-bucket "straight" gap that has high steering.
-	segs := []rawSeg{
-		{isCorner: false, start: 0, end: 99, latSign: 0},
-		{isCorner: true, start: 100, end: 200, latSign: 1.0},
-		{isCorner: false, start: 201, end: 210, latSign: 0}, // 10-bucket "straight"
-		{isCorner: true, start: 211, end: 300, latSign: -1.0},
-		{isCorner: false, start: 301, end: 999, latSign: 0},
-	}
-
-	steerAvg := make([]float64, numBuckets)
-	latAccAvg := make([]float64, numBuckets)
-	signAvg := make([]float64, numBuckets)
-	// High steering through the "straight" gap.
-	for i := 100; i <= 300; i++ {
-		steerAvg[i] = 0.30 // ~17 degrees
-	}
-
-	result := refineBoundaries(segs, steerAvg, latAccAvg, signAvg, 3000.0)
-	// The false straight should be absorbed — we should have fewer segments.
-	straightCount := 0
-	for _, s := range result {
-		if !s.isCorner && s.start >= 100 && s.end <= 300 {
-			straightCount++
-		}
-	}
-	if straightCount > 0 {
-		t.Error("false straight with high steering should have been absorbed by adjacent corners")
-		for _, s := range result {
-			kind := "straight"
-			if s.isCorner {
-				kind = "corner"
-			}
-			t.Logf("  %s [%d-%d]", kind, s.start, s.end)
-		}
-	}
-}
-
-// TestRefineBoundaries_ShrinksCornerWithStraightEntry verifies that a corner
-// whose leading buckets have no cornering activity gets trimmed.
-func TestRefineBoundaries_ShrinksCornerWithStraightEntry(t *testing.T) {
-	segs := []rawSeg{
-		{isCorner: false, start: 0, end: 99, latSign: 0},
-		{isCorner: true, start: 100, end: 300, latSign: 1.0},
-		{isCorner: false, start: 301, end: 999, latSign: 0},
-	}
-
-	steerAvg := make([]float64, numBuckets)
-	latAccAvg := make([]float64, numBuckets)
-	signAvg := make([]float64, numBuckets)
-	// No steering in the first 50 buckets of the corner (100-149).
-	// Strong steering only from bucket 150 onwards.
-	for i := 150; i <= 300; i++ {
-		steerAvg[i] = 0.30
-	}
-
-	result := refineBoundaries(segs, steerAvg, latAccAvg, signAvg, 3000.0)
-	// The corner should start later (around 150, not 100).
-	for _, s := range result {
-		if s.isCorner {
-			if s.start < 140 {
-				t.Errorf("expected corner start to shift right (to ~150), got %d", s.start)
-			}
-			break
-		}
-	}
-}

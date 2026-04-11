@@ -7,7 +7,6 @@ import (
 	"time"
 
 	"github.com/rickymw/MotorHome/internal/analysis"
-	"github.com/rickymw/MotorHome/internal/trackmap"
 )
 
 // makeLap builds a minimal analysis.Lap for bestAnalyzeLap testing.
@@ -187,50 +186,3 @@ func TestNthLatestIbtFile_IgnoresNonIbt(t *testing.T) {
 	}
 }
 
-// ---- hasMissingBrakeEntries tests ----
-
-func TestHasMissingBrakeEntries_NoneWhenAllSet(t *testing.T) {
-	segs := []trackmap.Segment{
-		{Kind: trackmap.KindStraight, BrakeEntryPct: 0},        // straights don't need brake entry
-		{Kind: trackmap.KindCorner, BrakeEntryPct: 0.45},
-		{Kind: trackmap.KindChicane, BrakeEntryPct: 0.70},
-	}
-	if hasMissingBrakeEntries(segs) {
-		t.Error("expected false — all corners/chicanes have BrakeEntryPct set")
-	}
-}
-
-func TestHasMissingBrakeEntries_TrueWhenCornerMissing(t *testing.T) {
-	segs := []trackmap.Segment{
-		{Kind: trackmap.KindStraight},
-		{Kind: trackmap.KindCorner, BrakeEntryPct: 0}, // missing
-		{Kind: trackmap.KindCorner, BrakeEntryPct: 0.45},
-	}
-	if !hasMissingBrakeEntries(segs) {
-		t.Error("expected true — one corner has BrakeEntryPct == 0")
-	}
-}
-
-func TestHasMissingBrakeEntries_TrueWhenChicaneMissing(t *testing.T) {
-	segs := []trackmap.Segment{
-		{Kind: trackmap.KindChicane, BrakeEntryPct: 0}, // missing
-	}
-	if !hasMissingBrakeEntries(segs) {
-		t.Error("expected true — chicane has BrakeEntryPct == 0")
-	}
-}
-
-func TestHasMissingBrakeEntries_StraightZeroIsOK(t *testing.T) {
-	segs := []trackmap.Segment{
-		{Kind: trackmap.KindStraight, BrakeEntryPct: 0},
-	}
-	if hasMissingBrakeEntries(segs) {
-		t.Error("expected false — straights are exempt from brake entry check")
-	}
-}
-
-func TestHasMissingBrakeEntries_EmptySlice(t *testing.T) {
-	if hasMissingBrakeEntries(nil) {
-		t.Error("expected false for nil segments")
-	}
-}

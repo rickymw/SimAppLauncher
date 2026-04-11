@@ -44,6 +44,8 @@ motorhome analyze session.ibt                       # analyze specific file
 motorhome analyze -lap 3 session.ibt                # specific lap
 motorhome analyze -update-map session.ibt           # re-detect track segments from this session
 motorhome analyze -geo-method lataccel session.ibt  # use lateral G instead of GPS curvature
+motorhome analyze -dump T3 session.ibt              # dump T3 telemetry to CSV for AI analysis
+motorhome analyze -dump 5 -lap 3 session.ibt        # dump 5th segment from lap 3
 ```
 
 ## AI Coaching workflow
@@ -65,7 +67,7 @@ Each package has its own README with full detail. Below is a terse summary with 
 | `internal/config` | `Config`/`App` structs, JSON load, `Validate()` | [README](internal/config/README.md) |
 | `internal/launcher` | `ProcessManager` interface; `RunStart`/`RunStop`/`RunStatus`; `tasklist`/`taskkill`; `SeDebugPrivilege` fallback | [README](internal/launcher/README.md) |
 | `internal/ibt` | Low-level `.ibt` binary parser; `File.Sample(i)` typed accessor | [README](internal/ibt/README.md) |
-| `internal/analysis` | `ExtractLaps`, `ComputePhases`, `SegmentStats`, `ComputeBrakeEntries`, `ParseSessionMeta` | [README](internal/analysis/README.md) |
+| `internal/analysis` | `ExtractLaps`, `ComputePhases`, `ComputeBrakeEntries`, `ComputeTyreSummary`, `DumpSegmentCSV`, `ParseSessionMeta` | [README](internal/analysis/README.md) |
 | `internal/trackmap` | GPS curvature corner detection (`latlon`) with steering/speed/lat-G validation; fallback `lataccel`; `trackmap.json` load/save | [README](internal/trackmap/README.md) |
 | `internal/pb` | Personal best store; `pb.Update` returns true on new PB | [README](internal/pb/README.md) |
 | `internal/notes` | `Note{Timestamp,Text}`/`Session` types; `AppendNote` load→append→save | [README](internal/notes/README.md) |
@@ -91,9 +93,9 @@ Key top-level fields:
 5. Compute match score (always lataccel for consistency); compute/blend `brakeEntryPct` on new sessions using filtered laps
 6. Increment `lapsUsed`/`sessionsUsed` once per unique session; save trackmap
 7. Load `pb.json`; update if new PB; save
-8. Print header (file, driver, car, track, map line, PB line), lap list, phase table
+8. Print: header (file, driver, car, track) → setup tables (Tyres + Suspension corners parsed from CarSetup YAML) → tyre summary (avg carcass temps, end-of-lap wear, hot pressures, brake bias) → map line → PB line → lap list → phase table
 
-`-update-map` forces re-detection. `-geo-method latlon|lataccel` selects detection method.
+`-update-map` forces re-detection. `-geo-method latlon|lataccel` selects detection method. `-dump <segment>` writes a downsampled (20Hz) CSV of the segment's telemetry for AI analysis — accepts segment name (T3) or 1-based index (3). Output includes 1s of context before/after.
 
 ### notes subcommand flow (`cmd/motorhome/notes.go`)
 Toggle model — each press starts or stops recording:
@@ -104,8 +106,8 @@ Toggle model — each press starts or stops recording:
 `notes set-hotkey` installs a keyboard hook and Raw Input listener simultaneously; first input wins and is saved to config. HID button-release events are discarded (toggle only cares about press).
 
 ### Phase table columns
-`Seg | Name | Phase | Spd (entry→exit km/h) | Brk% | PkBrk | Thr | TC% | LatG | Steer° | Corr | ABS | Lock | Spin | Coast`
-— Phase = entry/mid/exit/full. Straights get one "full" phase. Corners are split into entry/mid/exit using 80% of peak |SteeringAngle| as the commitment threshold. Corners with peak steering < 5° get a single "full" phase. Spd = entry and exit speed in km/h. Brk% = samples with brake > 2%. PkBrk = peak brake pressure. Thr = samples at full throttle > 95%. TC% = samples where ThrottleRaw−Throttle > 2% (traction control cutting power). LatG = mean abs(LatAccel)/9.81. Steer° = peak absolute steering angle in the phase (degrees). Corr = steering direction reversals above threshold within the phase. ABS = samples with ABS active. Lock = samples where any wheel speed < 95% of vehicle speed under braking. Spin = samples where any wheel speed > 105% of vehicle speed under power. Coast = seconds (CoastSamples / 60).
+`Name | Phase | Spd (entry→exit km/h) | OnBrk | PkBrk | Thr% | LatG | Wheel° | Corr | ABS | Lock | Spin | Coast`
+— Phase = entry/mid/exit/full. Straights get one "full" phase. Corners are split into entry/mid/exit using 80% of peak |SteeringAngle| as the commitment threshold. Corners with peak steering < 5° get a single "full" phase. Spd = entry and exit speed in km/h. OnBrk = % of phase time with brake applied (>2%). PkBrk = peak brake pressure. Thr% = samples at full throttle > 95%. LatG = mean abs(LatAccel)/9.81. Wheel° = peak absolute steering wheel angle in the phase (degrees; steering wheel, not road wheel — divide by steering ratio for tyre angle). Corr = steering direction reversals above threshold within the phase. ABS = samples with ABS active. Lock = samples where any wheel speed < 95% of vehicle speed under braking. Spin = samples where any wheel speed > 105% of vehicle speed under power. Coast = seconds (CoastSamples / 60).
 
 ### Telemetry channels extracted
 SampleData extracts ~60 channels from .ibt files: core timing/position (LapDistPct, SessionTime, Speed, Lat, Lon), driver inputs processed and raw (Throttle/ThrottleRaw, Brake/BrakeRaw, Clutch, Gear, SteeringAngle), engine (RPM), vehicle dynamics (LongAccel, LatAccel, YawRate), driver aids (ABSActive, ABSCutPct, BrakeBias, TCSetting, ABSSetting), wheel speeds (LF/RF/LR/RR), tyre carcass temps (4×3 CL/CM/CR), tyre wear (4×3 L/M/R), tyre pressures (4), brake line pressures (4), fuel (FuelLevel, FuelUsePerHour), and steering feedback (SteeringWheelTorque). Missing channels default to zero.

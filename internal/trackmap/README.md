@@ -19,7 +19,7 @@ Geometry-based corner/straight detection and persistent track segment storage.
 | `profiles.go` | Signal processing: `buildProfile`, `buildSpeedProfile`, `buildSteerProfile`, `buildPositionProfile`, `project`, `signedCurvature` |
 | `postprocess.go` | Post-detection validation pipeline: `trimWraparoundCorner`, `confirmCorners`, `validateCornerSpeed`, `refineBoundaries`, `splitLargeCorners`, `findTroughs`, `findSplitPoints` |
 | `util.go` | Bucket math, merge helpers, `MatchScore`, `labelSegments`: `allZero`, `bucketMean`, `bucketMinMax`, `fillGaps`, `boxSmooth`, `hysteresis`, `groupBuckets`, `avgSign`, `mergeShort`, `mergeIdx`, `mergeAt`, `mergeChicanes` |
-| `trackmap.go` | `TrackMap`, `TrackMapFile`, `Segment`, `Load`, `Save`, confidence logic |
+| `trackmap.go` | `TrackMap`, `TrackMapFile`, `Segment`, `Load`, `Save` (atomic write-to-temp-then-rename), confidence logic |
 | `trackref.go` | `TrackRef`, `TrackRefFile`, `LoadTrackRef` |
 
 ### Detection pipeline

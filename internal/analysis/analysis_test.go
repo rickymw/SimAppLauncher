@@ -64,12 +64,17 @@ func TestComputeBrakeEntries_DetectsBrakingOnset(t *testing.T) {
 	lap := makeFlyingLap(samples)
 	entries := ComputeBrakeEntries([]Lap{lap}, segs)
 
-	if entries[0] != segs[0].EntryPct {
-		t.Errorf("S1: got %.4f, want %.4f (geometric, unchanged)", entries[0], segs[0].EntryPct)
+	// S1 is a straight — should not appear in the result map.
+	if _, ok := entries["S1"]; ok {
+		t.Errorf("S1: expected no entry in result map (straights are excluded)")
 	}
 	// Braking starts at ~0.50; allow a tiny tolerance for sample quantisation.
-	if entries[1] < 0.495 || entries[1] > 0.510 {
-		t.Errorf("T1 brake onset: got %.4f, want ~0.500", entries[1])
+	e, ok := entries["T1"]
+	if !ok {
+		t.Fatal("T1: expected an entry in result map, got none")
+	}
+	if e.Pct < 0.495 || e.Pct > 0.510 {
+		t.Errorf("T1 brake onset: got %.4f, want ~0.500", e.Pct)
 	}
 }
 
@@ -90,8 +95,9 @@ func TestComputeBrakeEntries_NoBrakeKeepsGeometric(t *testing.T) {
 	lap := makeFlyingLap(samples)
 	entries := ComputeBrakeEntries([]Lap{lap}, segs)
 
-	if entries[1] != segs[1].EntryPct {
-		t.Errorf("T1: got %.4f, want %.4f (geometric, no braking detected)", entries[1], segs[1].EntryPct)
+	// No braking detected — T1 should not appear in the result map.
+	if _, ok := entries["T1"]; ok {
+		t.Errorf("T1: expected no entry when no braking detected, but got one")
 	}
 }
 
@@ -121,8 +127,12 @@ func TestComputeBrakeEntries_MultiLapAverages(t *testing.T) {
 	laps := []Lap{makeLapWithBrakeAt(0.48), makeLapWithBrakeAt(0.52)}
 	entries := ComputeBrakeEntries(laps, segs)
 
-	if entries[1] < 0.49 || entries[1] > 0.51 {
-		t.Errorf("T1 average onset: got %.4f, want ~0.500", entries[1])
+	e, ok := entries["T1"]
+	if !ok {
+		t.Fatal("T1: expected entry in result map, got none")
+	}
+	if e.Pct < 0.49 || e.Pct > 0.51 {
+		t.Errorf("T1 average onset: got %.4f, want ~0.500", e.Pct)
 	}
 }
 
@@ -155,77 +165,12 @@ func TestComputeBrakeEntries_SkipsNonFlying(t *testing.T) {
 	}
 	entries := ComputeBrakeEntries(laps, segs)
 
-	if entries[1] < 0.495 || entries[1] > 0.510 {
-		t.Errorf("T1: got %.4f, want ~0.500 (out lap should be ignored)", entries[1])
+	e, ok := entries["T1"]
+	if !ok {
+		t.Fatal("T1: expected entry in result map, got none")
 	}
-}
-
-// ---- SegmentStats effective boundaries ----
-
-// TestSegmentStats_EffectiveBoundaries verifies that when BrakeEntryPct is set
-// on a corner, samples in the braking zone are attributed to the corner and the
-// preceding straight's effective exit is clipped accordingly.
-func TestSegmentStats_EffectiveBoundaries(t *testing.T) {
-	// S1: geometric [0.0, 0.6); T1: geometric [0.6, 1.0), BrakeEntryPct=0.5.
-	// Samples in [0.5, 0.6) are in the braking zone and must go to T1.
-	segs := []trackmap.Segment{
-		{Name: "S1", Kind: trackmap.KindStraight, EntryPct: 0.0, ExitPct: 0.6},
-		{Name: "T1", Kind: trackmap.KindCorner, EntryPct: 0.6, ExitPct: 1.0, BrakeEntryPct: 0.5},
-	}
-
-	const n = 1000
-	samples := make([]SampleData, n)
-	for i := 0; i < n; i++ {
-		pct := float32(i) / float32(n)
-		if pct >= 0.5 {
-			samples[i] = brakingSample(pct, float64(i)/60)
-		} else {
-			samples[i] = straightSample(pct, float64(i)/60)
-		}
-	}
-	lap := makeFlyingLap(samples)
-	zones := SegmentStats(&lap, segs)
-
-	// Effective boundaries in display.
-	if zones[0].ExitPct != 0.5 {
-		t.Errorf("S1 ExitPct: got %.3f, want 0.500 (clipped to BrakeEntryPct)", zones[0].ExitPct)
-	}
-	if zones[1].EntryPct != 0.5 {
-		t.Errorf("T1 EntryPct: got %.3f, want 0.500 (BrakeEntryPct)", zones[1].EntryPct)
-	}
-
-	// S1 should have no braking (all brake samples are at pct ≥ 0.5, now in T1).
-	if zones[0].BrakePct != 0 {
-		t.Errorf("S1 BrakePct: got %.1f%%, want 0%%", zones[0].BrakePct)
-	}
-
-	// T1 should have 100% braking (all its samples have Brake=0.80 > threshold).
-	if zones[1].BrakePct < 99 {
-		t.Errorf("T1 BrakePct: got %.1f%%, want ~100%%", zones[1].BrakePct)
-	}
-}
-
-// TestSegmentStats_EffectiveBoundaries_GeometricFallback verifies that when
-// BrakeEntryPct is zero the geometric EntryPct is used unchanged.
-func TestSegmentStats_EffectiveBoundaries_GeometricFallback(t *testing.T) {
-	segs := []trackmap.Segment{
-		{Name: "S1", Kind: trackmap.KindStraight, EntryPct: 0.0, ExitPct: 0.5},
-		{Name: "T1", Kind: trackmap.KindCorner, EntryPct: 0.5, ExitPct: 1.0}, // BrakeEntryPct=0
-	}
-
-	const n = 500
-	samples := make([]SampleData, n)
-	for i := 0; i < n; i++ {
-		samples[i] = straightSample(float32(i)/float32(n), float64(i)/60)
-	}
-	lap := makeFlyingLap(samples)
-	zones := SegmentStats(&lap, segs)
-
-	if zones[0].ExitPct != 0.5 {
-		t.Errorf("S1 ExitPct: got %.3f, want 0.500 (geometric)", zones[0].ExitPct)
-	}
-	if zones[1].EntryPct != 0.5 {
-		t.Errorf("T1 EntryPct: got %.3f, want 0.500 (geometric)", zones[1].EntryPct)
+	if e.Pct < 0.495 || e.Pct > 0.510 {
+		t.Errorf("T1: got %.4f, want ~0.500 (out lap should be ignored)", e.Pct)
 	}
 }
 
@@ -565,46 +510,6 @@ func TestZoneStats_BrakePctFraction(t *testing.T) {
 	}
 }
 
-func TestSegmentStats_BrakePctFraction(t *testing.T) {
-	// Segment 0 covers pct [0, 0.5).
-	// 200 samples total → 100 in segment 0.
-	// First 50 of those have brake=0.5 (>2%) and throttle=0.5 (<95%).
-	// Expected BrakePct ≈ 50%, ThrottlePct ≈ 50% for segment 0.
-	segs := []trackmap.Segment{
-		{Name: "S1", Kind: trackmap.KindStraight, EntryPct: 0.0, ExitPct: 0.5},
-		{Name: "T1", Kind: trackmap.KindCorner, EntryPct: 0.5, ExitPct: 1.0},
-	}
-	n := 200
-	samples := make([]SampleData, n)
-	for i := range samples {
-		pct := float32(i) / float32(n)
-		brk := float32(0)
-		thr := float32(1.0)
-		if pct < 0.5 && i < n/4 { // first quarter = first 50 samples in seg 0
-			brk = 0.5
-			thr = 0.5
-		}
-		samples[i] = SampleData{LapDistPct: pct, Speed: 30, Brake: brk, Throttle: thr}
-	}
-	lap := &Lap{Samples: samples}
-	finalizeLap(lap)
-	zones := SegmentStats(lap, segs)
-
-	if math.Abs(float64(zones[0].BrakePct-50)) > 1 {
-		t.Errorf("seg 0: BrakePct = %.1f, want ~50", zones[0].BrakePct)
-	}
-	if math.Abs(float64(zones[0].ThrottlePct-50)) > 1 {
-		t.Errorf("seg 0: ThrottlePct = %.1f, want ~50", zones[0].ThrottlePct)
-	}
-	// Segment 1: all throttle=1.0, brake=0.
-	if math.Abs(float64(zones[1].ThrottlePct-100)) > 1 {
-		t.Errorf("seg 1: ThrottlePct = %.1f, want 100", zones[1].ThrottlePct)
-	}
-	if zones[1].BrakePct != 0 {
-		t.Errorf("seg 1: BrakePct = %.1f, want 0", zones[1].BrakePct)
-	}
-}
-
 func TestZoneStats_DominantGear(t *testing.T) {
 	// 100 samples across the lap; zone 0 (pct 0.00–0.05) has 5 samples,
 	// 4 of which are gear 3 and 1 is gear 2 — gear 3 should dominate.
@@ -648,114 +553,6 @@ func TestParseTrackLength_Malformed(t *testing.T) {
 	got := ParseTrackLength(yaml)
 	if got != 0 {
 		t.Errorf("ParseTrackLength = %v, want 0", got)
-	}
-}
-
-// ---- SegmentStats ----
-
-// segLap builds a lap with samples spanning two explicit segments.
-// Segment 0 covers pct [0, 0.5) with speed=20 m/s and ABS active.
-// Segment 1 covers pct [0.5, 1.0) with speed=40 m/s and no ABS.
-func segLap() *Lap {
-	n := 200
-	samples := make([]SampleData, n)
-	for i := range samples {
-		pct := float32(i) / float32(n)
-		speed := float32(20.0)
-		abs := true
-		if pct >= 0.5 {
-			speed = 40.0
-			abs = false
-		}
-		samples[i] = SampleData{
-			LapDistPct:  pct,
-			SessionTime: float64(i) * 0.5,
-			Speed:       speed,
-			Throttle:    1.0,
-			ABSActive:   abs,
-		}
-	}
-	lap := &Lap{Samples: samples}
-	finalizeLap(lap)
-	return lap
-}
-
-func TestSegmentStats_Basic(t *testing.T) {
-	segs := []trackmap.Segment{
-		{Name: "S1", Kind: trackmap.KindStraight, EntryPct: 0.0, ExitPct: 0.5},
-		{Name: "T1", Kind: trackmap.KindCorner, EntryPct: 0.5, ExitPct: 1.0},
-	}
-	lap := segLap()
-	zones := SegmentStats(lap, segs)
-
-	if len(zones) != 2 {
-		t.Fatalf("len(zones) = %d, want 2", len(zones))
-	}
-
-	// Segment 0: speed 20 m/s → 72 km/h
-	wantSpd0 := float32(20.0 * ms2kmh)
-	if math.Abs(float64(zones[0].SpeedMinKPH-wantSpd0)) > 1.0 {
-		t.Errorf("zones[0].SpeedMinKPH = %.1f, want %.1f", zones[0].SpeedMinKPH, wantSpd0)
-	}
-	if zones[0].SpeedEntryKPH != wantSpd0 {
-		t.Errorf("zones[0].SpeedEntryKPH = %.1f, want %.1f", zones[0].SpeedEntryKPH, wantSpd0)
-	}
-	if zones[0].ABSCount == 0 {
-		t.Error("zones[0]: expected ABSCount > 0")
-	}
-
-	// Segment 1: speed 40 m/s → 144 km/h, no ABS
-	wantSpd1 := float32(40.0 * ms2kmh)
-	if math.Abs(float64(zones[1].SpeedMinKPH-wantSpd1)) > 1.0 {
-		t.Errorf("zones[1].SpeedMinKPH = %.1f, want %.1f", zones[1].SpeedMinKPH, wantSpd1)
-	}
-	if zones[1].ABSCount != 0 {
-		t.Errorf("zones[1].ABSCount = %d, want 0", zones[1].ABSCount)
-	}
-}
-
-// ---- SegmentDeltas ----
-
-func TestSegmentStats_GearSelection(t *testing.T) {
-	// Three segments: straight, corner, chicane.
-	// Straight samples: gears 3,4,5 — want max = 5.
-	// Corner  samples: gears 5,4,3 — want min = 3.
-	// Chicane samples: gears 4,3,4 — want min = 3.
-	segs := []trackmap.Segment{
-		{Name: "S1", Kind: trackmap.KindStraight, EntryPct: 0.00, ExitPct: 0.33},
-		{Name: "T1", Kind: trackmap.KindCorner, EntryPct: 0.33, ExitPct: 0.66},
-		{Name: "T2-3", Kind: trackmap.KindChicane, EntryPct: 0.66, ExitPct: 1.00},
-	}
-
-	// 90 samples, 30 per segment.
-	const n = 90
-	gearSeq := []int32{3, 4, 5, 5, 4, 3, 4, 3, 4} // 10 samples per gear pattern per segment
-	samples := make([]SampleData, n)
-	for i := range samples {
-		pct := float32(i) / float32(n)
-		block := i / 10 // 0-2 → seg0 gears, 3-5 → seg1 gears, 6-8 → seg2 gears
-		samples[i] = SampleData{
-			LapDistPct:  pct,
-			SessionTime: float64(i),
-			Speed:       30,
-			Gear:        gearSeq[block],
-		}
-	}
-	lap := &Lap{Samples: samples}
-	finalizeLap(lap)
-	zones := SegmentStats(lap, segs)
-
-	// Straight: max gear = 5
-	if zones[0].DominantGear != 5 {
-		t.Errorf("straight: DominantGear = %d, want 5 (max)", zones[0].DominantGear)
-	}
-	// Corner: min gear = 3
-	if zones[1].DominantGear != 3 {
-		t.Errorf("corner: DominantGear = %d, want 3 (min)", zones[1].DominantGear)
-	}
-	// Chicane: min gear = 3
-	if zones[2].DominantGear != 3 {
-		t.Errorf("chicane: DominantGear = %d, want 3 (min)", zones[2].DominantGear)
 	}
 }
 
@@ -1155,6 +952,66 @@ func TestExtractLaps_OfficialLapTime_ZeroArtifact(t *testing.T) {
 	}
 }
 
+// ---- ComputeTyreSummary ----
+
+func TestComputeTyreSummary_Averages(t *testing.T) {
+	// Two samples: temps should be averaged, wear taken from last sample.
+	samples := []SampleData{
+		{
+			LFtempCL: 80, LFtempCM: 85, LFtempCR: 78,
+			LFwearL: 1.0, LFwearM: 1.0, LFwearR: 1.0,
+			LFpressure: 170,
+			BrakeBias: 0.52,
+		},
+		{
+			LFtempCL: 90, LFtempCM: 95, LFtempCR: 88,
+			LFwearL: 0.99, LFwearM: 0.98, LFwearR: 0.97,
+			LFpressure: 180,
+			BrakeBias: 0.54,
+		},
+	}
+	lap := &Lap{Samples: samples}
+	ts := ComputeTyreSummary(lap)
+
+	// LF is a left-side tyre: CL→Outer, CR→Inner.
+	// Temps: CL avg (80+90)/2=85→Outer, CM avg (85+95)/2=90→Mid, CR avg (78+88)/2=83→Inner
+	if ts.LF.TempOuter != 85 {
+		t.Errorf("LF TempOuter = %.1f, want 85.0", ts.LF.TempOuter)
+	}
+	if ts.LF.TempMid != 90 {
+		t.Errorf("LF TempMid = %.1f, want 90.0", ts.LF.TempMid)
+	}
+	if ts.LF.TempInner != 83 {
+		t.Errorf("LF TempInner = %.1f, want 83.0", ts.LF.TempInner)
+	}
+
+	// Wear: from last sample only. LF: wearL→Outer=0.99, wearR→Inner=0.97.
+	if ts.LF.WearOuter != 0.99 {
+		t.Errorf("LF WearOuter = %.3f, want 0.990", ts.LF.WearOuter)
+	}
+	if ts.LF.WearInner != 0.97 {
+		t.Errorf("LF WearInner = %.3f, want 0.970", ts.LF.WearInner)
+	}
+
+	// Pressure: avg of 170+180=175
+	if ts.LF.PressureKPa != 175 {
+		t.Errorf("LF PressureKPa = %.1f, want 175.0", ts.LF.PressureKPa)
+	}
+
+	// Brake bias: avg of 0.52+0.54=0.53
+	if math.Abs(float64(ts.BrakeBias-0.53)) > 0.001 {
+		t.Errorf("BrakeBias = %.3f, want 0.530", ts.BrakeBias)
+	}
+}
+
+func TestComputeTyreSummary_Empty(t *testing.T) {
+	lap := &Lap{}
+	ts := ComputeTyreSummary(lap)
+	if ts.LF.TempInner != 0 || ts.BrakeBias != 0 {
+		t.Error("expected zero TyreSummary for empty lap")
+	}
+}
+
 // ---- ParseWeather tests ----
 
 func TestParseWeather_AirAndTrack(t *testing.T) {
@@ -1220,40 +1077,6 @@ func TestParseWeather_FractionalTemp(t *testing.T) {
 	want := "Air 27°C, Track 41°C"
 	if got != want {
 		t.Errorf("ParseWeather = %q, want %q", got, want)
-	}
-}
-
-// ---- TC Intervention ----
-
-func TestZoneStats_TCIntervention(t *testing.T) {
-	// 40 samples, zone 0 (dist 0–5%): ThrottleRaw > Throttle (TC active).
-	// Zone 1 (dist 5–10%): ThrottleRaw == Throttle (no TC).
-	samples := make([]SampleData, 40)
-	for i := range samples {
-		pct := float32(i) / float32(len(samples))
-		samples[i] = SampleData{
-			LapDistPct:  pct,
-			SessionTime: float64(i),
-			Speed:       30,
-			Throttle:    0.80,
-			ThrottleRaw: 0.80,
-		}
-		if pct < 0.05 {
-			samples[i].ThrottleRaw = 1.0 // TC cutting 20%
-		}
-	}
-	lap := &Lap{Samples: samples}
-	finalizeLap(lap)
-	zones := ZoneStats(lap)
-
-	if zones[0].TCInterventionPct <= 0 {
-		t.Error("zone 0: expected TC intervention, got 0")
-	}
-	if zones[0].PeakTCCut < 15 {
-		t.Errorf("zone 0: PeakTCCut = %.1f, want >= 15", zones[0].PeakTCCut)
-	}
-	if zones[1].TCInterventionPct != 0 {
-		t.Errorf("zone 1: TCInterventionPct = %.1f, want 0", zones[1].TCInterventionPct)
 	}
 }
 
@@ -1323,66 +1146,3 @@ func TestZoneStats_WheelspinDetection(t *testing.T) {
 	}
 }
 
-// ---- SegmentStats new metrics ----
-
-func TestSegmentStats_TCIntervention(t *testing.T) {
-	segs := []trackmap.Segment{
-		{Name: "S1", Kind: trackmap.KindStraight, EntryPct: 0.0, ExitPct: 0.5},
-		{Name: "T1", Kind: trackmap.KindCorner, EntryPct: 0.5, ExitPct: 1.0},
-	}
-	samples := make([]SampleData, 200)
-	for i := range samples {
-		pct := float32(i) / float32(len(samples))
-		samples[i] = SampleData{
-			LapDistPct:  pct,
-			SessionTime: float64(i) / 60,
-			Speed:       40,
-			Throttle:    0.8,
-			ThrottleRaw: 0.8,
-			LFspeed:     40, RFspeed: 40, LRspeed: 40, RRspeed: 40,
-		}
-		// TC active in corner segment only
-		if pct >= 0.5 {
-			samples[i].ThrottleRaw = 1.0
-		}
-	}
-	lap := makeFlyingLap(samples)
-	zones := SegmentStats(&lap, segs)
-
-	if zones[0].TCInterventionPct != 0 {
-		t.Errorf("S1: TCInterventionPct = %.1f, want 0", zones[0].TCInterventionPct)
-	}
-	if zones[1].TCInterventionPct <= 0 {
-		t.Error("T1: expected TC intervention, got 0")
-	}
-	if zones[1].PeakTCCut < 15 {
-		t.Errorf("T1: PeakTCCut = %.1f, want >= 15", zones[1].PeakTCCut)
-	}
-}
-
-func TestSegmentStats_TyreTemps(t *testing.T) {
-	segs := []trackmap.Segment{
-		{Name: "S1", Kind: trackmap.KindStraight, EntryPct: 0.0, ExitPct: 1.0},
-	}
-	samples := make([]SampleData, 200)
-	for i := range samples {
-		pct := float32(i) / float32(len(samples))
-		samples[i] = SampleData{
-			LapDistPct:  pct,
-			SessionTime: float64(i) / 60,
-			Speed:       40,
-			Throttle:    1.0,
-			LFtempCM:    85, RFtempCM: 83, LRtempCM: 91, RRtempCM: 89,
-			LFspeed:     40, RFspeed: 40, LRspeed: 40, RRspeed: 40,
-		}
-	}
-	lap := makeFlyingLap(samples)
-	zones := SegmentStats(&lap, segs)
-
-	if math.Abs(float64(zones[0].AvgTyreTempLF-85)) > 1 {
-		t.Errorf("AvgTyreTempLF = %.1f, want ~85", zones[0].AvgTyreTempLF)
-	}
-	if math.Abs(float64(zones[0].AvgTyreTempLR-91)) > 1 {
-		t.Errorf("AvgTyreTempLR = %.1f, want ~91", zones[0].AvgTyreTempLR)
-	}
-}

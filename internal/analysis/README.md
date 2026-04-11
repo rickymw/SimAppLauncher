@@ -6,8 +6,7 @@ Extracts per-lap statistics from iRacing `.ibt` telemetry samples.
 
 - Splits a raw sample stream into `Lap` objects at start/finish crossings
 - Classifies each lap as flying, out lap, in lap, or out/in lap
-- Computes per-phase statistics (speed, inputs, G-forces, steering metrics, ABS, coasting, TC intervention, lockup/wheelspin) by splitting corners into entry/mid/exit phases using steering angle
-- Computes per-segment aggregate statistics (speed, inputs, G-forces, ABS, coasting, TC intervention, lockup/wheelspin, tyre temps) against geometry-based track segments
+- Computes per-phase statistics (speed, inputs, G-forces, steering metrics, ABS, coasting, lockup/wheelspin) by splitting corners into entry/mid/exit phases using steering angle
 - Detects average braking-onset distance for each corner/chicane
 
 ## How it works
@@ -20,11 +19,9 @@ Extracts per-lap statistics from iRacing `.ibt` telemetry samples.
 
 Out/in lap classification uses entry/exit speed: < 5 m/s at the first sample = out lap, < 5 m/s at the last sample = in lap.
 
-### Segment statistics (`zones.go`)
+### Brake entry detection (`zones.go`)
 
-`SegmentStats` iterates the lap's samples and buckets each one into a geometry segment using *effective boundaries*. For corners/chicanes that have a stored `BrakeEntryPct`, the effective entry is that value rather than the geometric `EntryPct`; the preceding straight's exit is clipped to match. This ensures braking-zone samples are attributed to the corner, not the straight.
-
-`ComputeBrakeEntries` scans flying laps backward from each corner's geometric entry to find the average point where brake pressure first exceeds 5%. A tolerance of 3 consecutive non-braking samples prevents ABS modulation from terminating the scan early.
+`ComputeBrakeEntries` scans flying laps backward from each corner's geometric entry to find the average point where brake pressure first exceeds 5%. A tolerance of 3 consecutive non-braking samples prevents ABS modulation from terminating the scan early. For the first corner (T1), the scan wraps around the S/F line to detect braking zones that start on the preceding straight (high LapDistPct near 1.0).
 
 ### Phase analysis (`phases.go`)
 
@@ -37,6 +34,12 @@ Out/in lap classification uses entry/exit speed: < 5 m/s at the first sample = o
 
 Corners with peak steering < 5° get a single "full" phase. `countSteeringCorrections` detects rapid sign changes in steering rate within each phase.
 
+### Segment CSV dump (`dump.go`)
+
+`DumpSegmentCSV` writes a downsampled CSV of telemetry for a single segment, suitable for AI analysis. Output is 20Hz by default (every 3rd sample) with 1 second of context before/after the segment. Columns: `Dist%,Time,Speed,Throttle,Brake,Steer,Gear,LatG,LongG,ABS,Coast`. A typical corner produces ~200 rows — compact enough for direct AI consumption.
+
+`ResolveSegmentName` finds a segment by name (case-insensitive, e.g. "T3") or 1-based index (e.g. "3").
+
 ### Legacy zone stats
 
 `ZoneStats` divides the track into 20 equal 5% zones. Retained but not used by the CLI.
@@ -48,20 +51,26 @@ Corners with peak steering < 5° get a single "full" phase. `countSteeringCorrec
 | `SampleData` | ~60 telemetry channels per sample: timing, driver inputs (raw & processed), dynamics, driver aids, wheel speeds, tyre temps/wear/pressure, brake line pressures, fuel, steering torque. |
 | `Lap` | One lap: number, time (`LapLastLapTime` preferred; SessionTime diff fallback), kind, `OfficialLapTime`, `IsPartialStart` flag, and `[]SampleData`. |
 | `LapKind` | `KindFlying`, `KindOutLap`, `KindInLap`, `KindOutInLap`. |
-| `Phase` | Per-phase stats: entry/exit speed, brake%, peak brake, throttle%, TC%, avg lat G, peak steering angle, steering corrections, ABS, lockup/wheelspin, coast. |
-| `SegZone` | Per-segment aggregate stats: entry/min/exit speed, brake%, peak brake, throttle%, gear, avg lat G, ABS count, coast, TC intervention%, lockup/wheelspin counts, avg tyre temps. |
+| `Phase` | Per-phase stats: entry/exit speed, brake%, peak brake, throttle%, avg lat G, peak steering angle, steering corrections, ABS, lockup/wheelspin, coast. |
+| `DumpConfig` | Controls CSV dump: downsample rate (default 3 = 20Hz) and context samples (default 60 = 1s). |
 | `Zone` | Per-zone stats for the legacy 20-zone split. |
 | `SessionMeta` | Car, track, and driver name parsed from session YAML. |
+| `TyreSummary` / `CornerTyres` | Per-corner avg carcass temps (inner/outer mapped from iRacing CL/CR accounting for left- vs right-side), end-of-lap wear, avg hot pressure, and brake bias for one lap. |
 
 ### Key functions
 
 ```go
 laps, err := analysis.ExtractLaps(ibtFile)
 meta := analysis.ParseSessionMeta(yaml, "Ricky Maw")
+tyreSummary := analysis.ComputeTyreSummary(&lap)
+carSetup := analysis.ParseCarSetup(yaml)
 trackLen := analysis.ParseTrackLength(yaml)
 weather := analysis.ParseWeather(yaml)
 
 phases := analysis.ComputePhases(&lap, segments)
-zones := analysis.SegmentStats(&lap, segments)
 entries := analysis.ComputeBrakeEntries(laps, segments)
+
+// Dump a corner's telemetry to CSV for AI analysis.
+segIdx := analysis.ResolveSegmentName(segments, "T3")
+analysis.DumpSegmentCSV(writer, &lap, segments, segIdx, analysis.DefaultDumpConfig())
 ```

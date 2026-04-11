@@ -10,6 +10,8 @@ Loads, updates, and saves a flat JSON store of the fastest recorded lap for each
 
 The store is a `map[string]*PersonalBest` keyed by `"Car|Track"`. On each `analyze` run the best flying lap is compared against the stored PB; if it's faster (or no PB exists yet), the entry is updated and the file is saved. `Update` returns `true` when a new PB is set so the caller can print a notification.
 
+`Save` uses atomic write (write-to-temp-then-rename) to prevent file corruption if interrupted mid-write.
+
 ## Architecture
 
 | Symbol | Description |

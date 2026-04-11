@@ -123,16 +123,24 @@ func driverBlockByIdx(yaml string, idx int) (userName, carName string) {
 }
 
 // FormatLapTime formats a lap time in seconds as "M:SS.mmm".
+// Arithmetic is done in float64 to avoid rounding errors near .999/.000
+// boundaries that float32's ~7 significant digits can cause.
 func FormatLapTime(secs float32) string {
 	if secs <= 0 {
 		return "?:??.???"
 	}
-	total := int(secs)
+	s := float64(secs)
+	total := int(s)
 	mins := total / 60
 	wholeS := total % 60
-	ms := int((secs-float32(total))*1000 + 0.5)
+	ms := int((s-float64(total))*1000 + 0.5)
 	if ms >= 1000 {
-		ms = 999
+		wholeS++
+		ms = 0
+		if wholeS >= 60 {
+			mins++
+			wholeS = 0
+		}
 	}
 	return fmt.Sprintf("%d:%02d.%03d", mins, wholeS, ms)
 }
@@ -193,12 +201,16 @@ func ParseTrackLength(yaml string) float64 {
 }
 
 // yamlField extracts a value from iRacing's session info YAML by key name.
+// Strips surrounding quotes since iRacing occasionally quotes string values.
+// NOTE: internal/iracing/live_windows.go has a duplicate — keep behaviour in sync.
 func yamlField(yaml, key string) string {
 	prefix := key + ":"
 	for _, line := range strings.Split(yaml, "\n") {
 		trimmed := strings.TrimSpace(line)
 		if strings.HasPrefix(trimmed, prefix) {
-			return strings.TrimSpace(trimmed[len(prefix):])
+			val := strings.TrimSpace(trimmed[len(prefix):])
+			val = strings.Trim(val, "\"'")
+			return val
 		}
 	}
 	return ""
@@ -239,7 +251,7 @@ type SampleData struct {
 	ABSCutPct  float32 // 0–1; fraction of brake cut by ABS
 	BrakeBias  float32 // driver-adjustable brake bias
 	TCSetting  float32 // traction control level
-	TCSettng2  float32 // traction control level 2 (some cars)
+	TCSetting2 float32 // traction control level 2 (some cars)
 	ABSSetting float32 // ABS level
 
 	// Wheel speeds (m/s)
@@ -474,7 +486,7 @@ func extractSample(s ibt.Sample) SampleData {
 	sd.ABSCutPct, _ = s.Float32("BrakeABScutPct")
 	sd.BrakeBias, _ = s.Float32("dcBrakeBias")
 	sd.TCSetting, _ = s.Float32("dcTractionControl")
-	sd.TCSettng2, _ = s.Float32("dcTractionControl2")
+	sd.TCSetting2, _ = s.Float32("dcTractionControl2")
 	sd.ABSSetting, _ = s.Float32("dcABS")
 
 	// Wheel speeds

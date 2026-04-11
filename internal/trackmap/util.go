@@ -15,33 +15,6 @@ func allZero(vals []float64) bool {
 	return true
 }
 
-// bucketMean computes the arithmetic mean of vals[start..end] (inclusive).
-func bucketMean(vals []float64, start, end int) float64 {
-	if end < start {
-		return 0
-	}
-	sum := 0.0
-	for i := start; i <= end; i++ {
-		sum += vals[i]
-	}
-	return sum / float64(end-start+1)
-}
-
-// bucketMinMax returns the min and max of vals[start..end] (inclusive).
-func bucketMinMax(vals []float64, start, end int) (min, max float64) {
-	min = vals[start]
-	max = vals[start]
-	for i := start + 1; i <= end; i++ {
-		if vals[i] < min {
-			min = vals[i]
-		}
-		if vals[i] > max {
-			max = vals[i]
-		}
-	}
-	return
-}
-
 // fillGaps fills zero-count buckets from neighbouring non-empty values.
 // A forward pass propagates the last known value rightward; a backward pass
 // then fills any leading zeros (buckets before the first non-empty one) from
@@ -253,24 +226,41 @@ func mergeChicanes(segs []rawSeg, trackLengthM float64) []rawSeg {
 }
 
 // MatchScore computes how well the given lap samples match the stored segment
-// boundaries. For each segment boundary (entry pct of each segment after the
-// first), it checks whether the current lap also shows a corner/straight
-// transition within a tolerance of ±0.02 (2% of lap distance). Returns a
-// value 0.0–1.0 where 1.0 = all boundaries matched.
+// boundaries using GPS curvature. For each segment boundary (entry pct of each
+// segment after the first), it checks whether the current lap also shows a
+// corner/straight transition within a tolerance of ±0.02 (2% of lap distance).
+// Returns a value 0.0–1.0 where 1.0 = all boundaries matched.
 //
-// trackLengthM is used to scale the smoothing window (same as Detect).
-// If len(segs) <= 1, returns 1.0 (no interior boundaries to check).
+// If no GPS data is present (all Lat/Lon == 0), returns 1.0 (no evidence of
+// mismatch — GPS unavailable). If len(segs) <= 1, returns 1.0.
 func MatchScore(samples []Sample, segs []Segment, trackLengthM float64) float32 {
 	if len(segs) <= 1 {
 		return 1.0
 	}
 
-	// Re-run the same classification pipeline as Detect on the current lap.
-	absSum := make([]float64, numBuckets)
-	signSum := make([]float64, numBuckets)
-	counts := make([]int, numBuckets)
-
+	// Build bin-averaged XY position profile from GPS.
+	var latSum, lonSum float64
+	var nPos int
 	for _, s := range samples {
+		if s.Lat != 0 || s.Lon != 0 {
+			latSum += s.Lat
+			lonSum += s.Lon
+			nPos++
+		}
+	}
+	if nPos == 0 {
+		return 1.0 // no GPS — assume match
+	}
+	lat0 := latSum / float64(nPos)
+	lon0 := lonSum / float64(nPos)
+
+	xSum := make([]float64, numBuckets)
+	ySum := make([]float64, numBuckets)
+	counts := make([]int, numBuckets)
+	for _, s := range samples {
+		if s.Lat == 0 && s.Lon == 0 {
+			continue
+		}
 		b := int(s.LapDistPct * numBuckets)
 		if b < 0 {
 			b = 0
@@ -278,31 +268,37 @@ func MatchScore(samples []Sample, segs []Segment, trackLengthM float64) float32 
 		if b >= numBuckets {
 			b = numBuckets - 1
 		}
-		absSum[b] += math.Abs(float64(s.LatAccel))
-		if s.LatAccel > 0 {
-			signSum[b] += 1.0
-		} else if s.LatAccel < 0 {
-			signSum[b] -= 1.0
-		}
+		x, y := project(s.Lat, s.Lon, lat0, lon0)
+		xSum[b] += x
+		ySum[b] += y
 		counts[b]++
 	}
 
-	absAvg := make([]float64, numBuckets)
-	signAvg := make([]float64, numBuckets)
+	xAvg := make([]float64, numBuckets)
+	yAvg := make([]float64, numBuckets)
 	for i := 0; i < numBuckets; i++ {
 		if counts[i] > 0 {
-			absAvg[i] = absSum[i] / float64(counts[i])
-			signAvg[i] = signSum[i] / float64(counts[i])
+			xAvg[i] = xSum[i] / float64(counts[i])
+			yAvg[i] = ySum[i] / float64(counts[i])
 		}
 	}
+	fillGaps(xAvg, counts)
+	fillGaps(yAvg, counts)
 
-	fillGaps(absAvg, counts)
-	fillGaps(signAvg, counts)
+	// Compute curvature using the same spacing as DetectFromMultipleLatLon.
+	spacing := max(1, int(20.0/trackLengthM*numBuckets))
+	absAvg := make([]float64, numBuckets)
+	for i := 0; i < numBuckets; i++ {
+		prev := (i - spacing + numBuckets) % numBuckets
+		next := (i + spacing) % numBuckets
+		kappa := signedCurvature(xAvg[prev], yAvg[prev], xAvg[i], yAvg[i], xAvg[next], yAvg[next])
+		absAvg[i] = math.Abs(kappa)
+	}
 
-	// Use the same window as Detect: ~15m scaled to track length.
+	// Smooth and classify using the same thresholds as detection.
 	window := max(1, int(15.0/trackLengthM*numBuckets))
 	smoothed := boxSmooth(absAvg, window)
-	isCorner := hysteresis(smoothed, latAccelEnterThresh, latAccelExitThresh)
+	isCorner := hysteresis(smoothed, curvEnterThresh, curvExitThresh)
 
 	// Build a bool slice of transitions: transition[i] = true if isCorner[i] != isCorner[i-1].
 	hasTransition := make([]bool, numBuckets)

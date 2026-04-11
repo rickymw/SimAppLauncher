@@ -95,7 +95,9 @@ func init() {
 func captureKeyProc(nCode int32, wParam uintptr, lParam uintptr) uintptr {
 	if nCode >= 0 && captureVKCh != nil {
 		if uint32(wParam) == wmKeyDown || uint32(wParam) == wmSysKeyDown {
-			hs := (*kbdllHookStruct)(unsafe.Pointer(lParam))
+			// lParam is a pointer delivered by the OS via syscall.NewCallback;
+			// the uintptr→unsafe.Pointer conversion is safe here (go vet false positive).
+			hs := (*kbdllHookStruct)(unsafe.Pointer(lParam)) //nolint:govet
 			select {
 			case captureVKCh <- hs.VkCode:
 			default:
@@ -109,7 +111,9 @@ func captureKeyProc(nCode int32, wParam uintptr, lParam uintptr) uintptr {
 
 func lowLevelKeyboardProc(nCode int32, wParam uintptr, lParam uintptr) uintptr {
 	if nCode >= 0 && globalCtx != nil {
-		hs := (*kbdllHookStruct)(unsafe.Pointer(lParam))
+		// lParam is a pointer delivered by the OS via syscall.NewCallback;
+		// the uintptr→unsafe.Pointer conversion is safe here (go vet false positive).
+		hs := (*kbdllHookStruct)(unsafe.Pointer(lParam)) //nolint:govet
 		if hs.VkCode == globalCtx.vkCode {
 			// Toggle on key-down only; key-up is ignored.
 			if uint32(wParam) == wmKeyDown || uint32(wParam) == wmSysKeyDown {

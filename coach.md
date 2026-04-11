@@ -32,9 +32,8 @@ Work through the phase table using the checklist below, in priority order. Skip 
 | Brk | Fraction of samples with brake > 2% |
 | PkBrk | Peak brake pressure (0–100%) |
 | Thr | Fraction at full throttle (> 95%) |
-| TC% | Fraction with traction control cutting power (ThrottleRaw−Throttle > 2%) |
 | LatG | Mean absolute lateral G-force (grip usage) |
-| Steer° | Peak absolute steering angle in the phase (degrees) |
+| Wheel° | Peak steering wheel angle in the phase (degrees; divide by steering ratio for road wheel angle) |
 | Corr | Steering direction reversals above threshold — measures mid-corner corrections/adjustments |
 | ABS | Samples with ABS active (÷ 60 = seconds) — high ABS with high lockups means braking at the limit |
 | Lock | Samples where any wheel speed < 95% of vehicle speed under braking (÷ 60 = seconds) |
@@ -57,8 +56,7 @@ Work through the phase table using the checklist below, in priority order. Skip 
 
 **3. Exit phase — power application**
 - Low throttle %: reaching full throttle late — often caused by poor mid-corner positioning
-- TC% active: applying throttle too aggressively on exit — straighten the wheel before adding power
-- Wheelspin (Spin): similar to TC — too much throttle for the available grip angle
+- Wheelspin (Spin): too much throttle for the available grip angle — straighten the wheel before adding power
 - Coast in exit: gap between steering unwind and throttle application — should overlap
 
 **4. Cross-phase patterns**
@@ -88,6 +86,56 @@ Rank the three highest-impact improvements the driver should focus on next sessi
 
 ---
 
+## Multi-lap comparison
+
+When the user wants to compare laps (e.g. "compare my lap 5 and lap 8", "why was lap 12 slower?"):
+
+1. Run analyze once per lap to get the full phase table for each:
+   ```
+   .\motorhome.exe analyze -lap 5
+   .\motorhome.exe analyze -lap 8
+   ```
+
+2. Diff the phase tables segment by segment. Focus on:
+   - **Speed deltas** — where does entry or exit speed differ? A corner with 5+ km/h entry speed difference is a braking point change.
+   - **OnBrk / PkBrk** — did brake pressure change, or just the point? High PkBrk on the faster lap suggests they committed harder.
+   - **Coast** — extra coast time in the slower lap almost always explains a chunk of the gap. Identify which phase it's in.
+   - **Thr%** — earlier throttle application on the faster lap shows up here; correlates with exit speed.
+   - **Corr** — more steering corrections in the slower lap suggests a different (worse) entry line or mid-corner instability.
+
+3. Quantify the gap: sum the coast time difference across all segments — this is the recoverable time from pedal discipline alone.
+
+4. Identify the two or three segments with the largest combined speed delta and present those as the focus.
+
+## Corner drill-down
+
+When the user wants to go deeper on a specific corner (e.g. "tell me more about T3", "break down the hairpin"):
+
+1. Dump the raw telemetry CSV for that segment:
+   ```
+   .\motorhome.exe analyze -dump T3
+   ```
+   Or by segment index (e.g. 3rd segment):
+   ```
+   .\motorhome.exe analyze -dump 3
+   ```
+   To drill a specific lap:
+   ```
+   .\motorhome.exe analyze -dump T3 -lap 5
+   ```
+
+2. The CSV includes 1 second of context before and after the segment boundary at 20Hz. Columns:
+   `Dist%, Time, Speed, Throttle, Brake, Steer, Gear, LatG, LongG, ABS, Coast`
+
+3. Read the CSV row by row and narrate the driver trace:
+   - **Approach**: what speed and gear are they arriving in? Is brake application sharp or gradual?
+   - **Trail**: does brake pressure reduce smoothly as steering angle increases? (overlapping Brake and Steer columns)
+   - **Apex**: at peak Steer, what is Throttle? Should be zero or just opening. LatG should peak here.
+   - **Exit**: does Throttle ramp up as Steer unwinds? Any Coast rows after the apex indicate a gap.
+   - **ABS column**: `1` rows show where ABS fired — if clustered at peak braking that's fine; if scattered into mid-corner the driver is braking too deep.
+
+4. Describe the trace in plain English, then relate it back to the phase table metrics for that segment. Point out the exact moment (by `Time` offset from segment start) where time is lost.
+
 ## Notes
 
 - If the user specifies a `.ibt` file, pass it as the argument
@@ -95,3 +143,4 @@ Rank the three highest-impact improvements the driver should focus on next sessi
 - If geometry confidence is `low` (< 3 laps), note that segment boundaries may be approximate
 - If map match % is below 50%, suggest running with `-update-map` before coaching
 - Out laps and in laps are shown in the lap list but should not be used for coaching unless the user specifically asks
+- For multi-lap comparison, always confirm which lap numbers are flying laps before running the comparison — out/in laps will show skewed metrics

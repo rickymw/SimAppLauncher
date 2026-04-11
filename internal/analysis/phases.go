@@ -3,6 +3,7 @@ package analysis
 import (
 	"math"
 
+	"github.com/rickymw/MotorHome/internal/pb"
 	"github.com/rickymw/MotorHome/internal/trackmap"
 )
 
@@ -17,8 +18,9 @@ const (
 
 	// steerCorrectionThresh is the minimum steering rate magnitude (rad/tick at
 	// 60 Hz) on both sides of a direction reversal for it to count as a correction.
-	// ~0.5 deg/tick.
-	steerCorrectionThresh = float32(0.0087)
+	// ~0.25 deg/tick (≈15 deg/s) — sensitive enough to catch moderate mid-corner
+	// adjustments, not just emergency saves.
+	steerCorrectionThresh = float32(0.0044)
 
 	rad2deg = float32(180.0 / math.Pi)
 )
@@ -46,10 +48,8 @@ type Phase struct {
 
 	BrakePct     float32 // % of samples with brake > 2%
 	PeakBrakePct float32 // max brake pressure (0–100%)
-	ThrottlePct  float32 // % of samples at full throttle (> 95%)
-	TCPct        float32 // % of samples with TC active (ThrottleRaw−Throttle > 2%)
-	PeakTCCut    float32 // max (ThrottleRaw−Throttle) × 100
-	LatGAvg      float32 // average abs lateral G
+	ThrottlePct float32 // % of samples at full throttle (> 95%)
+	LatGAvg     float32 // average abs lateral G
 
 	PeakSteerDeg float32 // max |SteeringAngle| in the phase (degrees)
 	Corrections  int     // steering direction reversals above threshold
@@ -70,18 +70,25 @@ type Phase struct {
 //   - Mid: samples at ≥ 80% of peak (committed to the arc)
 //   - Exit: last sample dropping below 80% of peak → end
 //
+// brakeEntries provides the stored brake onset positions (keyed by segment name)
+// used to set effective segment entry points. Pass nil or an empty map to use
+// geometric entry points only.
+//
 // Corners with peak steering < 5° are treated as straights (single full phase).
 // Phases with 0 samples are omitted from the result.
-func ComputePhases(lap *Lap, segs []trackmap.Segment) []Phase {
+func ComputePhases(lap *Lap, segs []trackmap.Segment, brakeEntries pb.BrakeEntryMap) []Phase {
 	if len(segs) == 0 {
 		return nil
 	}
+	if brakeEntries == nil {
+		brakeEntries = pb.BrakeEntryMap{}
+	}
 
-	// Pre-compute effective entry and exit for each segment (reuse brake-entry logic).
+	// Pre-compute effective entry and exit for each segment.
 	effEntry := make([]float32, len(segs))
 	effExit := make([]float32, len(segs))
 	for i, seg := range segs {
-		effEntry[i] = effectiveSegEntry(seg)
+		effEntry[i] = effectiveSegEntry(seg, brakeEntries)
 		effExit[i] = seg.ExitPct
 	}
 	for i := 0; i < len(segs)-1; i++ {
@@ -181,7 +188,7 @@ func computePhaseStats(segIdx int, segName string, kind PhaseKind, samples []Sam
 	p.SpeedExitKPH = samples[len(samples)-1].Speed * ms2kmh
 
 	var latGSum float32
-	var brakeOnCount, thrFullCount, tcActiveCount int
+	var brakeOnCount, thrFullCount int
 
 	for _, s := range samples {
 		// Brake.
@@ -195,15 +202,6 @@ func computePhaseStats(segIdx int, segName string, kind PhaseKind, samples []Sam
 		// Throttle.
 		if s.Throttle > fullThrottleThresh {
 			thrFullCount++
-		}
-
-		// TC intervention.
-		tcCut := s.ThrottleRaw - s.Throttle
-		if tcCut > tcCutThreshold {
-			tcActiveCount++
-			if tcCut*100 > p.PeakTCCut {
-				p.PeakTCCut = tcCut * 100
-			}
 		}
 
 		// Lateral G.
@@ -245,7 +243,6 @@ func computePhaseStats(segIdx int, segName string, kind PhaseKind, samples []Sam
 	n := float32(len(samples))
 	p.BrakePct = 100 * float32(brakeOnCount) / n
 	p.ThrottlePct = 100 * float32(thrFullCount) / n
-	p.TCPct = 100 * float32(tcActiveCount) / n
 	p.LatGAvg = latGSum / n
 
 	// Steering corrections.

@@ -85,11 +85,16 @@ func ReadLiveData() LiveData {
 	}
 	defer procCloseHandle.Call(handle)
 
-	base, _, lastErr := procMapViewOfFile.Call(handle, fileMapRead, 0, 0, 0)
-	if base == 0 {
+	baseAddr, _, lastErr := procMapViewOfFile.Call(handle, fileMapRead, 0, 0, 0)
+	if baseAddr == 0 {
 		return LiveData{ErrMsg: "MapViewOfFile: " + lastErr.Error()}
 	}
-	defer procUnmapViewOfFile.Call(base)
+	defer procUnmapViewOfFile.Call(baseAddr)
+
+	// Convert to unsafe.Pointer immediately — all subsequent reads use unsafe.Add
+	// which satisfies Go's unsafe.Pointer rules (no uintptr arithmetic).
+	// The uintptr→Pointer conversion is safe per unsafe.Pointer Rule 4 (syscall result).
+	base := unsafe.Pointer(baseAddr) //nolint:govet
 
 	// Check connection status — iRacing sets this to iRSDKConnected(1) when a
 	// session is live. It is 0 in menus, replays, or between sessions.
@@ -107,7 +112,7 @@ func ReadLiveData() LiveData {
 		vhBase := varHeaderOff + i*varHeaderSize
 		vType := readInt32(base, vhBase+vhOffType)
 		dataOff := readInt32(base, vhBase+vhOffDataOffset)
-		nameBytes := (*[32]byte)(unsafe.Pointer(base + uintptr(vhBase+vhOffName)))[:]
+		nameBytes := (*[32]byte)(unsafe.Add(base, vhBase+vhOffName))[:]
 		name := nullTermString(nameBytes)
 		if name != "" {
 			vars[name] = varInfo{varType: vType, dataOffset: dataOff}
@@ -145,7 +150,7 @@ func ReadLiveData() LiveData {
 	sessionInfoOff := int(readInt32(base, hdrOffSessionInfoOff))
 	sessionInfoLen := int(readInt32(base, hdrOffSessionInfoLen))
 	if sessionInfoLen > 0 && sessionInfoLen < maxSessionInfoBytes {
-		raw := (*[maxSessionInfoBytes]byte)(unsafe.Pointer(base + uintptr(sessionInfoOff)))[:sessionInfoLen]
+		raw := (*[maxSessionInfoBytes]byte)(unsafe.Add(base, sessionInfoOff))[:sessionInfoLen]
 		yaml := strings.TrimRight(string(raw), "\x00")
 		ld.Track = yamlField(yaml, "TrackDisplayName")
 		ld.Car = yamlField(yaml, "CarScreenName")
@@ -156,6 +161,7 @@ func ReadLiveData() LiveData {
 
 // yamlField extracts the value of a simple "Key: Value" line from a YAML string.
 // Returns "" if not found. Strips surrounding whitespace and quotes.
+// NOTE: internal/analysis/lap.go has a duplicate — keep behaviour in sync.
 func yamlField(yaml, key string) string {
 	prefix := key + ":"
 	for _, line := range strings.Split(yaml, "\n") {
@@ -169,16 +175,16 @@ func yamlField(yaml, key string) string {
 	return ""
 }
 
-func readInt32(base uintptr, off int) int32 {
-	return *(*int32)(unsafe.Pointer(base + uintptr(off)))
+func readInt32(base unsafe.Pointer, off int) int32 {
+	return *(*int32)(unsafe.Add(base, off))
 }
 
-func readFloat32(base uintptr, off int) float32 {
-	return *(*float32)(unsafe.Pointer(base + uintptr(off)))
+func readFloat32(base unsafe.Pointer, off int) float32 {
+	return *(*float32)(unsafe.Add(base, off))
 }
 
-func readFloat64(base uintptr, off int) float64 {
-	return *(*float64)(unsafe.Pointer(base + uintptr(off)))
+func readFloat64(base unsafe.Pointer, off int) float64 {
+	return *(*float64)(unsafe.Add(base, off))
 }
 
 func itoa(n int32) string { return strconv.Itoa(int(n)) }

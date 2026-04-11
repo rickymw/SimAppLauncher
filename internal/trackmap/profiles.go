@@ -2,42 +2,6 @@ package trackmap
 
 import "math"
 
-// buildProfile buckets abs(LatAccel) and LatAccel sign for a single lap's
-// samples into numBuckets bins. Returns per-bucket average abs values,
-// per-bucket average sign values, and per-bucket sample counts.
-func buildProfile(samples []Sample) (latAbs []float64, latSign []float64, counts []int) {
-	absSum := make([]float64, numBuckets)
-	signSum := make([]float64, numBuckets)
-	counts = make([]int, numBuckets)
-
-	for _, s := range samples {
-		b := int(s.LapDistPct * numBuckets)
-		if b < 0 {
-			b = 0
-		}
-		if b >= numBuckets {
-			b = numBuckets - 1
-		}
-		absSum[b] += math.Abs(float64(s.LatAccel))
-		if s.LatAccel > 0 {
-			signSum[b] += 1.0
-		} else if s.LatAccel < 0 {
-			signSum[b] -= 1.0
-		}
-		counts[b]++
-	}
-
-	latAbs = make([]float64, numBuckets)
-	latSign = make([]float64, numBuckets)
-	for i := 0; i < numBuckets; i++ {
-		if counts[i] > 0 {
-			latAbs[i] = absSum[i] / float64(counts[i])
-			latSign[i] = signSum[i] / float64(counts[i])
-		}
-	}
-	return latAbs, latSign, counts
-}
-
 // buildSpeedProfile buckets Speed (m/s) for a single lap into numBuckets bins.
 // Returns per-bucket average speed and sample counts.
 func buildSpeedProfile(samples []Sample) (speedAvg []float64, counts []int) {
@@ -61,31 +25,6 @@ func buildSpeedProfile(samples []Sample) (speedAvg []float64, counts []int) {
 	for i := 0; i < numBuckets; i++ {
 		if counts[i] > 0 {
 			speedAvg[i] = sums[i] / float64(counts[i])
-		}
-	}
-	return
-}
-
-// buildSteerProfile buckets abs(SteerAngle) (radians) for a single lap into
-// numBuckets bins. Returns per-bucket average absolute steering angle and counts.
-func buildSteerProfile(samples []Sample) (steerAbsAvg []float64, counts []int) {
-	sums := make([]float64, numBuckets)
-	counts = make([]int, numBuckets)
-	for _, s := range samples {
-		b := int(s.LapDistPct * numBuckets)
-		if b < 0 {
-			b = 0
-		}
-		if b >= numBuckets {
-			b = numBuckets - 1
-		}
-		sums[b] += math.Abs(float64(s.SteerAngle))
-		counts[b]++
-	}
-	steerAbsAvg = make([]float64, numBuckets)
-	for i := 0; i < numBuckets; i++ {
-		if counts[i] > 0 {
-			steerAbsAvg[i] = sums[i] / float64(counts[i])
 		}
 	}
 	return

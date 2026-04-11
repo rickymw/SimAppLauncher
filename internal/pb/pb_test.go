@@ -181,6 +181,27 @@ func TestUpdate_EqualLap_KeepsPB(t *testing.T) {
 	}
 }
 
+func TestUpdate_FasterLap_PreservesBrakeEntries(t *testing.T) {
+	pbf := File{}
+	Update(pbf, "GT3", "Sebring", 131.5, "2:11.500", "2026-03-01", "")
+	// Simulate brake entries accumulated before the new PB.
+	BrakeEntrySet(pbf, "GT3", "Sebring", "T1", 0.42, 5)
+
+	// New PB — brake entries must survive.
+	Update(pbf, "GT3", "Sebring", 130.0, "2:10.000", "2026-03-02", "")
+
+	entry := pbf[Key("GT3", "Sebring")]
+	if entry == nil {
+		t.Fatal("entry not found after PB update")
+	}
+	if entry.BrakeEntries == nil {
+		t.Fatal("BrakeEntries nil after PB update — should be preserved")
+	}
+	if entry.BrakeEntries["T1"].Pct != 0.42 {
+		t.Errorf("T1 BrakeEntry.Pct = %v, want 0.42 after PB update", entry.BrakeEntries["T1"].Pct)
+	}
+}
+
 func TestUpdate_IndependentCarTrackCombos(t *testing.T) {
 	pbf := File{}
 	Update(pbf, "Car A", "Track X", 100.0, "1:40.000", "2026-01-01", "")

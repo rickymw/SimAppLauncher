@@ -5,7 +5,9 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"sort"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/rickymw/MotorHome/internal/analysis"
@@ -18,27 +20,23 @@ import (
 // RunAnalyze implements the "analyze" subcommand.
 // args contains everything after "analyze" on the command line.
 // trackmapPath is the path to trackmap.json; "" disables load/save.
+// pbPath is the path to pb.json; "" disables load/save.
 func RunAnalyze(args []string, cfg config.Config, trackmapPath, pbPath string) {
 	fs := flag.NewFlagSet("analyze", flag.ExitOnError)
 	lapNum := fs.Int("lap", 0, "lap number to analyze (0 = best completed lap)")
 	updateMap := fs.Bool("update-map", false, "ignore existing track map and re-detect from this session")
-	geoMethod := fs.String("geo-method", "latlon", "segment detection method: latlon (default, GPS curvature) or lataccel")
+	dumpSeg := fs.String("dump", "", "dump segment telemetry to CSV (name like T3 or 1-based index)")
 	fs.Usage = func() {
 		fmt.Fprintln(os.Stderr, "Usage: motorhome [-config <path>] analyze [flags] <file.ibt>")
 		fmt.Fprintln(os.Stderr)
 		fmt.Fprintln(os.Stderr, "Examples:")
 		fmt.Fprintln(os.Stderr, "  motorhome analyze session.ibt")
 		fmt.Fprintln(os.Stderr, "  motorhome analyze -lap 2 session.ibt")
-		fmt.Fprintln(os.Stderr, "  motorhome analyze -geo-method latlon session.ibt")
+		fmt.Fprintln(os.Stderr, "  motorhome analyze -dump T3 session.ibt")
 		fmt.Fprintln(os.Stderr)
 		fs.PrintDefaults()
 	}
 	_ = fs.Parse(args)
-
-	if *geoMethod != "latlon" && *geoMethod != "lataccel" {
-		fmt.Fprintf(os.Stderr, "analyze: invalid -geo-method %q: must be \"latlon\" or \"lataccel\"\n", *geoMethod)
-		os.Exit(1)
-	}
 
 	var ibtPath string
 	switch fs.NArg() {
@@ -89,7 +87,11 @@ func RunAnalyze(args []string, cfg config.Config, trackmapPath, pbPath string) {
 	fmt.Printf("Driver:  %s\n", fallback(meta.DriverName, "(unknown)"))
 	fmt.Printf("Car:     %s\n", fallback(meta.CarScreenName, "(unknown)"))
 	fmt.Printf("Track:   %s\n", fallback(meta.TrackDisplayName, "(unknown)"))
-	fmt.Printf("Samples: %d at %d Hz\n", f.NumSamples(), f.Header().TickRate)
+	fmt.Printf("Samples: %d at %d Hz\n\n", f.NumSamples(), f.Header().TickRate)
+
+	if nodes := analysis.ParseCarSetupTree(f.SessionInfo()); nodes != nil {
+		printSetupTables(nodes)
+	}
 
 	laps, err := analysis.ExtractLaps(f)
 	if err != nil {
@@ -101,6 +103,10 @@ func RunAnalyze(args []string, cfg config.Config, trackmapPath, pbPath string) {
 
 	// Resolve the best lap now (needed for auto-detection even when not yet printing).
 	bestLap := bestAnalyzeLap(laps)
+
+	if bestLap != nil {
+		printTyreSummary(bestLap)
+	}
 
 	// Load or detect track segments.
 	trackLengthM := analysis.ParseTrackLength(f.SessionInfo())
@@ -133,14 +139,27 @@ func RunAnalyze(args []string, cfg config.Config, trackmapPath, pbPath string) {
 	existingTM, hasExisting := tmf[meta.TrackDisplayName]
 	useExisting := hasExisting && len(existingTM.Segments) > 0 && !*updateMap
 
+	// Load pb.json early — used for both brake entries and PB tracking.
+	var pbf pb.File
+	if pbPath != "" {
+		var pbErr error
+		pbf, pbErr = pb.Load(pbPath)
+		if pbErr != nil {
+			fmt.Fprintf(os.Stderr, "Warning: could not load pb.json: %v\n", pbErr)
+			pbf = pb.File{}
+		}
+	} else {
+		pbf = pb.File{}
+	}
+
 	if useExisting {
 		segs = existingTM.Segments
 
-		// Compute match score from best lap (always uses LatAccel for consistency).
+		// Compute match score from best lap using GPS curvature.
 		if bestLap != nil && trackLengthM > 0 {
 			tsamples := make([]trackmap.Sample, len(bestLap.Samples))
 			for i, s := range bestLap.Samples {
-				tsamples[i] = trackmap.Sample{LapDistPct: s.LapDistPct, LatAccel: s.LatAccel}
+				tsamples[i] = trackmap.Sample{LapDistPct: s.LapDistPct, Lat: s.Lat, Lon: s.Lon}
 			}
 			matchScore = trackmap.MatchScore(tsamples, segs, trackLengthM)
 		}
@@ -152,14 +171,10 @@ func RunAnalyze(args []string, cfg config.Config, trackmapPath, pbPath string) {
 			geomConf = existingTM.Confidence()
 		}
 
-		// Update stored map when: (a) this is a new session, or (b) brake entries
-		// haven't been computed yet (e.g. map was created before this feature).
+		// Update brake entries when this is a new session.
 		isNewSession := !existingTM.HasSession(sessionID)
-		needsBrake := hasMissingBrakeEntries(existingTM.Segments)
 
-		if trackmapPath != "" && (isNewSession || needsBrake) {
-			// Only use laps within lapTimeFilterPct of best — avoids slow early-practice
-			// laps skewing brake-entry positions.
+		if isNewSession {
 			var goodLaps []analysis.Lap
 			if bestLap != nil {
 				goodLaps = flyingLapsWithinTime(laps, bestLap.LapTime)
@@ -170,34 +185,26 @@ func RunAnalyze(args []string, cfg config.Config, trackmapPath, pbPath string) {
 					}
 				}
 			}
-			flyingCount := len(goodLaps)
 
-			// Compute brake entries from this session and blend into stored values.
-			if flyingCount > 0 {
+			if len(goodLaps) > 0 {
 				newEntries := analysis.ComputeBrakeEntries(goodLaps, segs)
-				oldLaps := existingTM.LapsUsed
-				for i := range existingTM.Segments {
-					seg := &existingTM.Segments[i]
-					if seg.Kind == trackmap.KindStraight {
-						continue
-					}
-					if seg.BrakeEntryPct == 0 || oldLaps == 0 {
-						seg.BrakeEntryPct = newEntries[i]
-					} else if isNewSession {
-						// Weighted average: blend new session into the running estimate.
-						w := float32(oldLaps + flyingCount)
-						seg.BrakeEntryPct = (seg.BrakeEntryPct*float32(oldLaps) + newEntries[i]*float32(flyingCount)) / w
+				for segName, entry := range newEntries {
+					pb.BrakeEntrySet(pbf, meta.CarScreenName, meta.TrackDisplayName, segName, entry.Pct, entry.LapsUsed)
+				}
+				if pbPath != "" {
+					if err := pb.Save(pbPath, pbf); err != nil {
+						fmt.Fprintf(os.Stderr, "Warning: could not save pb.json: %v\n", err)
 					}
 				}
 			}
 
-			if isNewSession {
-				existingTM.LapsUsed += flyingCount
-				existingTM.SessionsUsed++
-				existingTM.AddSession(sessionID)
-			}
-			if err := trackmap.Save(trackmapPath, tmf); err != nil {
-				fmt.Fprintf(os.Stderr, "Warning: could not save track map: %v\n", err)
+			existingTM.LapsUsed += len(goodLaps)
+			existingTM.SessionsUsed++
+			existingTM.AddSession(sessionID)
+			if trackmapPath != "" {
+				if err := trackmap.Save(trackmapPath, tmf); err != nil {
+					fmt.Fprintf(os.Stderr, "Warning: could not save track map: %v\n", err)
+				}
 			}
 		}
 	} else if trackLengthM > 0 && bestLap != nil {
@@ -209,7 +216,7 @@ func RunAnalyze(args []string, cfg config.Config, trackmapPath, pbPath string) {
 			l := &goodLaps[i]
 			ts := make([]trackmap.Sample, len(l.Samples))
 			for j, s := range l.Samples {
-				ts[j] = trackmap.Sample{LapDistPct: s.LapDistPct, LatAccel: s.LatAccel, Lat: s.Lat, Lon: s.Lon, Speed: s.Speed, SteerAngle: s.SteeringAngle}
+				ts[j] = trackmap.Sample{LapDistPct: s.LapDistPct, Lat: s.Lat, Lon: s.Lon, Speed: s.Speed}
 			}
 			allSamples = append(allSamples, ts)
 		}
@@ -217,7 +224,7 @@ func RunAnalyze(args []string, cfg config.Config, trackmapPath, pbPath string) {
 			// Fallback: use bestLap only (e.g. all laps are partial-start).
 			ts := make([]trackmap.Sample, len(bestLap.Samples))
 			for i, s := range bestLap.Samples {
-				ts[i] = trackmap.Sample{LapDistPct: s.LapDistPct, LatAccel: s.LatAccel, Lat: s.Lat, Lon: s.Lon, Speed: s.Speed, SteerAngle: s.SteeringAngle}
+				ts[i] = trackmap.Sample{LapDistPct: s.LapDistPct, Lat: s.Lat, Lon: s.Lon, Speed: s.Speed}
 			}
 			allSamples = [][]trackmap.Sample{ts}
 		}
@@ -227,25 +234,20 @@ func RunAnalyze(args []string, cfg config.Config, trackmapPath, pbPath string) {
 			targetCorners = n
 		}
 
-		switch *geoMethod {
-		case "latlon":
-			segs = trackmap.DetectFromMultipleLatLon(allSamples, trackLengthM, targetCorners)
-			if segs == nil {
-				fmt.Fprintln(os.Stderr, "Warning: Lat/Lon channels not found in telemetry — falling back to lataccel method.")
-				segs = trackmap.DetectFromMultiple(allSamples, trackLengthM)
-				*geoMethod = "lataccel"
-			}
-		default: // "lataccel" (validated above)
-			segs = trackmap.DetectFromMultiple(allSamples, trackLengthM)
-			*geoMethod = "lataccel"
+		segs = trackmap.DetectFromMultipleLatLon(allSamples, trackLengthM, targetCorners)
+		if segs == nil {
+			fmt.Fprintln(os.Stderr, "Warning: Lat/Lon channels not found in telemetry — cannot detect track segments.")
 		}
 
-		// Compute brake entries from filtered laps and store in segments.
-		if len(segs) > 0 {
+		// Compute brake entries from filtered laps and fold into pb.json.
+		if len(segs) > 0 && len(goodLaps) > 0 {
 			newEntries := analysis.ComputeBrakeEntries(goodLaps, segs)
-			for i := range segs {
-				if segs[i].Kind != trackmap.KindStraight {
-					segs[i].BrakeEntryPct = newEntries[i]
+			for segName, entry := range newEntries {
+				pb.BrakeEntrySet(pbf, meta.CarScreenName, meta.TrackDisplayName, segName, entry.Pct, entry.LapsUsed)
+			}
+			if pbPath != "" {
+				if err := pb.Save(pbPath, pbf); err != nil {
+					fmt.Fprintf(os.Stderr, "Warning: could not save pb.json: %v\n", err)
 				}
 			}
 		}
@@ -255,7 +257,7 @@ func RunAnalyze(args []string, cfg config.Config, trackmapPath, pbPath string) {
 				TrackLengthM: trackLengthM,
 				Source:       "auto",
 				DetectedFrom: trackmap.Today(),
-				GeoMethod:    *geoMethod,
+				GeoMethod:    "latlon",
 				LapsUsed:     len(allSamples),
 				SessionsUsed: 1,
 				Segments:     segs,
@@ -289,7 +291,7 @@ func RunAnalyze(args []string, cfg config.Config, trackmapPath, pbPath string) {
 			}
 			method := existingTM.GeoMethod
 			if method == "" {
-				method = "lataccel"
+				method = "latlon"
 			}
 			fmt.Printf("Map:     %d segs [%s] — geometry: %s (%d %s, %d %s) — match: %.0f%%\n\n",
 				len(segs), method, geomConf,
@@ -310,7 +312,7 @@ func RunAnalyze(args []string, cfg config.Config, trackmapPath, pbPath string) {
 				lapWord = "laps"
 			}
 			fmt.Printf("Map:     %d segs [%s] — geometry: low (%d %s, 1 session) — match: n/a (first detection)\n\n",
-				len(segs), *geoMethod, detectedLaps, lapWord)
+				len(segs), "latlon", detectedLaps, lapWord)
 		}
 
 		// Low match score warning.
@@ -321,14 +323,8 @@ func RunAnalyze(args []string, cfg config.Config, trackmapPath, pbPath string) {
 		}
 	}
 
-	// PB tracking: load, check, update, display.
+	// PB tracking: check, update, display (pbf already loaded above).
 	if pbPath != "" && bestLap != nil && meta.CarScreenName != "" && meta.TrackDisplayName != "" {
-		pbf, err := pb.Load(pbPath)
-		if err != nil {
-			fmt.Fprintf(os.Stderr, "Warning: could not load pb.json: %v\n", err)
-			pbf = pb.File{}
-		}
-
 		sessionDate := f.DiskHeader().SessionStartDate.Local().Format("2006-01-02")
 		weather := analysis.ParseWeather(f.SessionInfo())
 		formatted := analysis.FormatLapTime(bestLap.LapTime)
@@ -362,12 +358,18 @@ func RunAnalyze(args []string, cfg config.Config, trackmapPath, pbPath string) {
 	}
 	fmt.Println()
 
-	analyzeSingleLap(laps, *lapNum, segs)
+	var brakeEntries pb.BrakeEntryMap
+	if meta.CarScreenName != "" && meta.TrackDisplayName != "" {
+		if entry := pbf[pb.Key(meta.CarScreenName, meta.TrackDisplayName)]; entry != nil {
+			brakeEntries = entry.BrakeEntries
+		}
+	}
+	analyzeSingleLap(laps, *lapNum, segs, brakeEntries, *dumpSeg)
 }
 
 // ---- single lap ----
 
-func analyzeSingleLap(laps []analysis.Lap, lapNum int, segs []trackmap.Segment) {
+func analyzeSingleLap(laps []analysis.Lap, lapNum int, segs []trackmap.Segment, brakeEntries pb.BrakeEntryMap, dumpSeg string) {
 	var lap *analysis.Lap
 	if lapNum > 0 {
 		lap = findAnalyzeLap(laps, lapNum)
@@ -392,11 +394,181 @@ func analyzeSingleLap(laps []analysis.Lap, lapNum int, segs []trackmap.Segment) 
 	}
 
 	if segs != nil {
-		phases := analysis.ComputePhases(lap, segs)
+		phases := analysis.ComputePhases(lap, segs, brakeEntries)
 		printPhaseTable(lap, phases)
 	} else {
 		printZoneTable(lap, analysis.ZoneStats(lap))
 	}
+
+	// Dump segment telemetry to CSV if requested.
+	if dumpSeg != "" {
+		if segs == nil {
+			analyzeDie("-dump requires a track map (run analyze once first to auto-detect segments)")
+		}
+		segIdx := analysis.ResolveSegmentName(segs, dumpSeg)
+		if segIdx < 0 {
+			analyzeDie("segment %q not found — available: %s", dumpSeg, segmentNames(segs))
+		}
+		csvName := fmt.Sprintf("%s_lap%d.csv", segs[segIdx].Name, lap.Number)
+		csvFile, err := os.Create(csvName)
+		if err != nil {
+			analyzeDie("creating CSV: %v", err)
+		}
+		defer csvFile.Close()
+
+		cfg := analysis.DefaultDumpConfig()
+		if err := analysis.DumpSegmentCSV(csvFile, lap, segs, segIdx, cfg); err != nil {
+			analyzeDie("writing CSV: %v", err)
+		}
+		fmt.Printf("Dumped %s telemetry → %s\n", segs[segIdx].Name, csvName)
+	}
+}
+
+// segmentNames returns a comma-separated list of segment names for error messages.
+func segmentNames(segs []trackmap.Segment) string {
+	names := make([]string, len(segs))
+	for i, s := range segs {
+		names[i] = s.Name
+	}
+	return strings.Join(names, ", ")
+}
+
+// ---- setup output ----
+
+// cornerNames maps iRacing YAML section names to short column headers.
+var cornerNames = map[string]string{
+	"LeftFront": "LF", "RightFront": "RF",
+	"LeftRear": "LR", "RightRear": "RR",
+}
+
+// cornerOrder is the display order for the 4-corner table.
+var cornerOrder = []string{"LeftFront", "RightFront", "LeftRear", "RightRear"}
+
+func printSetupTables(nodes []analysis.SetupNode) {
+	tires := analysis.FindChild(nodes, "Tires")
+	chassis := analysis.FindChild(nodes, "Chassis")
+
+	if tires != nil {
+		printCornerTable("Tyres", tires.Children)
+	}
+	if chassis != nil {
+		printCornerTable("Suspension", chassis.Children)
+	}
+	fmt.Println()
+}
+
+// printCornerTable prints a section's per-corner data as an aligned table,
+// followed by any non-corner (general) key-value pairs.
+func printCornerTable(title string, children []analysis.SetupNode) {
+	// Separate corner sections from general sections.
+	corners := make(map[string]*analysis.SetupNode)
+	var general []analysis.SetupNode
+	for i := range children {
+		n := &children[i]
+		if _, ok := cornerNames[n.Key]; ok {
+			corners[n.Key] = n
+		} else {
+			general = append(general, *n)
+		}
+	}
+
+	// Normalize equivalent key names (iRacing uses LastTempsOMI for left-side
+	// corners and LastTempsIMO for right-side corners — merge into one row).
+	keyAliases := map[string]string{
+		"LastTempsIMO": "LastTemps",
+		"LastTempsOMI": "LastTemps",
+	}
+	for _, cn := range cornerOrder {
+		c := corners[cn]
+		if c == nil {
+			continue
+		}
+		for i := range c.Children {
+			if alias, ok := keyAliases[c.Children[i].Key]; ok {
+				c.Children[i].Key = alias
+			}
+		}
+	}
+
+	// Collect ordered unique keys across all corners.
+	var keys []string
+	seen := map[string]bool{}
+	for _, cn := range cornerOrder {
+		c := corners[cn]
+		if c == nil {
+			continue
+		}
+		for _, leaf := range c.Children {
+			if !seen[leaf.Key] {
+				seen[leaf.Key] = true
+				keys = append(keys, leaf.Key)
+			}
+		}
+	}
+
+	if len(keys) > 0 {
+		// Find the widest label.
+		labelW := len(title)
+		for _, k := range keys {
+			if len(k) > labelW {
+				labelW = len(k)
+			}
+		}
+
+		// Find the widest value per corner column.
+		colW := [4]int{2, 2, 2, 2} // min width for "LF" etc
+		for ci, cn := range cornerOrder {
+			c := corners[cn]
+			if c == nil {
+				continue
+			}
+			for _, leaf := range c.Children {
+				if len(leaf.Value) > colW[ci] {
+					colW[ci] = len(leaf.Value)
+				}
+			}
+		}
+
+		// Print header.
+		fmt.Printf("  %-*s", labelW, title+":")
+		for ci, cn := range cornerOrder {
+			fmt.Printf("  %-*s", colW[ci], cornerNames[cn])
+		}
+		fmt.Println()
+
+		// Print rows.
+		for _, k := range keys {
+			fmt.Printf("  %-*s", labelW, k)
+			for ci, cn := range cornerOrder {
+				c := corners[cn]
+				val := ""
+				if c != nil {
+					if leaf := analysis.FindChild(c.Children, k); leaf != nil {
+						val = leaf.Value
+					}
+				}
+				fmt.Printf("  %-*s", colW[ci], val)
+			}
+			fmt.Println()
+		}
+	}
+
+	// Print general (non-corner) entries.
+	if len(general) > 0 {
+		for _, g := range general {
+			if g.Value != "" {
+				fmt.Printf("  %s: %s\n", g.Key, g.Value)
+			} else if len(g.Children) > 0 {
+				// Nested non-corner section (e.g. FrontBrakes, InCarDials, Rear).
+				for _, leaf := range g.Children {
+					if leaf.Value != "" {
+						fmt.Printf("  %s: %s\n", leaf.Key, leaf.Value)
+					}
+				}
+			}
+		}
+	}
+	fmt.Println()
 }
 
 // ---- output ----
@@ -423,17 +595,27 @@ func printZoneTable(lap *analysis.Lap, zones []analysis.Zone) {
 
 func printPhaseTable(lap *analysis.Lap, phases []analysis.Phase) {
 	fmt.Printf("Lap %d — %s\n\n", lap.Number, analysis.FormatLapTime(lap.LapTime))
-	fmt.Println(" Seg | Name         | Phase | Spd         | Brk | PkBrk | Thr | TC% | LatG | Steer° | Corr | ABS  | Lock | Spin | Coast")
-	fmt.Println("-----|--------------|-------|-------------|-----|-------|-----|-----|------|--------|------|------|------|------|------")
+	// Find the widest segment name for dynamic column sizing.
+	nameW := 4 // minimum "Name"
+	for _, p := range phases {
+		if len(p.SegName) > nameW {
+			nameW = len(p.SegName)
+		}
+	}
+
+	hdr := fmt.Sprintf(" %-*s | Phase | Spd         | OnBrk | PkBrk | Thr%% | LatG | Wheel° | Corr | ABS  | Lock | Spin | Coast", nameW, "Name")
+	sep := fmt.Sprintf("-%s-|-------|-------------|-------|-------|------|------|--------|------|------|------|------|------", dashes(nameW))
+	fmt.Println(hdr)
+	fmt.Println(sep)
 	for _, p := range phases {
 		if p.SampleCount == 0 {
 			continue
 		}
 		coastSecs := float32(p.CoastSamples) / 60.0
-		fmt.Printf(" %3d | %-12s | %-5s | %5.0f→%5.0f | %2.0f%% | %4.0f%% | %2.0f%% | %2.0f%% | %4.2f | %6.1f | %4d | %4d | %4d | %4d | %5.2fs\n",
-			p.SegIndex+1, p.SegName, p.Kind,
+		fmt.Printf(" %-*s | %-5s | %5.0f→%5.0f | %4.0f%% | %4.0f%% | %3.0f%% | %4.2f | %6.1f | %4d | %4d | %4d | %4d | %5.2fs\n",
+			nameW, p.SegName, p.Kind,
 			p.SpeedEntryKPH, p.SpeedExitKPH,
-			p.BrakePct, p.PeakBrakePct, p.ThrottlePct, p.TCPct,
+			p.BrakePct, p.PeakBrakePct, p.ThrottlePct,
 			p.LatGAvg,
 			p.PeakSteerDeg, p.Corrections,
 			p.ABSCount, p.LockupSamples, p.WheelspinSamples, coastSecs)
@@ -441,7 +623,47 @@ func printPhaseTable(lap *analysis.Lap, phases []analysis.Phase) {
 	fmt.Println()
 }
 
+func printTyreSummary(lap *analysis.Lap) {
+	ts := analysis.ComputeTyreSummary(lap)
+
+	// Skip if all temps are zero — channel not present in this file.
+	if ts.LF.TempInner == 0 && ts.RF.TempInner == 0 {
+		return
+	}
+
+	fmt.Printf("Tyres (Lap %d — avg temp, end-of-lap wear):\n", lap.Number)
+	fmt.Printf("  %-6s  %-22s  %-21s  %s\n",
+		"Corner", "Temp O/M/I (°C)", "Wear O/M/I (% worn)", "Press (kPa)")
+
+	type row struct {
+		name string
+		c    analysis.CornerTyres
+	}
+	for _, r := range []row{
+		{"LF", ts.LF}, {"RF", ts.RF}, {"LR", ts.LR}, {"RR", ts.RR},
+	} {
+		wornI := (1 - r.c.WearInner) * 100
+		wornM := (1 - r.c.WearMid) * 100
+		wornO := (1 - r.c.WearOuter) * 100
+		fmt.Printf("  %-6s  %5.1f / %5.1f / %5.1f     %4.2f / %4.2f / %4.2f     %.0f\n",
+			r.name,
+			r.c.TempOuter, r.c.TempMid, r.c.TempInner,
+			wornO, wornM, wornI,
+			r.c.PressureKPa)
+	}
+	fmt.Println()
+}
+
 // ---- helpers ----
+
+// dashes returns a string of n dash characters for table separators.
+func dashes(n int) string {
+	b := make([]byte, n)
+	for i := range b {
+		b[i] = '-'
+	}
+	return string(b)
+}
 
 // lapTimeFilterDelta is the maximum number of seconds a lap may be slower than the
 // session best before it is excluded from trackmap detection and brake-entry blending.
@@ -546,13 +768,9 @@ func nthLatestIbtFile(dir string, n int) (string, error) {
 	}
 
 	// Sort descending by modification time (most recent first).
-	for i := 0; i < len(files)-1; i++ {
-		for j := i + 1; j < len(files); j++ {
-			if files[j].modTime.After(files[i].modTime) {
-				files[i], files[j] = files[j], files[i]
-			}
-		}
-	}
+	sort.Slice(files, func(i, j int) bool {
+		return files[j].modTime.Before(files[i].modTime)
+	})
 
 	if n > len(files) {
 		return "", fmt.Errorf("file index %d out of range — only %d .ibt file(s) in %s", n, len(files), dir)
@@ -560,13 +778,3 @@ func nthLatestIbtFile(dir string, n int) (string, error) {
 	return files[n-1].path, nil
 }
 
-// hasMissingBrakeEntries reports whether any corner or chicane segment in segs
-// has not yet had its BrakeEntryPct computed (i.e. it is still zero).
-func hasMissingBrakeEntries(segs []trackmap.Segment) bool {
-	for _, seg := range segs {
-		if seg.Kind != trackmap.KindStraight && seg.BrakeEntryPct == 0 {
-			return true
-		}
-	}
-	return false
-}

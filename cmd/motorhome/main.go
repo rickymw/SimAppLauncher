@@ -22,7 +22,7 @@ func main() {
 	cfgPath := flag.String("config", defaultConfigPath(), "path to config file")
 	flag.Usage = func() {
 		fmt.Fprintln(os.Stderr, "Usage: motorhome [-config <path>] <start|stop|status|analyze|notes>")
-		fmt.Fprintln(os.Stderr, "       motorhome analyze [-lap N] [-compare N,M] [-update-map] [-geo-method latlon|lataccel] [file.ibt]")
+		fmt.Fprintln(os.Stderr, "       motorhome analyze [-lap N] [-update-map] [file.ibt]")
 		fmt.Fprintln(os.Stderr, "       motorhome notes [set-hotkey]")
 		flag.PrintDefaults()
 	}

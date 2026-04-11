@@ -285,7 +285,9 @@ func (f *File) NumSamples() int {
 }
 
 // Sample reads and returns the nth data row (0-based).
-// It is safe to call Sample concurrently from multiple goroutines.
+// It is safe to call concurrently (uses ReadAt), but each call allocates a
+// new BufLen-sized byte slice — callers processing all samples sequentially
+// should expect GC pressure proportional to NumSamples.
 func (f *File) Sample(n int) (Sample, error) {
 	if n < 0 || n >= f.diskHdr.SessionRecordCount {
 		return Sample{}, fmt.Errorf("ibt: sample index %d out of range [0, %d)", n, f.diskHdr.SessionRecordCount)

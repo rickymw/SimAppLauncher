@@ -85,6 +85,7 @@ Use the **Open** action pointing directly at `motorhome.exe` — no PowerShell w
 .\motorhome.exe analyze session.ibt              # specific file
 .\motorhome.exe analyze -lap 3 session.ibt       # specific lap
 .\motorhome.exe analyze -update-map session.ibt  # force re-detect segments
+.\motorhome.exe analyze -dump T3 session.ibt     # dump T3 telemetry to CSV
 ```
 
 ### Example output
@@ -103,12 +104,12 @@ Laps:
 
 Selecting best lap: Lap 2 (1:07.500)
 
- Seg | Name  | Phase |   Spd |  Brk | PkBrk |  Thr | TC%  | LatG | Steer° | Corr | Lock | Spin | Coast
------|-------|-------|-------|------|-------|------|------|------|--------|------|------|------|------
-   1 | S1    | full  | 187.4 |   0% |    0% | 100% |   0% | 0.28 |    2.1 |    0 |    0 |    0 |  0.0
-   2 | T1    | entry | 196.4 |  94% |   98% |   0% |   0% | 1.42 |   38.7 |    2 |   12 |    0 |  0.1
-   2 | T1    | mid   | 82.1  |   0% |    0% |  22% |   3% | 2.14 |   62.4 |    0 |    0 |    0 |  0.4
-   2 | T1    | exit  | 112.0 |   0% |    0% |  87% |   5% | 1.68 |   31.5 |    1 |    0 |    3 |  0.0
+ Name | Phase | Spd         | OnBrk | PkBrk | Thr% | LatG | Wheel° | Corr | ABS  | Lock | Spin | Coast
+------|-------|-------------|-------|-------|------|------|--------|------|------|------|------|------
+ S1   | full  |   187→  190 |    0% |    0% | 100% | 0.28 |    2.1 |    0 |    0 |    0 |    0 | 0.00s
+ T1   | entry |   196→  126 |   94% |   98% |   0% | 1.42 |   38.7 |    2 |    0 |   12 |    0 | 0.10s
+ T1   | mid   |    82→   91 |    0% |    0% |  22% | 2.14 |   62.4 |    0 |    0 |    0 |    0 | 0.40s
+ T1   | exit  |   112→  140 |    0% |    0% |  87% | 1.68 |   31.5 |    1 |    0 |    0 |    3 | 0.00s
 ```
 
 ### Segment table columns
@@ -117,12 +118,11 @@ Selecting best lap: Lap 2 (1:07.500)
 |---|---|
 | Phase | Corner phase: `entry`, `mid`, `exit` for corners/chicanes; `full` for straights |
 | Spd | Speed in km/h — entry speed for entry phase, minimum (apex) for mid, exit speed for exit, average for straights |
-| Brk | Fraction of samples with brake > 2% |
+| OnBrk | % of phase time with brake applied (> 2%) |
 | PkBrk | Peak brake pressure (0--100%) |
 | Thr | Fraction at full throttle (> 95%) |
-| TC% | Fraction of samples where traction control is cutting throttle (ThrottleRaw - Throttle > 2%) |
 | LatG | Mean abs lateral G over the phase |
-| Steer° | Mean absolute steering angle in degrees |
+| Wheel° | Peak steering wheel angle in degrees (divide by steering ratio for road wheel angle) |
 | Corr | Steering correction count -- rapid direction changes indicating car instability |
 | Lock | Samples where any wheel speed < 95% of vehicle speed under braking (lockup) |
 | Spin | Samples where any wheel speed > 105% of vehicle speed under power (wheelspin) |

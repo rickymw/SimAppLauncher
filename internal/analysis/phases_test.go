@@ -37,7 +37,7 @@ func TestComputePhases_StraightGetsFull(t *testing.T) {
 		}
 	}
 	lap := makeFlyingLap(samples)
-	phases := ComputePhases(&lap, segs)
+	phases := ComputePhases(&lap, segs, nil)
 
 	if len(phases) != 1 {
 		t.Fatalf("len(phases) = %d, want 1", len(phases))
@@ -71,7 +71,7 @@ func TestComputePhases_CornerSplitsOnSteering(t *testing.T) {
 		samples[i] = cornerSample(pct, float64(i)/60, steerDeg, 30)
 	}
 	lap := makeFlyingLap(samples)
-	phases := ComputePhases(&lap, segs)
+	phases := ComputePhases(&lap, segs, nil)
 
 	// Should have entry, mid, exit.
 	if len(phases) < 2 {
@@ -106,7 +106,7 @@ func TestComputePhases_LowSteeringCornerGetsFull(t *testing.T) {
 		samples[i] = cornerSample(pct, float64(i)/60, 3.0, 50)
 	}
 	lap := makeFlyingLap(samples)
-	phases := ComputePhases(&lap, segs)
+	phases := ComputePhases(&lap, segs, nil)
 
 	if len(phases) != 1 {
 		t.Fatalf("len(phases) = %d, want 1", len(phases))
@@ -134,7 +134,7 @@ func TestComputePhases_SteeringMetrics(t *testing.T) {
 		samples[i] = cornerSample(pct, float64(i)/60, steerDeg, 30)
 	}
 	lap := makeFlyingLap(samples)
-	phases := ComputePhases(&lap, segs)
+	phases := ComputePhases(&lap, segs, nil)
 
 	// The mid phase should have peak steer near 90°.
 	for _, p := range phases {
@@ -174,7 +174,7 @@ func TestComputePhases_PhaseStats(t *testing.T) {
 		samples[i] = s
 	}
 	lap := makeFlyingLap(samples)
-	phases := ComputePhases(&lap, segs)
+	phases := ComputePhases(&lap, segs, nil)
 
 	// Straight should be full throttle.
 	for _, p := range phases {
@@ -252,7 +252,7 @@ func TestComputePhases_TwoSegments(t *testing.T) {
 		samples[i] = cornerSample(pct, float64(i)/60, steerDeg, 40)
 	}
 	lap := makeFlyingLap(samples)
-	phases := ComputePhases(&lap, segs)
+	phases := ComputePhases(&lap, segs, nil)
 
 	// Should have: S1 full, T1 entry, T1 mid, T1 exit (3-4 phases total)
 	if len(phases) < 2 {
