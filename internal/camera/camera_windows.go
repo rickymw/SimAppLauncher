@@ -56,10 +56,10 @@ func NewRestarter() Restarter {
 	return &serviceRestarter{}
 }
 
-func (s *serviceRestarter) Restart() ([]ServiceResult, error) {
+func (s *serviceRestarter) Restart(progress func(string)) ([]ServiceResult, error) {
 	var results []ServiceResult
 	for _, name := range frameServerServices {
-		restarted, err := restartService(name)
+		restarted, err := restartService(name, progress)
 		if err != nil {
 			return results, fmt.Errorf("%s: %w", name, err)
 		}
@@ -73,7 +73,7 @@ func (s *serviceRestarter) Restart() ([]ServiceResult, error) {
 // DEMAND_START, so Windows starts them when an app next opens the camera, and
 // starting them here would leave services running that were meant to be idle.
 // There is also no stuck pipeline state to clear when nothing is running.
-func restartService(name string) (bool, error) {
+func restartService(name string, progress func(string)) (bool, error) {
 	scm, err := openSCManager()
 	if err != nil {
 		return false, err
@@ -97,14 +97,19 @@ func restartService(name string) (bool, error) {
 	if err := controlServiceStop(svc); err != nil {
 		return false, err
 	}
-	if err := waitForState(svc, serviceStopped, stateTimeout); err != nil {
+	slowNotice := func() {
+		if progress != nil {
+			progress(fmt.Sprintf("      %s is still in use — waiting for the app holding the camera to release it (can take ~30s)", name))
+		}
+	}
+	if err := waitForState(svc, serviceStopped, stopTimeout, slowNotice, slowStopNotice); err != nil {
 		return false, err
 	}
 
 	if err := startService(svc); err != nil {
 		return false, err
 	}
-	if err := waitForState(svc, serviceRunning, stateTimeout); err != nil {
+	if err := waitForState(svc, serviceRunning, startTimeout, nil, 0); err != nil {
 		return false, err
 	}
 	return true, nil
@@ -156,16 +161,30 @@ func startService(svc syscall.Handle) error {
 	return nil
 }
 
-// Stop/start of these services measured at 20–110ms each, so the poll interval
-// is kept well below that — at 200ms the four waits rounded up to roughly half
-// a second of pure dead time, which was most of the command's runtime.
 const (
+	// Stop/start measure at 20–110ms each when the camera is idle, so the poll
+	// interval is kept well below that — at 200ms the four waits rounded up to
+	// roughly half a second of dead time, most of the command's runtime.
 	pollInterval = 15 * time.Millisecond
-	stateTimeout = 10 * time.Second
+
+	// A stop measured at 30.8s with the camera actively streaming: Windows waits
+	// for the holding client to release the device before the service will stop.
+	// The timeout must clear that comfortably, otherwise a restart that is merely
+	// slow gets reported as a failure. (It was 10s, which did exactly that.)
+	stopTimeout  = 90 * time.Second
+	startTimeout = 15 * time.Second
+
+	// How long a stop may take before telling the user why it is waiting, rather
+	// than leaving them looking at an apparently hung window.
+	slowStopNotice = 2 * time.Second
 )
 
-func waitForState(svc syscall.Handle, want uint32, timeout time.Duration) error {
-	deadline := time.Now().Add(timeout)
+// waitForState polls until the service reaches want. If it has not done so
+// within notifyAfter, notify is called once so slow waits can be explained.
+func waitForState(svc syscall.Handle, want uint32, timeout time.Duration, notify func(), notifyAfter time.Duration) error {
+	start := time.Now()
+	deadline := start.Add(timeout)
+	notified := false
 	for {
 		status, err := queryServiceStatus(svc)
 		if err != nil {
@@ -174,8 +193,12 @@ func waitForState(svc syscall.Handle, want uint32, timeout time.Duration) error 
 		if status.CurrentState == want {
 			return nil
 		}
+		if !notified && notify != nil && time.Since(start) >= notifyAfter {
+			notify()
+			notified = true
+		}
 		if time.Now().After(deadline) {
-			return fmt.Errorf("timed out waiting for state %d", want)
+			return fmt.Errorf("timed out after %s waiting for state %d", timeout, want)
 		}
 		time.Sleep(pollInterval)
 	}

@@ -25,7 +25,9 @@ type mockRestarter struct {
 	restartFn func() ([]ServiceResult, error)
 }
 
-func (m *mockRestarter) Restart() ([]ServiceResult, error) { return m.restartFn() }
+func (m *mockRestarter) Restart(progress func(string)) ([]ServiceResult, error) {
+	return m.restartFn()
+}
 
 func TestRunCameraRestart_Success(t *testing.T) {
 	called := false
@@ -90,6 +92,33 @@ func TestRunCameraRestart_Mixed(t *testing.T) {
 	if !strings.Contains(out, "1/2") {
 		t.Errorf("expected 1/2 in summary, got: %q", out)
 	}
+}
+
+// TestRunCameraRestart_ProgressPrinted verifies the progress callback is passed
+// through and its messages reach stdout — without it a slow stop (the camera is
+// in use and Windows waits ~30s for the holder to release it) looks like a hang.
+func TestRunCameraRestart_ProgressPrinted(t *testing.T) {
+	r := &mockRestarterProgress{restartFn: func(progress func(string)) ([]ServiceResult, error) {
+		if progress == nil {
+			t.Fatal("expected a non-nil progress callback")
+		}
+		progress("      FrameServer is still in use — waiting")
+		return []ServiceResult{{Name: "FrameServer", Restarted: true}}, nil
+	}}
+
+	out := captureStdout(func() { RunCameraRestart(r) })
+
+	if !strings.Contains(out, "still in use") {
+		t.Errorf("expected progress message in output, got: %q", out)
+	}
+}
+
+type mockRestarterProgress struct {
+	restartFn func(progress func(string)) ([]ServiceResult, error)
+}
+
+func (m *mockRestarterProgress) Restart(progress func(string)) ([]ServiceResult, error) {
+	return m.restartFn(progress)
 }
 
 func TestRunCameraRestart_Failure(t *testing.T) {

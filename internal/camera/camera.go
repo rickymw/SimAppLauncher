@@ -9,13 +9,17 @@ type ServiceResult struct {
 }
 
 // Restarter restarts the OS camera pipeline so it can be mocked in tests.
+// progress, when non-nil, is called with status lines during slow operations —
+// stopping the pipeline blocks until the app holding the camera releases it,
+// which can take ~30s, and the user should be told why rather than left staring
+// at an apparently hung window.
 type Restarter interface {
-	Restart() ([]ServiceResult, error)
+	Restart(progress func(string)) ([]ServiceResult, error)
 }
 
 // RunCameraRestart restarts the camera pipeline via r and prints what it did.
 func RunCameraRestart(r Restarter) {
-	results, err := r.Restart()
+	results, err := r.Restart(func(msg string) { fmt.Println(msg) })
 	if err != nil {
 		fmt.Printf("  [!] FAILED: %v\n", err)
 		return

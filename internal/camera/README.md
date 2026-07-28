@@ -6,6 +6,14 @@ Restarts a stuck/frozen webcam by restarting the Windows Camera Frame Server.
 
 Implements the `camera` subcommand. Stops (if running) and restarts the `FrameServer` and `FrameServerMonitor` Windows services — the shared pipeline every app (Zoom, OBS, Teams, the Camera app, etc.) goes through to access a webcam. This clears the most common "camera frozen / stuck in a bad state" failure without touching the USB device itself.
 
+## Motivating case: Remote Desktop never releases the camera
+
+The webcam is redirected into a Remote Desktop session (`mstsc.exe`). On leaving the meeting, RDP does **not** release the device — it keeps holding the camera indefinitely, so every local app then finds it busy. Nothing will release it on its own, and short of rebooting or unplugging the camera there is no built-in way to recover.
+
+Restarting the Frame Server tears down that stale client handle and frees the device. Confirmed in practice: with `mstsc.exe` holding the camera, running `motorhome camera` released it (the `ConsentStore` in-use entry cleared).
+
+This is also why the graceful-stop wait must be generous — see [Runtime and timeouts](#runtime-and-timeouts). There is no client that will ever voluntarily let go, so Windows waits for a release that never comes and eventually forces it.
+
 ## Why not disable/enable the USB PnP device?
 
 That was the first approach tried, using PowerShell's `Disable-PnpDevice`/`Enable-PnpDevice` (and `pnputil`) against the camera's PnP entries. Both failed on this machine even though it can already run `taskkill` against elevated processes via the `SeDebugPrivilege` fallback in [internal/launcher](../launcher/README.md) — disabling/enabling a PnP device needs a genuine administrator token, not just a single grantable privilege, and `ShellExecuteExW`'s `runas` verb doesn't reliably elevate in this environment (see the top-level CLAUDE.md). Restarting the Frame Server services instead only needs `SERVICE_START`/`SERVICE_STOP` rights on those two specific services, which — like `SeDebugPrivilege` — can be granted directly to a non-admin account.
@@ -38,9 +46,11 @@ type ServiceResult struct {
 }
 
 type Restarter interface {
-    Restart() ([]ServiceResult, error)
+    Restart(progress func(string)) ([]ServiceResult, error)
 }
 ```
+
+`progress` is called with status lines during slow operations, so a wait that legitimately takes ~30s doesn't look like a hang.
 
 `RunCameraRestart(r Restarter)` prints per-service progress and a summary. Tests inject a `mockRestarter` so no real service is touched.
 
@@ -50,11 +60,39 @@ Raw `advapi32.dll` Service Control Manager calls (no external dependencies, matc
 
 **A service that is already stopped is left alone**, not started. Both are `DEMAND_START`, so Windows launches them when an app next opens the camera; starting them here would leave services running that were meant to be idle, and there is no stuck pipeline state to clear when nothing is running. The command therefore restores the original service state rather than unconditionally leaving both running.
 
-### Runtime
+### Runtime and timeouts
 
-Stop/start of these services measures at 20–110ms each, so `pollInterval` is 15ms. It was originally 200ms, which made the four status waits round up to roughly half a second of dead time — most of the command's total runtime. Measured end-to-end: **~0.48s** when the services are running (the real stuck-camera case), **~0.01s** when they are already stopped.
+Runtime depends entirely on whether an app is holding the camera:
 
-If the console window stays visible noticeably longer than that, it is the launcher, not this command — check the terminal profile's "close on exit" setting, or whether the Stream Deck action wraps the exe in `cmd /k` rather than invoking it directly.
+| State | Stop time | End to end |
+|---|---|---|
+| Services stopped (camera idle) | n/a — no-op | ~0.01s |
+| Services running, camera not in use | 0.02–0.06s | ~0.48s |
+| Camera held by RDP | 0.9s – **30.8s** | 1.0s – **31s** |
+
+Windows will not stop `FrameServer` while a client holds the device — it waits for a graceful release, then forces it. With the camera held by `mstsc.exe` this measured **30.8s** on one run and **1.0s** on another, so the wait is highly variable and the worst case must be tolerated rather than assumed away.
+
+This drove two constants:
+
+- `stopTimeout` is **90s**. It was originally 10s, which meant a restart while the camera was in use hit the timeout and was reported as a *failure* even though the restart was merely slow and would have succeeded.
+- `slowStopNotice` is **2s** — after that, `progress` explains that the command is waiting on the app holding the camera, so a legitimate 30s wait doesn't look like a hang.
+
+`pollInterval` is 15ms; at 200ms the four status waits rounded up to ~0.5s of dead time, most of the idle-case runtime.
+
+To find what is holding the camera, check for a subkey with `LastUsedTimeStop = 0` under:
+
+```
+HKCU:\SOFTWARE\Microsoft\Windows\CurrentVersion\CapabilityAccessManager\ConsentStore\webcam
+HKLM:\...\ConsentStore\webcam   (for service/system callers)
+```
+
+If the console window outlives the times above, that is the launcher rather than this command — check the terminal profile's "close on exit" setting, or whether the Stream Deck action wraps the exe in `cmd /k` instead of invoking it directly.
+
+### Why not just kill the host process?
+
+Terminating the hosting `svchost.exe` would be near-instant instead of waiting up to ~30s, and it would be surgical: each service is alone in its own svchost group (`Camera` → `FrameServer`, `CameraMonitor` → `FrameServerMonitor`, per `HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Svchost`), so no unrelated service would be caught in the blast. Both are `DEMAND_START`, so Windows would bring them back on next camera access.
+
+It is not used because `FrameServer` runs as `NT AUTHORITY\LocalService` and `FrameServerMonitor` as `LocalSystem`; opening them with `PROCESS_TERMINATE` from this non-elevated process is expected to fail with access denied, the same wall `pnputil` hit. (Not directly verified — the service had already stopped when the check was attempted.) The graceful stop works, so the fast path is unnecessary.
 
 ## Known limitations
 

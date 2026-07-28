@@ -205,7 +205,9 @@ Gap math uses each car's `CarIdxEstTime` when both are on the same lap, otherwis
 .\motorhome.exe camera
 ```
 
-Restarts the Windows `FrameServer`/`FrameServerMonitor` services — the shared pipeline every app uses to access a webcam — to clear a stuck or frozen camera without unplugging it. This does **not** require an elevated process, only a one-time grant of `SERVICE_START`/`SERVICE_STOP` rights on those two services to your account (a full PnP device disable/enable would need real admin rights, which aren't reliably obtainable via UAC in this setup):
+Restarts the Windows `FrameServer`/`FrameServerMonitor` services — the shared pipeline every app uses to access a webcam — to clear a stuck or frozen camera without unplugging it.
+
+The case this exists for: when the webcam is redirected into a **Remote Desktop** session, leaving the meeting does not release it — `mstsc.exe` keeps holding the camera indefinitely, so every local app finds it busy and nothing frees it short of a reboot. This command tears down that stale handle. This does **not** require an elevated process, only a one-time grant of `SERVICE_START`/`SERVICE_STOP` rights on those two services to your account (a full PnP device disable/enable would need real admin rights, which aren't reliably obtainable via UAC in this setup):
 
 ```powershell
 # One-time setup — run once, elevated. Look up your SID first:
@@ -223,7 +225,9 @@ sc.exe sdset FrameServerMonitor "D:(A;;CCLCSWRPWPDTLOCRRC;;;SY)(A;;CCDCLCSWRPWPD
 Done. 2/2 services restarted.
 ```
 
-Takes ~0.5s. If the services are already stopped the command is a no-op — Windows demand-starts them on next camera access, so there is no stuck state to clear:
+Takes ~0.5s when the camera is idle. If an app is holding the camera the stop can take up to ~30s — Windows waits for the holder to release the device before the service will stop — and a progress line explains the wait rather than leaving the window looking hung.
+
+If the services are already stopped the command is a no-op — Windows demand-starts them on next camera access, so there is no stuck state to clear:
 
 ```
   [=] FrameServer          ... already stopped
