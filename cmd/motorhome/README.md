@@ -4,7 +4,7 @@ Main entry point and subcommand dispatch for the `motorhome` CLI.
 
 ## What it does
 
-Parses the `-config` flag, loads the config file, and dispatches to one of five subcommands: `start`, `stop`, `status`, `analyze`, `notes`.
+Parses the `-config` flag, loads the config file, and dispatches to one of seven subcommands: `start`, `stop`, `status`, `analyze`, `notes`, `live`, `camera`.
 
 ## Files
 
@@ -16,6 +16,9 @@ Parses the `-config` flag, loads the config file, and dispatches to one of five 
 | `clipboard.go` | `captureStdout` / `copyToClipboard` — tee analyze stdout into a buffer and pipe it into `clip.exe` (Windows) / `pbcopy` (macOS) |
 | `clipboard_test.go` | Tests for stdout capture and restore |
 | `notes.go` | `RunNotes` — notes subcommand: hotkey listen, record, transcribe, save |
+| `notes_util_test.go` | Tests for key-name parsing and recent-`.ibt` lookup |
+| `live.go` | `RunLive` — live position + gap to car ahead/behind from iRacing shared memory |
+| `camera.go` | `RunCamera` — restart the Windows Camera Frame Server to clear a stuck webcam |
 
 ## Dispatch
 
@@ -25,6 +28,8 @@ motorhome [-config <path>] <subcommand> [args]
 start / stop / status  →  internal/launcher
 analyze [flags] [file] →  RunAnalyze in analyze.go
 notes [set-hotkey]     →  RunNotes in notes.go
+live [-watch] [-hz N]  →  RunLive in live.go
+camera                 →  RunCamera in camera.go
 ```
 
 Runtime file paths are all derived from the config file's directory:
