@@ -1,7 +1,7 @@
 # CLAUDE.md — MotorHome
 
 ## Project overview
-Windows CLI tool (`motorhome.exe`) that launches, monitors, and closes sim racing apps in sequence, analyses iRacing `.ibt` telemetry files, and records voice notes during a session. Designed for Stream Deck integration. Six subcommands: `start`, `stop`, `status`, `analyze`, `notes`, `live`. Accepts an optional `-config <path>` flag.
+Windows CLI tool (`motorhome.exe`) that launches, monitors, and closes sim racing apps in sequence, analyses iRacing `.ibt` telemetry files, and records voice notes during a session. Designed for Stream Deck integration. Seven subcommands: `start`, `stop`, `status`, `analyze`, `notes`, `live`, `camera`. Accepts an optional `-config <path>` flag.
 
 ## Documentation rule
 When making any code change, always review and update documentation to match:
@@ -54,6 +54,7 @@ motorhome live                                      # one-shot position + gap to
 motorhome live -watch                               # stream updates at 5 Hz until Ctrl-C
 motorhome live -watch -hz 10                        # poll at 10 Hz
 motorhome live -raw                                 # dump raw LiveData fields (diagnostic)
+motorhome camera                                    # restart a stuck/frozen webcam
 ```
 
 ## AI Coaching workflow
@@ -81,6 +82,7 @@ Each package has its own README with full detail. Below is a terse summary with 
 | `internal/notes` | `Note{Timestamp,Text}`/`Session` types; `AppendNote` load→append→save | [README](internal/notes/README.md) |
 | `internal/iracing` | `ReadLiveData()` snapshot from iRacing shared memory (Windows-only); `ParseDrivers`, `ComputeGaps` for gap-to-car math (cross-platform) | [README](internal/iracing/README.md) |
 | `internal/audio` | WinMM `Recorder.Start/Stop`; `BuildWAV` for Whisper input | [README](internal/audio/README.md) |
+| `internal/camera` | `Restarter` interface; Windows impl stops/starts `FrameServer`+`FrameServerMonitor` via raw SCM syscalls to un-stick a frozen webcam | [README](internal/camera/README.md) |
 
 ### Config (`launcher.config.json`)
 Lives next to the binary by default. Override with `-config <path>`. Validated on load — rejects empty `name`/`path`, negative `delayMs`, invalid `windowStyle`.
@@ -119,6 +121,15 @@ Toggle model — each press starts or stops recording:
 
 ### live subcommand flow (`cmd/motorhome/live.go`)
 Reads an iRacing shared-memory snapshot via `iracing.ReadLiveData()` and prints your position, lap, and gap in seconds to the car directly ahead/behind on track. Default mode prints one frame and exits. `-watch` polls at `-hz` Hz (default 5, clamped 1–60) and prints one summary line per tick until Ctrl-C. `-raw` dumps every field of `LiveData` plus per-car detail for each valid CarIdx — use this when the formatted view looks wrong. Gap computation lives in `internal/iracing/gap.go` (`ComputeGaps`); driver-name lookup uses the `Drivers` map parsed from the session YAML. Solo practice sessions with no other cars show `Ahead/Behind: (none)` by design. Windows-only (`//go:build windows`).
+
+### camera subcommand flow (`cmd/motorhome/camera.go`)
+Restarts a stuck/frozen webcam by stopping (if running) and restarting the Windows `FrameServer`/`FrameServerMonitor` services — the shared pipeline every app uses to access a camera — rather than disabling/enabling the USB PnP device itself. This was a deliberate fallback: `Disable-PnpDevice`/`Enable-PnpDevice` and `pnputil` both require a genuine administrator token, which `motorhome.exe` does not have in normal (Stream Deck-launched) use, and `runas` elevation doesn't work in this environment (see Deployment below). Restarting the two named services only needs `SERVICE_START`/`SERVICE_STOP` rights on those specific services, which — like `SeDebugPrivilege` for `Kill()` — can be granted to the account directly via a one-time `sc sdset` ACL change (see [internal/camera/README.md](internal/camera/README.md)) instead of requiring full admin membership. Implementation is raw `advapi32.dll` Service Control Manager calls (`OpenSCManagerW`/`OpenServiceW`/`ControlService`/`StartServiceW`), matching the no-external-dependency style of `internal/launcher`. Windows-only (`//go:build windows`).
+
+A service that is already stopped is left alone rather than started: both are `DEMAND_START`, so Windows launches them on next camera access, and there's no stuck pipeline state to clear when nothing is running. The command restores the original service state instead of unconditionally leaving both running.
+
+Runtime is ~0.48s when the services are running and ~0.01s when already stopped. The status-poll interval is 15ms — it was 200ms initially, which made the four waits round up to ~0.5s of dead time (most of the command's runtime) since the underlying stop/start operations each take only 20–110ms.
+
+Trade-off: restarts the camera pipeline system-wide (affects any camera in use, not just one device) and won't fix a true USB-level hardware hang — only a full PnP disable/enable or physical unplug/replug can, and that needs admin rights this tool doesn't have.
 
 ### Phase table columns
 `Name | Phase | Spd (entry→exit km/h) | OnBrk | PkBrk | Thr% | LatG | Wheel° | Corr | ABS | Lock | Spin | Coast`
@@ -175,10 +186,12 @@ All live next to the binary in `G:\RACING\SimAppLauncher\`:
 - Stream Deck triggers via the **Open** action pointing directly at `G:\RACING\SimAppLauncher\motorhome.exe` with arguments `start` or `stop` — no PowerShell wrapper needed. Config path resolves relative to the exe via `os.Executable()`.
 - UAC is set to never-notify on this machine — elevation via `ShellExecuteExW runas` does not work in this environment; use `elevate: false` for all apps
 - SimHub auto-elevates via its own manifest and resists `taskkill` — the `SeDebugPrivilege` fallback in `Kill()` handles this
+- Confirmed empirically (2026-07-28) that the process running `motorhome.exe` normally does **not** hold a full administrator token: `Disable-PnpDevice`/`pnputil /disable-device` both fail with access-denied against a real device. Only specific, narrowly-grantable privileges/rights (like `SeDebugPrivilege`, or the `camera` subcommand's service ACL) work without elevation — don't assume a feature needing genuine admin rights will work without first checking
 
 ## Known limitations
 - `Minimized` window style not implemented (requires `golang.org/x/sys/windows` for `StartupInfo`; currently treated as `Normal`)
 - `stop` kills by image name — affects all instances of a process if multiple are running
+- `camera` restarts the Frame Server system-wide (not scoped to one device) and cannot fix a true USB-level hardware hang — only a full PnP disable/enable or physical unplug/replug can, which requires admin rights not available in this deployment
 - `processName` whitespace is not trimmed — accidental spaces will cause silent match failures
 - Segment detection with `lataccel` method only uses lateral G — pure braking zones with no lateral load appear as straights (`latlon` default avoids this)
 - S/F line wraparound: tiny corners (< 50 m) at the S/F line are auto-removed, but if the first and last segments are both straights they are not merged into one

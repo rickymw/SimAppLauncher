@@ -28,7 +28,7 @@ go build -o motorhome.exe ./cmd/motorhome
 ## Subcommands
 
 ```
-motorhome [-config <path>] <start|stop|status|analyze|notes|live>
+motorhome [-config <path>] <start|stop|status|analyze|notes|live|camera>
 ```
 
 | Subcommand | Description |
@@ -39,6 +39,7 @@ motorhome [-config <path>] <start|stop|status|analyze|notes|live>
 | `analyze` | Parse an `.ibt` file and print lap telemetry |
 | `notes` | Record voice notes stamped with track position |
 | `live` | Live position + gap in seconds to the car directly ahead and behind on track |
+| `camera` | Restart a stuck/frozen webcam by restarting the Windows Camera Frame Server |
 
 ---
 
@@ -198,6 +199,44 @@ Gap math uses each car's `CarIdxEstTime` when both are on the same lap, otherwis
 
 ---
 
+## Camera Restart
+
+```powershell
+.\motorhome.exe camera
+```
+
+Restarts the Windows `FrameServer`/`FrameServerMonitor` services — the shared pipeline every app uses to access a webcam — to clear a stuck or frozen camera without unplugging it. This does **not** require an elevated process, only a one-time grant of `SERVICE_START`/`SERVICE_STOP` rights on those two services to your account (a full PnP device disable/enable would need real admin rights, which aren't reliably obtainable via UAC in this setup):
+
+```powershell
+# One-time setup — run once, elevated. Look up your SID first:
+([System.Security.Principal.WindowsIdentity]::GetCurrent()).User.Value
+
+# Then, substituting that SID, grant start/stop rights on both services:
+sc.exe sdset FrameServer "D:(A;;CCLCSWRPWPDTLOCRRC;;;SY)(A;;CCDCLCSWRPWPDTLOCRSDRCWDWO;;;BA)(A;;CCLCSWLOCRRC;;;IU)(A;;CCLCSWLOCRRC;;;SU)(A;;RPWPLC;;;<YOUR-SID>)"
+sc.exe sdset FrameServerMonitor "D:(A;;CCLCSWRPWPDTLOCRRC;;;SY)(A;;CCDCLCSWRPWPDTLOCRSDRCWDWO;;;BA)(A;;CCLCSWLOCRRC;;;IU)(A;;CCLCSWLOCRRC;;;SU)(A;;RPWPLC;;;<YOUR-SID>)"
+```
+
+```
+  [+] FrameServer          ... restarted
+  [+] FrameServerMonitor   ... restarted
+
+Done. 2/2 services restarted.
+```
+
+Takes ~0.5s. If the services are already stopped the command is a no-op — Windows demand-starts them on next camera access, so there is no stuck state to clear:
+
+```
+  [=] FrameServer          ... already stopped
+  [=] FrameServerMonitor   ... already stopped
+
+Camera pipeline was not running — nothing to restart.
+Windows starts it on demand, so the camera will initialise fresh on next use.
+```
+
+See [internal/camera/README.md](internal/camera/README.md) for details and known limitations (system-wide restart, won't fix a true USB-level hardware hang).
+
+---
+
 ## Configuration
 
 `launcher.config.json` lives next to the binary. Override with `-config <path>`.
@@ -257,6 +296,7 @@ go test -tags e2e -v ./internal/launcher/ -run TestE2E_FullStack -timeout 120s  
 | `internal/notes` | Voice note types and JSON persistence | [README](internal/notes/README.md) |
 | `internal/iracing` | Live telemetry via iRacing shared memory | [README](internal/iracing/README.md) |
 | `internal/audio` | Microphone recording via WinMM | [README](internal/audio/README.md) |
+| `internal/camera` | Restarts the Windows Camera Frame Server | [README](internal/camera/README.md) |
 
 ---
 
