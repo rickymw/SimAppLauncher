@@ -11,8 +11,12 @@ Parses the `-config` flag, loads the config file, and dispatches to one of seven
 | File | Contents |
 |---|---|
 | `main.go` | Flag parsing, config load, subcommand dispatch |
-| `analyze.go` | `RunAnalyze` — full analyze subcommand implementation |
-| `analyze_test.go` | Tests for analyze output formatting |
+| `analyze.go` | `RunAnalyze` — the analyze subcommand's orchestration only |
+| `analyze_output.go` | All terminal rendering: `analyzeSingleLap`, setup tables, zone/phase/exit-impact/tyre/vs-PB tables |
+| `analyze_pb.go` | Stored-PB rendering for `-lap pb` (`runStoredPB*`, `printStoredPB`) and `phasesToPB` |
+| `analyze_helpers.go` | Lap selection/filtering (`bestAnalyzeLap`, `flyingLapsWithinTime`), `formatMapLine`, path and formatting helpers |
+| `analyze_test.go` | Tests for lap selection and `.ibt` file resolution |
+| `analyze_helpers_test.go` | Tests for `formatMapLine`, `pluralize`, `parseLapArg` |
 | `clipboard.go` | `captureStdout` / `copyToClipboard` — tee analyze stdout into a buffer and pipe it into `clip.exe` (Windows) / `pbcopy` (macOS) |
 | `clipboard_test.go` | Tests for stdout capture and restore |
 | `notes.go` | `RunNotes` — notes subcommand: hotkey listen, record, transcribe, save |
@@ -36,6 +40,8 @@ Runtime file paths are all derived from the config file's directory:
 - `trackmap.json` — segment geometry store
 - `pb.json` — personal best store
 - `notes/` — voice notes directory
+
+`analyze.go` was ~1150 lines and its package sat at ~10% coverage; the rendering and helper code is now split out so it can be tested directly. `formatMapLine` is the first result of that — the map-summary line used to be inline in `RunAnalyze` and therefore untestable.
 
 ## analyze subcommand (`analyze.go`)
 
