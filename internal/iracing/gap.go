@@ -37,7 +37,7 @@ var NoGap = GapTo{CarIdx: -1}
 // gaps in seconds.
 //
 //   - me is the player's CarPos (use CarIdx < 0 to disable; the function
-//     returns zero-value gaps).
+//     returns NoGap for both directions).
 //   - others contains every other valid car (skip entries with LapDistPct < 0).
 //
 // The "directly ahead" car is the one with the smallest positive forward gap;
@@ -47,8 +47,9 @@ var NoGap = GapTo{CarIdx: -1}
 // or either value is missing. lapEstimate should be a rough whole-lap time in
 // seconds (use me.EstTime at lap end, or a cached last-lap time).
 //
-// Returns (ahead, behind); either may be zero-value when no valid other car
-// exists in that direction.
+// Returns (ahead, behind); either may be NoGap when no valid other car exists
+// in that direction. Test for that with CarIdx < 0, never by comparing against
+// the zero-value struct — CarIdx 0 is a real slot in iRacing (the pace car).
 func ComputeGaps(me CarPos, others []CarPos, lapEstimate float32) (ahead, behind GapTo) {
 	ahead, behind = NoGap, NoGap
 	if me.CarIdx < 0 || me.LapDistPct < 0 {

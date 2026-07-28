@@ -225,6 +225,39 @@ func TestNthLatestIbtFile_EmptyDir(t *testing.T) {
 	}
 }
 
+// TestNthLatestIbtFile_UppercaseExtension guards the case-insensitive match:
+// Windows filesystems are case-insensitive, so a file written as .IBT must not
+// be skipped and reported as "no .ibt files found".
+func TestNthLatestIbtFile_UppercaseExtension(t *testing.T) {
+	dir := t.TempDir()
+	createIbtFiles(t, dir, []string{"SESSION.IBT"})
+
+	got, err := nthLatestIbtFile(dir, 1)
+	if err != nil {
+		t.Fatalf("nthLatestIbtFile: %v", err)
+	}
+	if filepath.Base(got) != "SESSION.IBT" {
+		t.Errorf("nthLatestIbtFile = %q, want SESSION.IBT", filepath.Base(got))
+	}
+}
+
+// TestDumpSegmentPath_UsesDir verifies -dump output is placed next to the .ibt
+// rather than resolving against an unpredictable working directory.
+func TestDumpSegmentPath_UsesDir(t *testing.T) {
+	got := dumpSegmentPath(filepath.Join("C:", "telemetry"), "T3", 4)
+	want := filepath.Join("C:", "telemetry", "T3_lap4.csv")
+	if got != want {
+		t.Errorf("dumpSegmentPath = %q, want %q", got, want)
+	}
+}
+
+func TestDumpSegmentPath_EmptyDirIsBareName(t *testing.T) {
+	got := dumpSegmentPath("", "T3", 4)
+	if got != "T3_lap4.csv" {
+		t.Errorf("dumpSegmentPath = %q, want T3_lap4.csv", got)
+	}
+}
+
 func TestNthLatestIbtFile_IgnoresNonIbt(t *testing.T) {
 	dir := t.TempDir()
 	// Create a .txt file — should be ignored.

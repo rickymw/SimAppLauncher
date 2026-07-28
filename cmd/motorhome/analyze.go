@@ -304,9 +304,14 @@ func RunAnalyze(args []string, cfg config.Config, trackmapPath, pbPath string) {
 	}
 
 	// Print map confidence line.
+	//
+	// Branch on useExisting, not on matchScore: a stored map is still a stored
+	// map even when no match score could be computed (no valid best lap, or the
+	// session YAML had no track length). Keying off matchScore made those cases
+	// fall through to the "first detection" wording and report a mature map as a
+	// fresh low-confidence one, discarding both geomConf and the stored GeoMethod.
 	if len(segs) > 0 {
-		if matchScore >= 0 {
-			// Loaded from existing map.
+		if useExisting {
 			lapWord := "lap"
 			if existingTM.LapsUsed != 1 {
 				lapWord = "laps"
@@ -319,11 +324,15 @@ func RunAnalyze(args []string, cfg config.Config, trackmapPath, pbPath string) {
 			if method == "" {
 				method = "latlon"
 			}
-			fmt.Printf("Map:     %d segs [%s] — geometry: %s (%d %s, %d %s) — match: %.0f%%\n\n",
+			matchStr := "n/a (no comparable lap)"
+			if matchScore >= 0 {
+				matchStr = fmt.Sprintf("%.0f%%", matchScore*100)
+			}
+			fmt.Printf("Map:     %d segs [%s] — geometry: %s (%d %s, %d %s) — match: %s\n\n",
 				len(segs), method, geomConf,
 				existingTM.LapsUsed, lapWord,
 				existingTM.SessionsUsed, sessionWord,
-				matchScore*100)
+				matchStr)
 		} else {
 			// Just detected for the first time this session.
 			// len(allSamples) is not in scope here; the new TrackMap was saved with
@@ -378,10 +387,18 @@ func RunAnalyze(args []string, cfg config.Config, trackmapPath, pbPath string) {
 			bestLap.LapTime, formatted, sessionDate, weather)
 
 		if isNew {
-			// Store phase data for the new PB lap so future sessions can compare.
+			// pb.Update replaces the entry wholesale, so any phases/setup stored
+			// against the previous PB are gone. They are not carried forward on
+			// purpose: they describe a different (slower) lap, and pairing them
+			// with the new lap time would make the record self-inconsistent. But
+			// the loss must not be silent — without phases the next session has
+			// no vs-PB table, and the cause would be invisible.
 			if segs != nil {
 				pbPhases := phasesToPB(analysis.ComputePhases(bestLap, segs, brakeEntries))
 				pb.SetPhases(pbf, meta.CarScreenName, meta.TrackDisplayName, pbPhases)
+			} else if len(pbPhases) > 0 {
+				fmt.Fprintln(os.Stderr, "Warning: new PB stored without phase data (no track map this session) —")
+				fmt.Fprintln(os.Stderr, "         the previous PB's phases were discarded, so the next session has no vs-PB table.")
 			}
 			if setupBlock := analysis.ExtractCarSetupBlock(f.SessionInfo()); setupBlock != "" {
 				pb.SetSetup(pbf, meta.CarScreenName, meta.TrackDisplayName, setupBlock)
@@ -415,7 +432,11 @@ func RunAnalyze(args []string, cfg config.Config, trackmapPath, pbPath string) {
 	}
 	fmt.Println()
 
-	analyzeSingleLap(laps, lapNum, segs, brakeEntries, pbPhases, *dumpSeg)
+	// Dumps go next to the .ibt being analysed. A bare filename would resolve
+	// against the current working directory, which is wherever the launcher
+	// happened to start us (Stream Deck gives no useful CWD, and it may not
+	// even be writable).
+	analyzeSingleLap(laps, lapNum, segs, brakeEntries, pbPhases, *dumpSeg, filepath.Dir(ibtPath))
 }
 
 // lapMode describes how the -lap flag was resolved.
@@ -550,7 +571,9 @@ func printStoredPhaseTable(lapTimeFormatted string, phases []pb.PBPhase) {
 
 // ---- single lap ----
 
-func analyzeSingleLap(laps []analysis.Lap, lapNum int, segs []trackmap.Segment, brakeEntries pb.BrakeEntryMap, pbPhases []pb.PBPhase, dumpSeg string) {
+// dumpDir is the directory -dump CSVs are written to (normally the directory
+// holding the .ibt being analysed).
+func analyzeSingleLap(laps []analysis.Lap, lapNum int, segs []trackmap.Segment, brakeEntries pb.BrakeEntryMap, pbPhases []pb.PBPhase, dumpSeg, dumpDir string) {
 	var lap *analysis.Lap
 	if lapNum > 0 {
 		lap = findAnalyzeLap(laps, lapNum)
@@ -594,8 +617,8 @@ func analyzeSingleLap(laps []analysis.Lap, lapNum int, segs []trackmap.Segment, 
 		if segIdx < 0 {
 			analyzeDie("segment %q not found — available: %s", dumpSeg, segmentNames(segs))
 		}
-		csvName := fmt.Sprintf("%s_lap%d.csv", segs[segIdx].Name, lap.Number)
-		csvFile, err := os.Create(csvName)
+		csvPath := dumpSegmentPath(dumpDir, segs[segIdx].Name, lap.Number)
+		csvFile, err := os.Create(csvPath)
 		if err != nil {
 			analyzeDie("creating CSV: %v", err)
 		}
@@ -605,11 +628,22 @@ func analyzeSingleLap(laps []analysis.Lap, lapNum int, segs []trackmap.Segment, 
 		if err := analysis.DumpSegmentCSV(csvFile, lap, segs, segIdx, cfg); err != nil {
 			analyzeDie("writing CSV: %v", err)
 		}
-		fmt.Printf("Dumped %s telemetry → %s\n", segs[segIdx].Name, csvName)
+		fmt.Printf("Dumped %s telemetry → %s\n", segs[segIdx].Name, csvPath)
 	}
 }
 
 // segmentNames returns a comma-separated list of segment names for error messages.
+// dumpSegmentPath builds the output path for a -dump CSV. An empty dir yields
+// a bare filename (current directory), which is what tests and a caller with no
+// .ibt context expect.
+func dumpSegmentPath(dir, segName string, lapNumber int) string {
+	name := fmt.Sprintf("%s_lap%d.csv", segName, lapNumber)
+	if dir == "" {
+		return name
+	}
+	return filepath.Join(dir, name)
+}
+
 func segmentNames(segs []trackmap.Segment) string {
 	names := make([]string, len(segs))
 	for i, s := range segs {
@@ -1100,7 +1134,9 @@ func nthLatestIbtFile(dir string, n int) (string, error) {
 	}
 	var files []ibtEntry
 	for _, e := range entries {
-		if e.IsDir() || filepath.Ext(e.Name()) != ".ibt" {
+		// Case-insensitive: Windows filesystems are, so a "SESSION.IBT" would
+		// otherwise be silently skipped and reported as "no .ibt files found".
+		if e.IsDir() || !strings.EqualFold(filepath.Ext(e.Name()), ".ibt") {
 			continue
 		}
 		info, err := e.Info()
