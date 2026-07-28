@@ -107,6 +107,16 @@ Laps:
   Lap  2: 1:07.500 [flying lap]
   Lap  3: 1:07.102 [flying lap]
 
+Sectors:
+
+  Lap           S1        S2        S3         Lap
+  ------ --------- --------- ---------  ----------
+  2        22.104    23.291    22.105     1:07.500
+  3        22.011*   23.402    21.689*    1:07.102
+  best      22.011    23.291    21.689    1:06.991
+
+  Theoretical best 1:06.991 from sectors set on laps 3 2 3
+
 Selecting best lap: Lap 2 (1:07.500)
 
  Name | Phase | Spd         | OnBrk | PkBrk | Thr% | LatG | Wheel° | Corr | ABS  | Lock | Spin | Coast
@@ -129,6 +139,10 @@ Corner Exit -> Straight Peak:
   Corner  ExitSpd  Straight  PeakSpd
   T1       112.0   S2         198.4
 ```
+
+### Sector table
+
+Per-sector times for every flying lap, using **iRacing's own sector boundaries** (read from the session YAML's `SplitTimeInfo` block), so they agree with the sim's timing. The fastest time in each sector is marked `*`, and the `best` row sums to the theoretical best lap — the time available if you strung your best sectors together. Shown even when no track map exists.
 
 ### Segment table columns
 
@@ -294,7 +308,7 @@ go test -tags e2e -v ./internal/launcher/ -run TestE2E_FullStack -timeout 120s  
 | `internal/config` | Config loading and validation | [README](internal/config/README.md) |
 | `internal/launcher` | Process spawn/kill/status via `tasklist`/`taskkill` | [README](internal/launcher/README.md) |
 | `internal/ibt` | Low-level `.ibt` binary parser | [README](internal/ibt/README.md) |
-| `internal/analysis` | Lap extraction, phase-based segment stats, brake entry detection | [README](internal/analysis/README.md) |
+| `internal/analysis` | Lap extraction, phase-based segment stats, brake entry detection, sector times | [README](internal/analysis/README.md) |
 | `internal/trackmap` | GPS-based corner detection; `trackmap.json` store | [README](internal/trackmap/README.md) |
 | `internal/pb` | Personal best tracking; `pb.json` store | [README](internal/pb/README.md) |
 | `internal/notes` | Voice note types and JSON persistence | [README](internal/notes/README.md) |

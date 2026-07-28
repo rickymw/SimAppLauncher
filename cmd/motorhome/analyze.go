@@ -404,6 +404,11 @@ func RunAnalyze(args []string, cfg config.Config, trackmapPath, pbPath string) {
 	}
 	fmt.Println()
 
+	// Sector times use iRacing's own SplitTimeInfo boundaries, so they line up
+	// with the sim's timing rather than with MotorHome's detected segments.
+	// Absent from some session types, in which case the table is skipped.
+	printSectorTable(laps, analysis.ParseSectors(f.SessionInfo()))
+
 	// Dumps go next to the .ibt being analysed. A bare filename would resolve
 	// against the current working directory, which is wherever the launcher
 	// happened to start us (Stream Deck gives no useful CWD, and it may not

@@ -12,7 +12,7 @@ Parses the `-config` flag, loads the config file, and dispatches to one of seven
 |---|---|
 | `main.go` | Flag parsing, config load, subcommand dispatch |
 | `analyze.go` | `RunAnalyze` — the analyze subcommand's orchestration only |
-| `analyze_output.go` | All terminal rendering: `analyzeSingleLap`, setup tables, zone/phase/exit-impact/tyre/vs-PB tables |
+| `analyze_output.go` | All terminal rendering: `analyzeSingleLap`, setup tables, sector table, zone/phase/exit-impact/tyre/vs-PB tables |
 | `analyze_pb.go` | Stored-PB rendering for `-lap pb` (`runStoredPB*`, `printStoredPB`) and `phasesToPB` |
 | `analyze_helpers.go` | Lap selection/filtering (`bestAnalyzeLap`, `flyingLapsWithinTime`), `formatMapLine`, path and formatting helpers |
 | `analyze_test.go` | Tests for lap selection and `.ibt` file resolution |

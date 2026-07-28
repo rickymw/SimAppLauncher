@@ -88,7 +88,7 @@ Each package has its own README with full detail. Below is a terse summary with 
 | `internal/config` | `Config`/`App` structs, JSON load, `Validate()` | [README](internal/config/README.md) |
 | `internal/launcher` | `ProcessManager` interface; `RunStart`/`RunStop`/`RunStatus`; `tasklist`/`taskkill`; `SeDebugPrivilege` fallback | [README](internal/launcher/README.md) |
 | `internal/ibt` | Low-level `.ibt` binary parser; `File.Sample(i)` typed accessor | [README](internal/ibt/README.md) |
-| `internal/analysis` | `ExtractLaps`, `ComputePhases`, `ComputeBrakeEntries`, `ComputeTyreSummary`, `DumpSegmentCSV`, `ParseSessionMeta` | [README](internal/analysis/README.md) |
+| `internal/analysis` | `ExtractLaps`, `ComputePhases`, `ComputeBrakeEntries`, `ComputeTyreSummary`, `DumpSegmentCSV`, `ParseSessionMeta`, `ParseSectors`/`ComputeSectorTimes` | [README](internal/analysis/README.md) |
 | `internal/trackmap` | GPS curvature corner detection (`latlon`) with steering/speed/lat-G validation; fallback `lataccel`; `trackmap.json` load/save | [README](internal/trackmap/README.md) |
 | `internal/pb` | Personal best store; `pb.Update` returns true on new PB; `PBPhase` stores per-segment data for delta comparison | [README](internal/pb/README.md) |
 | `internal/notes` | `Note{Timestamp,Text}`/`Session` types; `AppendNote` load→append→save | [README](internal/notes/README.md) |
@@ -117,7 +117,7 @@ Key top-level fields:
 7. Load `pb.json`; capture the existing entry's `Phases` into a local `pbPhases` (used later by the vs-PB delta table) *before* mutating the entry; update if new PB; if new PB and segments available, store phase data (`PBPhase`) and the raw `CarSetup:` YAML block (`Setup` field) for the PB lap; save
 
    `pb.Update` replaces the entry wholesale and preserves only `BrakeEntries` — the previous PB's `Phases`/`Setup` are dropped. That is deliberate: they describe a different, slower lap, and pairing them with the new lap time would make the record self-inconsistent. When a new PB is set with no track map available (so no replacement phases can be computed), a warning is printed to stderr, because the silent consequence is that the *next* session has no vs-PB table.
-8. Print: header (file, driver, car, track) → setup tables (Tyres + Suspension corners parsed from CarSetup YAML) → tyre summary (avg surface temps, end-of-lap wear, hot pressures, brake bias) → map line → PB line → lap list → phase table → vs PB delta table (if stored PB phases exist) → corner exit → straight peak table
+8. Print: header (file, driver, car, track) → setup tables (Tyres + Suspension corners parsed from CarSetup YAML) → tyre summary (avg surface temps, end-of-lap wear, hot pressures, brake bias) → map line → PB line → lap list → sector table → phase table → vs PB delta table (if stored PB phases exist) → corner exit → straight peak table
 
 The full stdout output is also copied to the system clipboard automatically (via `clip.exe` on Windows, `pbcopy` on macOS) — `(copied to clipboard)` is printed to stderr on success. Stdout is teed via an `os.Pipe` swap in `cmd/motorhome/main.go` around the `RunAnalyze` call (helpers in `cmd/motorhome/clipboard.go`); error paths that exit through `analyzeDie` (`os.Exit(1)`) skip the deferred clipboard write by design — partial broken output is intentionally not copied.
 
@@ -150,6 +150,13 @@ Runtime depends on whether the camera is held: ~0.01s when the services are alre
 Killing the hosting `svchost.exe` would be faster and is safely scoped (each service is alone in its svchost group), but both run as `LocalService`/`LocalSystem`, so terminating them non-elevated is expected to fail the same way `pnputil` did. The graceful stop works, so it isn't attempted.
 
 Trade-off: restarts the camera pipeline system-wide (affects any camera in use, not just one device) and won't fix a true USB-level hardware hang — only a full PnP disable/enable or physical unplug/replug can, and that needs admin rights this tool doesn't have.
+
+### Sector table
+`Lap | S1..Sn | Lap` — per-sector times for every flying lap, with a `best` row and a theoretical-best line naming which lap each best sector came from. The fastest time in each sector is marked `*`.
+
+Boundaries come from iRacing's own `SplitTimeInfo:` block in the session YAML (`SectorStartPct` per `SectorNum`), **not** from the detected track map — so they agree with the sim's own timing and are available even when no track map exists. Road America publishes 6 sectors; the count varies per track. Omitted entirely when the block is absent (some session types don't publish it).
+
+Crossing times are linearly interpolated between samples (see `internal/analysis/sectors.go`); snapping to the nearest 60 Hz sample would cost up to 17 ms per boundary. Consequently the sectors sum to a few ms off the official `LapLastLapTime`, so the lap column prints the official time rather than the sum — showing the sum would look like a bug next to the lap list.
 
 ### Phase table columns
 `Name | Phase | Spd (entry→exit km/h) | OnBrk | PkBrk | Thr% | LatG | Wheel° | Corr | ABS | Lock | Spin | Coast`
@@ -226,5 +233,4 @@ All live next to the binary in `G:\RACING\SimAppLauncher\`:
 - Segment names are auto-labelled T1/S1/etc — no way to assign real corner names without hand-editing `trackmap.json`
 - Same-direction corner complexes (e.g. Maggotts/Becketts) are not merged; only direction-reversing chicanes are detected
 - `latlon` geo-method could be improved by using `VelocityX`/`VelocityY` channels (world-frame velocity) to compute heading-change rate instead of GPS curvature — avoids GPS quantisation entirely and should give a cleaner curvature proxy than bin-averaged lat/lon positions
-- Sector times: group segments into logical sectors and show sector time per lap, so the coachable third of the track is immediately visible
 - AI coaching via `-coach` flag: send the segment table, lap list, PB delta, and lap time trend to the Anthropic API and print actionable coaching feedback. Input is ~700 tokens (the existing analyze output as-is). Requires `ANTHROPIC_API_KEY` env var. Use `claude-haiku` for cost (~$0.001 per call).

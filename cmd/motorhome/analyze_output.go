@@ -390,3 +390,103 @@ func printPBComparison(current []analysis.Phase, stored []pb.PBPhase) {
 	}
 	fmt.Println()
 }
+
+// ---- sector times ----
+
+// printSectorTable prints per-sector times for each flying lap, plus a best
+// row showing the fastest time in each sector and the theoretical best lap.
+//
+// Sectors come from iRacing's own SplitTimeInfo, so these boundaries match the
+// sim's timing rather than MotorHome's detected segments — which is the point:
+// it localises where time is being lost before the per-corner tables are read.
+func printSectorTable(laps []analysis.Lap, sectors []analysis.Sector) {
+	if len(sectors) == 0 {
+		return
+	}
+
+	var rows [][]analysis.SectorTime
+	var nums []int
+	var lapTimes []float32
+	for i := range laps {
+		l := &laps[i]
+		if l.Kind != analysis.KindFlying || l.IsPartialStart || l.LapTime <= 0 {
+			continue
+		}
+		st := analysis.ComputeSectorTimes(l, sectors)
+		if len(st) == 0 {
+			continue
+		}
+		rows = append(rows, st)
+		nums = append(nums, l.Number)
+		lapTimes = append(lapTimes, l.LapTime)
+	}
+	if len(rows) == 0 {
+		return
+	}
+
+	best, from := analysis.BestSectorTimes(rows, nums)
+
+	fmt.Println("Sectors:")
+	fmt.Println()
+	fmt.Printf("  %-6s", "Lap")
+	for i := range sectors {
+		fmt.Printf(" %9s", fmt.Sprintf("S%d", i+1))
+	}
+	fmt.Printf("  %10s\n", "Lap")
+	fmt.Printf("  %-6s", "------")
+	for range sectors {
+		fmt.Printf(" %9s", "---------")
+	}
+	fmt.Printf("  %10s\n", "----------")
+
+	for ri, st := range rows {
+		fmt.Printf("  %-6d", nums[ri])
+		for i := range sectors {
+			if i >= len(st) || !st[i].Complete {
+				fmt.Printf(" %9s", "--")
+				continue
+			}
+			// Mark the session-best time in each sector.
+			mark := " "
+			if best[i].Complete && st[i].Seconds == best[i].Seconds && from[i] == nums[ri] {
+				mark = "*"
+			}
+			fmt.Printf(" %8.3f%s", st[i].Seconds, mark)
+		}
+		// The lap column is the official LapLastLapTime, not the sum of the
+		// sectors above it. Summing gives a value a few ms different (boundary
+		// crossings are interpolated), which next to the lap list would read as
+		// a bug rather than as rounding.
+		fmt.Printf("  %10s\n", analysis.FormatLapTime(lapTimes[ri]))
+	}
+
+	// Theoretical best: the sum of the fastest sector times across all laps.
+	var theoretical float32
+	complete := true
+	fmt.Printf("  %-6s", "best")
+	for i := range sectors {
+		if i >= len(best) || !best[i].Complete {
+			fmt.Printf(" %9s", "--")
+			complete = false
+			continue
+		}
+		theoretical += best[i].Seconds
+		fmt.Printf(" %9.3f", best[i].Seconds)
+	}
+	if complete {
+		fmt.Printf("  %10s\n", analysis.FormatLapTime(theoretical))
+	} else {
+		fmt.Printf("  %10s\n", "--")
+	}
+	fmt.Println()
+	if complete {
+		fmt.Printf("  Theoretical best %s from sectors set on laps", analysis.FormatLapTime(theoretical))
+		for i := range best {
+			if from[i] >= 0 {
+				fmt.Printf(" %d", from[i])
+			}
+		}
+		fmt.Println()
+		fmt.Println()
+	}
+}

@@ -45,6 +45,16 @@ Corners with peak steering < 5° get a single "full" phase. `countSteeringCorrec
 
 `ComputeExitImpact` pairs each corner/chicane with the straight segment immediately following it (wrapping from the last segment to the first, since the S/F straight typically follows the final corner) and reports the corner's exit speed (`Phase.SpeedExitKPH` of its last phase) alongside the peak speed reached on that straight (`Phase.PeakSpeedKPH`) — a direct measure of whether a slow exit cost speed down the next straight. Pairs with no computed phases on either side (e.g. a segment straddling a truncated final lap) are skipped.
 
+### Sector times (`sectors.go`)
+
+`ParseSectors` reads iRacing's own sector boundaries out of the session YAML's `SplitTimeInfo:` block (`SectorNum` / `SectorStartPct` pairs), so the sectors match the sim's timing rather than MotorHome's detected segments. Returns nil when the block is absent — some session types omit it.
+
+`ComputeSectorTimes` returns the time spent in each sector on a lap. Boundary crossings are **linearly interpolated** between the samples either side rather than snapped to the nearest sample: at 60 Hz snapping would cost up to 17 ms per boundary, which is visible against lap times quoted to a millisecond. Sectors the lap doesn't fully span (out lap, partial start, recording stopped mid-lap) report `Complete: false` rather than a bogus time.
+
+`BestSectorTimes` reduces per-lap sector times to the fastest in each sector plus the lap it came from; the sum is the theoretical best lap.
+
+Note the sum of a lap's sectors differs from its official `LapLastLapTime` by a few ms (interpolation), so the CLI prints the official time in the lap column rather than the sum.
+
 ### Segment CSV dump (`dump.go`)
 
 `DumpSegmentCSV` writes a downsampled CSV of telemetry for a single segment, suitable for AI analysis. Output is 20Hz by default (every 3rd sample) with 1 second of context before/after the segment. Columns: `Dist%,Time,Speed,Throttle,Brake,Steer,Gear,LatG,LongG,ABS,Coast`. A typical corner produces ~200 rows — compact enough for direct AI consumption.
