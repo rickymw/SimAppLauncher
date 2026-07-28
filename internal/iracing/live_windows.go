@@ -60,11 +60,11 @@ const (
 	varBufOffBufOff = 4
 
 	// Variable header size and field offsets within each header
-	varHeaderSize    = 144
-	vhOffType        = 0
-	vhOffDataOffset  = 4
-	vhOffCount       = 8 // number of array entries (1 for scalars, >1 for CarIdx* arrays)
-	vhOffName        = 16 // 32 bytes, null-terminated
+	varHeaderSize   = 144
+	vhOffType       = 0
+	vhOffDataOffset = 4
+	vhOffCount      = 8  // number of array entries (1 for scalars, >1 for CarIdx* arrays)
+	vhOffName       = 16 // 32 bytes, null-terminated
 
 	// iRacing variable type codes
 	varTypeInt    = 2
@@ -83,11 +83,11 @@ const (
 )
 
 var (
-	modKernel32        = syscall.NewLazyDLL("kernel32.dll")
+	modKernel32         = syscall.NewLazyDLL("kernel32.dll")
 	procOpenFileMapping = modKernel32.NewProc("OpenFileMappingW")
-	procMapViewOfFile  = modKernel32.NewProc("MapViewOfFile")
+	procMapViewOfFile   = modKernel32.NewProc("MapViewOfFile")
 	procUnmapViewOfFile = modKernel32.NewProc("UnmapViewOfFile")
-	procCloseHandle    = modKernel32.NewProc("CloseHandle")
+	procCloseHandle     = modKernel32.NewProc("CloseHandle")
 )
 
 type varInfo struct {

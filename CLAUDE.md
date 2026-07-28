@@ -22,6 +22,18 @@ Tests must be written in the same pass as the code — never left as a follow-up
 ## Commit rule
 After completing a feature, bug fix, or any other coherent code change, commit and push to `origin` without waiting for explicit permission. The repo is single-developer, master-only — every change should land. Stage just the files relevant to the change (do not bundle unrelated work-in-progress) and write a focused conventional-style commit message.
 
+## Formatting rule
+Run `gofmt -w` on every file you touch, before committing. The whole tree was
+brought to `gofmt` compliance on 2026-07-28 (22 files were drifting); keep it
+that way so `gofmt -l .` stays empty and formatting noise never mixes into a
+behavioural diff.
+
+Note that `go vet ./...` does **not** pass cleanly and cannot be used as a gate:
+three `unsafe.Pointer` conversions in `cmd/motorhome/notes.go` and
+`internal/iracing/live_windows.go` are deliberate and correct (OS-owned memory
+from Win32 callbacks and `MapViewOfFile`). Their `//nolint:govet` comments are
+golangci-lint syntax and do not suppress `go vet`.
+
 ## Build
 ```powershell
 go build -o motorhome.exe ./cmd/motorhome

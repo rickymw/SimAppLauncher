@@ -24,10 +24,10 @@ var (
 )
 
 const (
-	processTerminate        = 0x0001
-	tokenAdjustPrivileges   = 0x0020
-	tokenQuery              = 0x0008
-	sePrivilegeEnabled      = 0x0002
+	processTerminate      = 0x0001
+	tokenAdjustPrivileges = 0x0020
+	tokenQuery            = 0x0008
+	sePrivilegeEnabled    = 0x0002
 )
 
 type luid struct {

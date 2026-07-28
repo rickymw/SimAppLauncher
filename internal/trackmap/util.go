@@ -189,7 +189,7 @@ func mergeChicanes(segs []rawSeg, trackLengthM float64) []rawSeg {
 	// Max total chicane length: corners that are individually large and far apart
 	// (e.g. Redgate + Hollywood at Donington) are separate corners, not a chicane.
 	const maxChicaneM = 400.0
-	maxGap := int(0.018 * numBuckets) // fallback: 1.8% ≈ 18 buckets
+	maxGap := int(0.018 * numBuckets)  // fallback: 1.8% ≈ 18 buckets
 	maxTotal := int(0.15 * numBuckets) // fallback: 15%
 	if trackLengthM > 0 {
 		maxGap = max(1, int(targetGapM/trackLengthM*float64(numBuckets)))

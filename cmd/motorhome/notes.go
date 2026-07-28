@@ -44,7 +44,7 @@ var (
 	procPostQuitMessage     = modUser32.NewProc("PostQuitMessage")
 	procPostThreadMessageW  = modUser32.NewProc("PostThreadMessageW")
 	procGetCurrentThreadId  = modKernel32Notes.NewProc("GetCurrentThreadId")
-	procBeep               = modKernel32Notes.NewProc("Beep")
+	procBeep                = modKernel32Notes.NewProc("Beep")
 )
 
 type winMsg struct {

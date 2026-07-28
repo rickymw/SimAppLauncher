@@ -18,9 +18,9 @@ const (
 	maxRecordSecs = 60
 
 	// Derived audio format constants — all determined at compile time.
-	blockAlign     = numChannels * (bitsPerSample / 8)              // 2 bytes per sample
-	avgBytesPerSec = sampleRate * blockAlign                        // 32000 bytes/s
-	bufferBytes    = avgBytesPerSec * maxRecordSecs                 // 1,920,000
+	blockAlign     = numChannels * (bitsPerSample / 8) // 2 bytes per sample
+	avgBytesPerSec = sampleRate * blockAlign           // 32000 bytes/s
+	bufferBytes    = avgBytesPerSec * maxRecordSecs    // 1,920,000
 
 	waveMapper    = 0xFFFFFFFF
 	waveFmtPCM    = 1

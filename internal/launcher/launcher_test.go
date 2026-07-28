@@ -15,9 +15,9 @@ type mockPM struct {
 	killFn    func(name string) error
 }
 
-func (m *mockPM) Spawn(app config.App) SpawnResult             { return m.spawnFn(app) }
-func (m *mockPM) IsRunning(name string) (int, bool, error)     { return m.runningFn(name) }
-func (m *mockPM) Kill(name string) error                       { return m.killFn(name) }
+func (m *mockPM) Spawn(app config.App) SpawnResult         { return m.spawnFn(app) }
+func (m *mockPM) IsRunning(name string) (int, bool, error) { return m.runningFn(name) }
+func (m *mockPM) Kill(name string) error                   { return m.killFn(name) }
 
 func twoAppConfig() config.Config {
 	return config.Config{

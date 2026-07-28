@@ -32,13 +32,13 @@ const (
 )
 
 type winServiceStatus struct {
-	ServiceType            uint32
-	CurrentState           uint32
-	ControlsAccepted       uint32
-	Win32ExitCode          uint32
+	ServiceType             uint32
+	CurrentState            uint32
+	ControlsAccepted        uint32
+	Win32ExitCode           uint32
 	ServiceSpecificExitCode uint32
-	CheckPoint             uint32
-	WaitHint               uint32
+	CheckPoint              uint32
+	WaitHint                uint32
 }
 
 // frameServerServices are the Windows services that mediate camera access.

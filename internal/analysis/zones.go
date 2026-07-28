@@ -11,8 +11,8 @@ const (
 	// NumZones is the number of equal-distance track sections per lap.
 	NumZones = 20 // each zone = 5% of LapDistPct
 
-	ms2kmh           = 3.6      // m/s → km/h
-	grav     float32 = 9.81     // m/s² per g
+	ms2kmh         = 3.6  // m/s → km/h
+	grav   float32 = 9.81 // m/s² per g
 
 	// Input thresholds used for BrakePct / ThrottlePct fraction computation.
 	brakeOnThreshold   = float32(0.02) // brake pressure > 2% counts as "on brakes"
@@ -46,7 +46,7 @@ type Zone struct {
 	SampleCount   int     // total samples bucketed into this zone
 
 	// Wheel lockup/spin detection.
-	LockupSamples   int // samples where any wheel speed < 95% of vehicle speed under braking
+	LockupSamples    int // samples where any wheel speed < 95% of vehicle speed under braking
 	WheelspinSamples int // samples where any wheel speed > 105% of vehicle speed under power
 }
 

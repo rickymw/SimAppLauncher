@@ -67,17 +67,17 @@ func NewState() *State {
 // ---- Windows API constants ----
 
 const (
-	ridevInputSink   = 0x00000100 // receive input even when not in foreground
-	rimTypeHID       = 2          // raw input from a generic HID device
-	ridInput         = 0x10000003 // GetRawInputData: get the full input packet
-	ridiDeviceName   = 0x20000007 // GetRawInputDeviceInfoW: get device name string
+	ridevInputSink    = 0x00000100 // receive input even when not in foreground
+	rimTypeHID        = 2          // raw input from a generic HID device
+	ridInput          = 0x10000003 // GetRawInputData: get the full input packet
+	ridiDeviceName    = 0x20000007 // GetRawInputDeviceInfoW: get device name string
 	ridiPreparsedData = 0x20000005 // GetRawInputDeviceInfoW: get preparsed HID data
 
-	hidUsagePageGenericDesktop = 0x01
-	hidUsageJoystick           = 0x04
-	hidUsageGamePad            = 0x05
+	hidUsagePageGenericDesktop  = 0x01
+	hidUsageJoystick            = 0x04
+	hidUsageGamePad             = 0x05
 	hidUsageMultiAxisController = 0x08
-	hidUsagePageButton         = 0x09
+	hidUsagePageButton          = 0x09
 
 	hidpInput         = 0          // HidP_Input report type
 	hidpStatusSuccess = 0x00110000 // HIDP_STATUS_SUCCESS
@@ -129,15 +129,15 @@ func createHiddenWindow() (uintptr, error) {
 	const wsExToolWindow = 0x00000080
 	const wsPopup = 0x80000000
 	hwnd, _, lastErr := procCreateWindowExW.Call(
-		wsExToolWindow,                      // dwExStyle
-		uintptr(unsafe.Pointer(cls)),        // lpClassName
-		0,                                   // lpWindowName (NULL)
-		wsPopup,                             // dwStyle
-		0, 0, 0, 0,                          // x, y, width, height
-		0,                                   // hWndParent (NULL)
-		0,                                   // hMenu
-		0,                                   // hInstance
-		0,                                   // lpParam
+		wsExToolWindow,               // dwExStyle
+		uintptr(unsafe.Pointer(cls)), // lpClassName
+		0,                            // lpWindowName (NULL)
+		wsPopup,                      // dwStyle
+		0, 0, 0, 0,                   // x, y, width, height
+		0, // hWndParent (NULL)
+		0, // hMenu
+		0, // hInstance
+		0, // lpParam
 	)
 	if hwnd == 0 {
 		return 0, fmt.Errorf("CreateWindowExW: %w", lastErr)

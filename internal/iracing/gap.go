@@ -7,10 +7,10 @@ import "math"
 // gives a monotonically increasing cumulative position so cars a full lap
 // apart are not mistaken for being adjacent on-track.
 type CarPos struct {
-	CarIdx        int32
-	LapDistPct    float32
-	LapCompleted  int32
-	EstTime       float32 // seconds from S/F to this car's current position on a representative lap
+	CarIdx       int32
+	LapDistPct   float32
+	LapCompleted int32
+	EstTime      float32 // seconds from S/F to this car's current position on a representative lap
 }
 
 // GapTo describes the gap from the player's car to another car.

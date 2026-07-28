@@ -546,9 +546,9 @@ func TestTrimASCII(t *testing.T) {
 		want  string
 	}{
 		{[]byte{'h', 'e', 'l', 'l', 'o', 0, 0, 0}, "hello"}, // null-terminated
-		{[]byte{'a', 'b', 'c'}, "abc"},                        // no null byte — else branch
-		{[]byte{0, 'x'}, ""},                                  // null at index 0
-		{[]byte{}, ""},                                        // empty slice
+		{[]byte{'a', 'b', 'c'}, "abc"},                      // no null byte — else branch
+		{[]byte{0, 'x'}, ""},                                // null at index 0
+		{[]byte{}, ""},                                      // empty slice
 	}
 	for _, tc := range cases {
 		if got := trimASCII(tc.input); got != tc.want {
@@ -666,22 +666,22 @@ func TestOpen_VarExceedsRow(t *testing.T) {
 
 const (
 	extNumVars    = 5
-	extBufLen     = 44 // Timing(8)+Active(1)+pad(3)+Flags(4)+Tyres3(12)+Heights2(16)
+	extBufLen     = 44                                 // Timing(8)+Active(1)+pad(3)+Flags(4)+Tyres3(12)+Heights2(16)
 	extDataOffset = tfVarHeaderOffset + extNumVars*144 // 208 + 720 = 928
 	extNumSamples = 3
 
-	extOffsetTiming  = 0  // float64 (8 bytes)
-	extOffsetActive  = 8  // bool    (1 byte)
+	extOffsetTiming = 0 // float64 (8 bytes)
+	extOffsetActive = 8 // bool    (1 byte)
 	// 3 bytes implicit padding to align Flags to 4
 	extOffsetFlags   = 12 // bitfield (4 bytes)
 	extOffsetTyres   = 16 // int32[3] (12 bytes)
 	extOffsetHeights = 28 // float64[2] (16 bytes)
 )
 
-func timingForRow(i int) float64    { return float64(i) * 2.5 }
-func activeForRow(i int) bool       { return i%2 == 0 }
-func flagsForRow(i int) uint32      { return 1 << uint(i) }
-func tyresForRow(i, j int) int32    { return int32(i*10 + j) }
+func timingForRow(i int) float64     { return float64(i) * 2.5 }
+func activeForRow(i int) bool        { return i%2 == 0 }
+func flagsForRow(i int) uint32       { return 1 << uint(i) }
+func tyresForRow(i, j int) int32     { return int32(i*10 + j) }
 func heightsForRow(i, j int) float64 { return float64(i)*2.0 + float64(j)*0.5 }
 
 func buildExtendedTestFile(t *testing.T) string {

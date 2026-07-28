@@ -272,4 +272,3 @@ func TestNthLatestIbtFile_IgnoresNonIbt(t *testing.T) {
 		t.Errorf("nthLatestIbtFile = %q, want session.ibt", filepath.Base(got))
 	}
 }
-

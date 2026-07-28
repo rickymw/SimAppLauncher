@@ -21,10 +21,10 @@ func TestResolveSegmentName(t *testing.T) {
 		want  int
 	}{
 		{"T1", 1},
-		{"t1", 1},   // case-insensitive
+		{"t1", 1}, // case-insensitive
 		{"T2", 3},
 		{"S1", 0},
-		{"1", 0},    // 1-based index
+		{"1", 0}, // 1-based index
 		{"2", 1},
 		{"4", 3},
 		{"0", -1},   // 0 is invalid (1-based)

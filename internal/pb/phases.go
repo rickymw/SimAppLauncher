@@ -7,8 +7,8 @@ package pb
 // Fields mirror analysis.Phase but are JSON-serialisable and decoupled from
 // the analysis package to avoid circular imports.
 type PBPhase struct {
-	SegName  string `json:"segName"`
-	Kind     string `json:"kind"` // "entry", "mid", "exit", "full"
+	SegName string `json:"segName"`
+	Kind    string `json:"kind"` // "entry", "mid", "exit", "full"
 
 	SpeedEntryKPH float32 `json:"speedEntryKPH"`
 	SpeedExitKPH  float32 `json:"speedExitKPH"`

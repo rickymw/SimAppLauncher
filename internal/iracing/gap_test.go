@@ -7,8 +7,8 @@ import (
 
 // At 90s lap pace, 0.01 of a lap ≈ 0.9s. Asserted with a small tolerance.
 const (
-	defaultLap  = float32(90)
-	gapEpsilon  = float32(0.05)
+	defaultLap = float32(90)
+	gapEpsilon = float32(0.05)
 )
 
 func TestComputeGaps_SameLapAheadAndBehind(t *testing.T) {
@@ -59,9 +59,9 @@ func TestComputeGaps_WrapsAroundSFLine(t *testing.T) {
 func TestComputeGaps_SkipsInvalidAndSelf(t *testing.T) {
 	me := CarPos{CarIdx: 2, LapDistPct: 0.5}
 	others := []CarPos{
-		{CarIdx: 2, LapDistPct: 0.5},   // same as me — must be skipped
-		{CarIdx: 3, LapDistPct: -1},    // invalid — must be skipped
-		{CarIdx: 4, LapDistPct: 0.55},  // only valid candidate
+		{CarIdx: 2, LapDistPct: 0.5},  // same as me — must be skipped
+		{CarIdx: 3, LapDistPct: -1},   // invalid — must be skipped
+		{CarIdx: 4, LapDistPct: 0.55}, // only valid candidate
 	}
 	ahead, behind := ComputeGaps(me, others, defaultLap)
 	if ahead.CarIdx != 4 {

@@ -153,7 +153,7 @@ func parse(f *os.File) (*File, error) {
 	}
 	// Sanity bounds against corrupt/malformed headers that could cause huge allocations.
 	const maxSessionInfoLen = 10 * 1024 * 1024 // 10 MB — real files are ~100 KB
-	const maxNumVars = 4096                     // real files have ~300
+	const maxNumVars = 4096                    // real files have ~300
 	if rawHdr.SessionInfoLen < 0 || rawHdr.SessionInfoLen > maxSessionInfoLen {
 		return nil, fmt.Errorf("ibt: SessionInfoLen %d out of range [0, %d]: %w",
 			rawHdr.SessionInfoLen, maxSessionInfoLen, ErrInvalidFormat)

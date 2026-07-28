@@ -353,7 +353,7 @@ func TestConfidenceRank_Order(t *testing.T) {
 func TestAddSession_CapAt50(t *testing.T) {
 	tm := &TrackMap{}
 	for i := 0; i < 60; i++ {
-		tm.AddSession(string(rune('A' + i%26)) + string(rune('0'+i%10)))
+		tm.AddSession(string(rune('A'+i%26)) + string(rune('0'+i%10)))
 	}
 	if len(tm.SeenSessions) > maxSeenSessions {
 		t.Errorf("SeenSessions len = %d, want <= %d", len(tm.SeenSessions), maxSeenSessions)
@@ -424,8 +424,8 @@ func makeOvalSamples(n int, lat0, lon0 float64) []Sample {
 	samples := make([]Sample, n)
 	for i := 0; i < n; i++ {
 		t := 2 * math.Pi * float64(i) / float64(n)
-		xM := semiMinor * math.Sin(t)  // x in metres
-		yM := semiMajor * math.Cos(t)  // y in metres
+		xM := semiMinor * math.Sin(t) // x in metres
+		yM := semiMajor * math.Cos(t) // y in metres
 		samples[i] = Sample{
 			LapDistPct: float32(i) / float32(n),
 			Lat:        lat0 + yM*degPerMetreLat,
@@ -509,10 +509,10 @@ func TestDetectFromMultipleLatLon_MultiLap(t *testing.T) {
 // GPS-artifact corner at bucket 0 is merged into the following straight.
 func TestTrimWraparoundCorner_RemovesTinyCornerAtStart(t *testing.T) {
 	segs := []rawSeg{
-		{isCorner: true, start: 0, end: 4, latSign: 0.5},   // 5 buckets = tiny
+		{isCorner: true, start: 0, end: 4, latSign: 0.5},    // 5 buckets = tiny
 		{isCorner: false, start: 5, end: 100, latSign: 0},   // straight
-		{isCorner: true, start: 101, end: 200, latSign: -1},  // real corner
-		{isCorner: false, start: 201, end: 999, latSign: 0},  // straight
+		{isCorner: true, start: 101, end: 200, latSign: -1}, // real corner
+		{isCorner: false, start: 201, end: 999, latSign: 0}, // straight
 	}
 	result := trimWraparoundCorner(segs, 3000.0) // 5 buckets × 3m = 15m < 50m threshold
 	// First segment should now be a straight (the tiny corner was merged).
@@ -528,7 +528,7 @@ func TestTrimWraparoundCorner_RemovesTinyCornerAtStart(t *testing.T) {
 // at the start of the track (longer than the threshold) is preserved.
 func TestTrimWraparoundCorner_PreservesLargeCorner(t *testing.T) {
 	segs := []rawSeg{
-		{isCorner: true, start: 0, end: 80, latSign: 0.5},  // 81 buckets ≈ 243m > 50m
+		{isCorner: true, start: 0, end: 80, latSign: 0.5}, // 81 buckets ≈ 243m > 50m
 		{isCorner: false, start: 81, end: 999, latSign: 0},
 	}
 	result := trimWraparoundCorner(segs, 3000.0)
@@ -674,8 +674,8 @@ func TestMergeChicanes_RejectsOversizedChicane(t *testing.T) {
 	segs := []rawSeg{
 		{isCorner: false, start: 0, end: 99, latSign: 0},
 		{isCorner: true, start: 100, end: 300, latSign: 1.0},  // 201 buckets
-		{isCorner: false, start: 301, end: 310, latSign: 0},    // 10-bucket gap
-		{isCorner: true, start: 311, end: 510, latSign: -1.0},  // 200 buckets
+		{isCorner: false, start: 301, end: 310, latSign: 0},   // 10-bucket gap
+		{isCorner: true, start: 311, end: 510, latSign: -1.0}, // 200 buckets
 		{isCorner: false, start: 511, end: 999, latSign: 0},
 	}
 
@@ -750,4 +750,3 @@ func TestSearchThresholds_MatchesTarget(t *testing.T) {
 		t.Errorf("expected 3 corners, got %d", got)
 	}
 }
-

@@ -343,9 +343,9 @@ func makeLap(firstSpeed, lastSpeed float32, n int) *Lap {
 
 func TestFinalizeLap_Kinds(t *testing.T) {
 	cases := []struct {
-		name                string
-		firstSpd, lastSpd   float32
-		want                LapKind
+		name              string
+		firstSpd, lastSpd float32
+		want              LapKind
 	}{
 		{"flying", 50, 50, KindFlying},
 		{"out lap", 0, 50, KindOutLap},
@@ -497,11 +497,11 @@ func uniformLap(n int, speed, throttle, brake float32) *Lap {
 	samples := make([]SampleData, n)
 	for i := range samples {
 		samples[i] = SampleData{
-			LapDistPct: float32(i) / float32(n),
+			LapDistPct:  float32(i) / float32(n),
 			SessionTime: float64(i),
-			Speed:      speed,
-			Throttle:   throttle,
-			Brake:      brake,
+			Speed:       speed,
+			Throttle:    throttle,
+			Brake:       brake,
 		}
 	}
 	lap := &Lap{Samples: samples}
@@ -582,8 +582,8 @@ func TestZoneStats_BrakePctFraction(t *testing.T) {
 		brk := float32(0)
 		thr := float32(1.0)
 		if pct < 0.05 && i%2 == 0 {
-			brk = 0.5  // brake on for even-indexed samples in zone 0
-			thr = 0.5  // below full-throttle threshold
+			brk = 0.5 // brake on for even-indexed samples in zone 0
+			thr = 0.5 // below full-throttle threshold
 		}
 		samples[i] = SampleData{LapDistPct: pct, Speed: 30, Brake: brk, Throttle: thr}
 	}
@@ -724,10 +724,10 @@ type lbRawVarHeader struct {
 
 // lbSample is one row of data for the lap builder file.
 type lbSample struct {
-	LapDistPct      float32
-	Speed           float32
-	SessionTime     float64
-	LapLastLapTime  float32 // 0 means "not set" (channel present but zero)
+	LapDistPct     float32
+	Speed          float32
+	SessionTime    float64
+	LapLastLapTime float32 // 0 means "not set" (channel present but zero)
 }
 
 func lbPad32(s string) [32]byte { var b [32]byte; copy(b[:], s); return b }
@@ -738,7 +738,7 @@ const (
 	lbSessionInfoLen    = 64
 	lbVarHeaderOffset   = 208
 	lbNumVars           = 4
-	lbBufLen            = 20 // LapDistPct(4) + Speed(4) + SessionTime(8) + LapLastLapTime(4)
+	lbBufLen            = 20                                // LapDistPct(4) + Speed(4) + SessionTime(8) + LapLastLapTime(4)
 	lbDataOffset        = lbVarHeaderOffset + lbNumVars*144 // 208 + 576 = 784
 
 	// VarType constants (mirroring ibt package values)
@@ -1167,13 +1167,13 @@ func TestComputeTyreSummary_Averages(t *testing.T) {
 			LFtempL: 80, LFtempM: 85, LFtempR: 78,
 			LFwearL: 1.0, LFwearM: 1.0, LFwearR: 1.0,
 			LFpressure: 170,
-			BrakeBias: 0.52,
+			BrakeBias:  0.52,
 		},
 		{
 			LFtempL: 90, LFtempM: 95, LFtempR: 88,
 			LFwearL: 0.99, LFwearM: 0.98, LFwearR: 0.97,
 			LFpressure: 180,
-			BrakeBias: 0.54,
+			BrakeBias:  0.54,
 		},
 	}
 	lap := &Lap{Samples: samples}
@@ -1294,7 +1294,7 @@ func TestZoneStats_LockupDetection(t *testing.T) {
 	for i := range samples {
 		pct := float32(i) / float32(len(samples))
 		samples[i] = SampleData{
-			LapDistPct: pct,
+			LapDistPct:  pct,
 			SessionTime: float64(i),
 			Speed:       40, // m/s
 			Brake:       0.5,
@@ -1326,7 +1326,7 @@ func TestZoneStats_WheelspinDetection(t *testing.T) {
 	for i := range samples {
 		pct := float32(i) / float32(len(samples))
 		samples[i] = SampleData{
-			LapDistPct: pct,
+			LapDistPct:  pct,
 			SessionTime: float64(i),
 			Speed:       30, // m/s
 			Throttle:    0.9,
@@ -1351,4 +1351,3 @@ func TestZoneStats_WheelspinDetection(t *testing.T) {
 		t.Errorf("zone 1: WheelspinSamples = %d, want 0", zones[1].WheelspinSamples)
 	}
 }
-

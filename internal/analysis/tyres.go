@@ -75,39 +75,39 @@ func ComputeTyreSummary(lap *Lap) TyreSummary {
 	// For right-side tyres (RF, RR): tempL = inner, tempR = outer.
 	return TyreSummary{
 		LF: CornerTyres{
-			TempOuter: float32(sumLFtempL / fn), // tempL = outer for left-side
-			TempMid:   float32(sumLFtempM / fn),
-			TempInner: float32(sumLFtempR / fn), // tempR = inner for left-side
-			WearOuter: last.LFwearL,
-			WearMid:   last.LFwearM,
-			WearInner: last.LFwearR,
+			TempOuter:   float32(sumLFtempL / fn), // tempL = outer for left-side
+			TempMid:     float32(sumLFtempM / fn),
+			TempInner:   float32(sumLFtempR / fn), // tempR = inner for left-side
+			WearOuter:   last.LFwearL,
+			WearMid:     last.LFwearM,
+			WearInner:   last.LFwearR,
 			PressureKPa: float32(sumLFpress / fn),
 		},
 		RF: CornerTyres{
-			TempInner: float32(sumRFtempL / fn), // tempL = inner for right-side
-			TempMid:   float32(sumRFtempM / fn),
-			TempOuter: float32(sumRFtempR / fn), // tempR = outer for right-side
-			WearInner: last.RFwearL,
-			WearMid:   last.RFwearM,
-			WearOuter: last.RFwearR,
+			TempInner:   float32(sumRFtempL / fn), // tempL = inner for right-side
+			TempMid:     float32(sumRFtempM / fn),
+			TempOuter:   float32(sumRFtempR / fn), // tempR = outer for right-side
+			WearInner:   last.RFwearL,
+			WearMid:     last.RFwearM,
+			WearOuter:   last.RFwearR,
 			PressureKPa: float32(sumRFpress / fn),
 		},
 		LR: CornerTyres{
-			TempOuter: float32(sumLRtempL / fn), // tempL = outer for left-side
-			TempMid:   float32(sumLRtempM / fn),
-			TempInner: float32(sumLRtempR / fn), // tempR = inner for left-side
-			WearOuter: last.LRwearL,
-			WearMid:   last.LRwearM,
-			WearInner: last.LRwearR,
+			TempOuter:   float32(sumLRtempL / fn), // tempL = outer for left-side
+			TempMid:     float32(sumLRtempM / fn),
+			TempInner:   float32(sumLRtempR / fn), // tempR = inner for left-side
+			WearOuter:   last.LRwearL,
+			WearMid:     last.LRwearM,
+			WearInner:   last.LRwearR,
 			PressureKPa: float32(sumLRpress / fn),
 		},
 		RR: CornerTyres{
-			TempInner: float32(sumRRtempL / fn), // tempL = inner for right-side
-			TempMid:   float32(sumRRtempM / fn),
-			TempOuter: float32(sumRRtempR / fn), // tempR = outer for right-side
-			WearInner: last.RRwearL,
-			WearMid:   last.RRwearM,
-			WearOuter: last.RRwearR,
+			TempInner:   float32(sumRRtempL / fn), // tempL = inner for right-side
+			TempMid:     float32(sumRRtempM / fn),
+			TempOuter:   float32(sumRRtempR / fn), // tempR = outer for right-side
+			WearInner:   last.RRwearL,
+			WearMid:     last.RRwearM,
+			WearOuter:   last.RRwearR,
 			PressureKPa: float32(sumRRpress / fn),
 		},
 		BrakeBias: float32(sumBrakeBias / fn),

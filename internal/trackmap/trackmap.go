@@ -160,14 +160,14 @@ type legacySegment struct {
 
 // legacyTrackMap mirrors TrackMap but uses legacySegment for deserialization.
 type legacyTrackMap struct {
-	TrackLengthM float64          `json:"trackLengthM"`
-	Source       string           `json:"source"`
-	DetectedFrom string           `json:"detectedFrom"`
-	GeoMethod    string           `json:"geoMethod,omitempty"`
-	LapsUsed     int              `json:"lapsUsed"`
-	SessionsUsed int              `json:"sessionsUsed"`
-	SeenSessions []string         `json:"seenSessions"`
-	Segments     []legacySegment  `json:"segments"`
+	TrackLengthM float64         `json:"trackLengthM"`
+	Source       string          `json:"source"`
+	DetectedFrom string          `json:"detectedFrom"`
+	GeoMethod    string          `json:"geoMethod,omitempty"`
+	LapsUsed     int             `json:"lapsUsed"`
+	SessionsUsed int             `json:"sessionsUsed"`
+	SeenSessions []string        `json:"seenSessions"`
+	Segments     []legacySegment `json:"segments"`
 }
 
 // Load reads a TrackMapFile from path.

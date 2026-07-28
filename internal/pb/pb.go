@@ -11,15 +11,15 @@ import (
 // PersonalBest holds the fastest recorded lap for a single car/track combo,
 // plus accumulated per-corner brake onset positions for this car/track.
 type PersonalBest struct {
-	LapTime          float32      `json:"lapTime"`                    // seconds
-	LapTimeFormatted string       `json:"lapTimeFormatted"`           // e.g. "2:11.367"
-	Date             string       `json:"date"`                       // "YYYY-MM-DD"
-	Weather          string       `json:"weather"`                    // e.g. "Partly Cloudy, 27°C"
-	Car              string       `json:"car"`
-	Track            string       `json:"track"`
-	BrakeEntries     BrakeEntryMap `json:"brakeEntries,omitempty"`   // segment name → brake onset
-	Phases           []PBPhase     `json:"phases,omitempty"`          // phase data from PB lap
-	Setup            string        `json:"setup,omitempty"`           // raw "CarSetup:" YAML block from the PB session
+	LapTime          float32       `json:"lapTime"`          // seconds
+	LapTimeFormatted string        `json:"lapTimeFormatted"` // e.g. "2:11.367"
+	Date             string        `json:"date"`             // "YYYY-MM-DD"
+	Weather          string        `json:"weather"`          // e.g. "Partly Cloudy, 27°C"
+	Car              string        `json:"car"`
+	Track            string        `json:"track"`
+	BrakeEntries     BrakeEntryMap `json:"brakeEntries,omitempty"` // segment name → brake onset
+	Phases           []PBPhase     `json:"phases,omitempty"`       // phase data from PB lap
+	Setup            string        `json:"setup,omitempty"`        // raw "CarSetup:" YAML block from the PB session
 }
 
 // File is the top-level structure stored in pb.json: a map from Key → PersonalBest.

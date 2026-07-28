@@ -12,21 +12,21 @@ import (
 
 // shellExecuteInfo maps to SHELLEXECUTEINFOW (64-bit layout).
 type shellExecuteInfo struct {
-	cbSize         uint32
-	fMask          uint32
-	hwnd           uintptr
-	lpVerb         *uint16
-	lpFile         *uint16
-	lpParameters   *uint16
-	lpDirectory    *uint16
-	nShow          int32
-	hInstApp       uintptr
-	lpIDList       uintptr
-	lpClass        *uint16
-	hkeyClass      uintptr
-	dwHotKey       uint32
-	_              uint32 // padding / hIcon or hMonitor union
-	hProcess       uintptr
+	cbSize       uint32
+	fMask        uint32
+	hwnd         uintptr
+	lpVerb       *uint16
+	lpFile       *uint16
+	lpParameters *uint16
+	lpDirectory  *uint16
+	nShow        int32
+	hInstApp     uintptr
+	lpIDList     uintptr
+	lpClass      *uint16
+	hkeyClass    uintptr
+	dwHotKey     uint32
+	_            uint32 // padding / hIcon or hMonitor union
+	hProcess     uintptr
 }
 
 const seeMaskNoCloseProcess = 0x00000040
