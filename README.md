@@ -140,6 +140,25 @@ Corner Exit -> Straight Peak:
   T1       112.0   S2         198.4
 ```
 
+### Corner names
+
+Corners are auto-labelled `T1`, `T2`, … in track order from the start/finish line. These are **positional labels, not iRacing's official turn numbers** — detection merges some complexes, so the counts can differ. The output shows both:
+
+```
+Turns:   11 corners detected; iRacing reports 14 turns — labels are positional, not official
+```
+
+To give corners their real numbers and names, add a `cornerNames` list to the track's entry in `trackref.json` — one entry per detected corner, in track order:
+
+```json
+"Road America": {
+  "corners": 11,
+  "cornerNames": ["T1", "", "T5", "", "", "T8 Carousel", "", "T11 Kink", "", "", ""]
+}
+```
+
+An empty entry keeps the generated label, so you can name corners as you learn them. The names then appear everywhere — phase table, vs-PB table, corner-exit table and `-dump` filenames. If the list length doesn't match the detected corner count it is refused with a warning rather than applied out of step, which would mislabel every corner after the mismatch.
+
 ### Sector table
 
 Per-sector times for every flying lap, using **iRacing's own sector boundaries** (read from the session YAML's `SplitTimeInfo` block), so they agree with the sim's timing. The fastest time in each sector is marked `*`, and the `best` row sums to the theoretical best lap — the time available if you strung your best sectors together. Shown even when no track map exists.

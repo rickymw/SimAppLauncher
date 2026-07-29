@@ -750,3 +750,99 @@ func TestSearchThresholds_MatchesTarget(t *testing.T) {
 		t.Errorf("expected 3 corners, got %d", got)
 	}
 }
+
+// ---- corner name annotation ----
+
+func namedSegs() []Segment {
+	return []Segment{
+		{Name: "S1", Kind: KindStraight},
+		{Name: "T1", Kind: KindCorner},
+		{Name: "S2", Kind: KindStraight},
+		{Name: "T2", Kind: KindCorner},
+		{Name: "T3", Kind: KindChicane},
+	}
+}
+
+func TestApplyCornerNames_RenamesInTrackOrder(t *testing.T) {
+	segs := namedSegs()
+	applied, ok := ApplyCornerNames(segs, []string{"T1 Redgate", "T4 Kink", "T7 Bus Stop"})
+	if !ok {
+		t.Fatal("ApplyCornerNames: ok = false, want true")
+	}
+	if applied != 3 {
+		t.Errorf("applied = %d, want 3", applied)
+	}
+	want := []string{"S1", "T1 Redgate", "S2", "T4 Kink", "T7 Bus Stop"}
+	for i, w := range want {
+		if segs[i].Name != w {
+			t.Errorf("segs[%d].Name = %q, want %q", i, segs[i].Name, w)
+		}
+	}
+}
+
+// TestApplyCornerNames_EmptyEntriesKeepGeneratedLabel supports annotating a
+// track a few corners at a time.
+func TestApplyCornerNames_EmptyEntriesKeepGeneratedLabel(t *testing.T) {
+	segs := namedSegs()
+	applied, ok := ApplyCornerNames(segs, []string{"", "Kink", "  "})
+	if !ok {
+		t.Fatal("ok = false, want true")
+	}
+	if applied != 1 {
+		t.Errorf("applied = %d, want 1", applied)
+	}
+	if segs[1].Name != "T1" {
+		t.Errorf("empty entry overwrote a label: %q, want T1", segs[1].Name)
+	}
+	if segs[3].Name != "Kink" {
+		t.Errorf("segs[3].Name = %q, want Kink", segs[3].Name)
+	}
+	if segs[4].Name != "T3" {
+		t.Errorf("whitespace entry overwrote a label: %q, want T3", segs[4].Name)
+	}
+}
+
+// TestApplyCornerNames_WrongCountIsAllOrNothing is the important one: a stale
+// or short list must not shift every subsequent label, which is the silent
+// mislabelling this feature exists to prevent.
+func TestApplyCornerNames_WrongCountIsAllOrNothing(t *testing.T) {
+	for _, names := range [][]string{
+		{"A", "B"},           // too few
+		{"A", "B", "C", "D"}, // too many
+	} {
+		segs := namedSegs()
+		applied, ok := ApplyCornerNames(segs, names)
+		if ok || applied != 0 {
+			t.Errorf("names=%v: got (applied=%d, ok=%v), want (0, false)", names, applied, ok)
+		}
+		if segs[1].Name != "T1" || segs[3].Name != "T2" || segs[4].Name != "T3" {
+			t.Errorf("names=%v: labels were modified despite the count mismatch", names)
+		}
+	}
+}
+
+func TestApplyCornerNames_NoNames(t *testing.T) {
+	segs := namedSegs()
+	if applied, ok := ApplyCornerNames(segs, nil); ok || applied != 0 {
+		t.Errorf("got (applied=%d, ok=%v), want (0, false)", applied, ok)
+	}
+}
+
+func TestCountCorners(t *testing.T) {
+	if got := CountCorners(namedSegs()); got != 3 {
+		t.Errorf("CountCorners = %d, want 3 (2 corners + 1 chicane)", got)
+	}
+	if got := CountCorners(nil); got != 0 {
+		t.Errorf("CountCorners(nil) = %d, want 0", got)
+	}
+}
+
+func TestTrackRefFile_CornerNames(t *testing.T) {
+	trf := TrackRefFile{"Road America": &TrackRef{Corners: 11, CornerNames: []string{"T1"}}}
+	if got := trf.CornerNames("Road America"); len(got) != 1 || got[0] != "T1" {
+		t.Errorf("CornerNames = %v, want [T1]", got)
+	}
+	if got := trf.CornerNames("Nowhere"); got != nil {
+		t.Errorf("CornerNames for unknown track = %v, want nil", got)
+	}
+}

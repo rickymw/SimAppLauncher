@@ -55,6 +55,8 @@ Corners with peak steering < 5° get a single "full" phase. `countSteeringCorrec
 
 Note the sum of a lap's sectors differs from its official `LapLastLapTime` by a few ms (interpolation), so the CLI prints the official time in the lap column rather than the sum.
 
+`ParseTrackNumTurns` reads iRacing's official turn count (`TrackNumTurns`) from the session YAML. It is **reported only, never used to drive detection** — it counts iRacing's turn labels rather than merged corner segments, so using it as a detection target would push detection to over-split corners. See the corner-labelling notes in [internal/trackmap/README.md](../trackmap/README.md).
+
 ### Segment CSV dump (`dump.go`)
 
 `DumpSegmentCSV` writes a downsampled CSV of telemetry for a single segment, suitable for AI analysis. Output is 20Hz by default (every 3rd sample) with 1 second of context before/after the segment. Columns: `Dist%,Time,Speed,Throttle,Brake,Steer,Gear,LatG,LongG,ABS,Coast`. A typical corner produces ~200 rows — compact enough for direct AI consumption.

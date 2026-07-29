@@ -188,3 +188,30 @@ func TestBestSectorTimes_IgnoresIncomplete(t *testing.T) {
 		t.Errorf("best = %.1f from lap %d, want 30.0 from lap 2 (incomplete must be ignored)", best[0].Seconds, from[0])
 	}
 }
+
+// ---- TrackNumTurns ----
+
+func TestParseTrackNumTurns(t *testing.T) {
+	yaml := "WeekendInfo:\n TrackName: roadamerica full\n TrackNumTurns: 14\n"
+	if got := ParseTrackNumTurns(yaml); got != 14 {
+		t.Errorf("ParseTrackNumTurns = %d, want 14", got)
+	}
+}
+
+func TestParseTrackNumTurns_Missing(t *testing.T) {
+	if got := ParseTrackNumTurns("WeekendInfo:\n TrackName: x\n"); got != 0 {
+		t.Errorf("ParseTrackNumTurns with no field = %d, want 0", got)
+	}
+}
+
+func TestParseTrackNumTurns_Malformed(t *testing.T) {
+	for _, y := range []string{
+		"TrackNumTurns: \n",
+		"TrackNumTurns: abc\n",
+		"TrackNumTurns: -3\n",
+	} {
+		if got := ParseTrackNumTurns(y); got != 0 {
+			t.Errorf("ParseTrackNumTurns(%q) = %d, want 0", y, got)
+		}
+	}
+}

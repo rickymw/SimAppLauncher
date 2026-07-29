@@ -52,6 +52,23 @@ Chicane merging also enforces a maximum total length of 400 m to prevent merging
 
 When `trackref.json` exists alongside the binary, the latlon detector reads the expected corner count for the current track and searches across curvature threshold candidates to find the one that produces the correct number of corner segments. This eliminates the need to manually tune thresholds per track. Tracks not in the reference fall back to default thresholds.
 
+### Corner names (`cornerNames`)
+
+Segments are auto-labelled `T1`, `T2`, … in track order from S/F. Those are **positional labels, not iRacing's official turn numbers** — detection merges complexes, so at Road America 11 corners are detected against `TrackNumTurns: 14`, and every label after the first merge is offset.
+
+`TrackRef.CornerNames` fixes this: one free-text entry per detected corner, in track order. An entry may be a number, a name, or both (`"T11 Kink"`); an empty entry leaves the generated label alone so a track can be annotated incrementally.
+
+```json
+"Road America": {
+  "corners": 11,
+  "cornerNames": ["T1", "", "T5", "", "", "T8 Carousel", "", "T11 Kink", "", "", ""]
+}
+```
+
+`ApplyCornerNames` is **all-or-nothing on length**: if the list does not have exactly `CountCorners(segs)` entries, nothing is renamed and the caller warns. A short or stale list would otherwise shift every subsequent label, which is the silent mislabelling the feature exists to prevent.
+
+Names are applied in memory on each run and are deliberately *not* written to `trackmap.json`, which detection regenerates.
+
 **`lataccel` method** (`DetectFromMultiple`): averages `abs(LatAccel)` element-wise across laps. Thresholds: ≥ 5.0 m/s² (enter), < 2.5 m/s² (exit).
 
 `MatchScore` re-runs the lataccel pipeline on the current session's best lap and checks whether each stored boundary has a transition within ±2%. Always uses lataccel for consistency. Returns 0.0–1.0.
@@ -77,6 +94,8 @@ Each `Segment` stores geometric boundaries (`entryPct`/`exitPct`) and an optiona
 | `SegmentKind` | `"straight"`, `"corner"`, `"chicane"`. |
 | `TrackRef` | Expected corner count for a known track. |
 | `TrackRefFile` | Top-level JSON type for `trackref.json`: `map[string]*TrackRef`. |
+| `ApplyCornerNames` | Renames corner/chicane segments in track order from a `cornerNames` list. All-or-nothing on length. |
+| `CountCorners` | Number of corner + chicane segments — the count `cornerNames` must match. |
 
 ### Key functions
 

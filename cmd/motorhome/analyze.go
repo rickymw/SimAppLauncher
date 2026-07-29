@@ -301,6 +301,21 @@ func RunAnalyze(args []string, cfg config.Config, trackmapPath, pbPath string) {
 		}
 	}
 
+	// Label detected corners from trackref.json. Applied in memory on every run
+	// rather than written into trackmap.json, which detection regenerates.
+	namesApplied := 0
+	if len(segs) > 0 {
+		if names := trf.CornerNames(meta.TrackDisplayName); len(names) > 0 {
+			var ok bool
+			if namesApplied, ok = trackmap.ApplyCornerNames(segs, names); !ok {
+				fmt.Fprintf(os.Stderr,
+					"Warning: trackref.json lists %d corner names for %s but %d corners were detected —\n"+
+						"         names not applied (applying them out of step would mislabel corners).\n",
+					len(names), meta.TrackDisplayName, trackmap.CountCorners(segs))
+			}
+		}
+	}
+
 	// Print map confidence line.
 	//
 	// Branch on useExisting, not on matchScore: a stored map is still a stored
@@ -321,6 +336,22 @@ func RunAnalyze(args []string, cfg config.Config, trackmapPath, pbPath string) {
 			detectedLaps = newTM.LapsUsed
 		}
 		fmt.Print(formatMapLine(len(segs), used, geomConf, matchScore, detectedLaps))
+
+		// Compare the detected corner count against iRacing's own turn count so
+		// a divergence is visible. They measure different things — detection
+		// merges complexes — so a mismatch is not necessarily an error, but it
+		// does mean the generated T-numbers are not iRacing's turn numbers.
+		if turns := analysis.ParseTrackNumTurns(f.SessionInfo()); turns > 0 {
+			detected := trackmap.CountCorners(segs)
+			fmt.Printf("Turns:   %d corners detected; iRacing reports %d turns", detected, turns)
+			if detected != turns && namesApplied == 0 {
+				fmt.Printf(" — labels are positional, not official\n")
+				fmt.Printf("         (set \"cornerNames\" for %q in trackref.json to name them)\n", meta.TrackDisplayName)
+			} else {
+				fmt.Println()
+			}
+			fmt.Println()
+		}
 
 		// Low match score warning.
 		if matchScore >= 0 && matchScore < 0.70 {

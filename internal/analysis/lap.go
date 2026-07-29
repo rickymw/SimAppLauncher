@@ -200,6 +200,26 @@ func ParseTrackLength(yaml string) float64 {
 	return f
 }
 
+// ParseTrackNumTurns returns iRacing's official turn count for the track from
+// the session YAML's TrackNumTurns field, or 0 if absent.
+//
+// This is iRacing's turn labelling, which is not the same as MotorHome's
+// detected corner-segment count: detection merges complexes, so Road America
+// reports 14 turns where detection finds 11 segments. It is reported alongside
+// the detected count rather than used to drive detection, so a divergence is
+// visible instead of silently shifting corner labels.
+func ParseTrackNumTurns(yaml string) int {
+	parts := strings.Fields(yamlField(yaml, "TrackNumTurns"))
+	if len(parts) == 0 {
+		return 0
+	}
+	n, err := strconv.Atoi(parts[0])
+	if err != nil || n < 0 {
+		return 0
+	}
+	return n
+}
+
 // yamlField extracts a value from iRacing's session info YAML by key name.
 // Strips surrounding quotes since iRacing occasionally quotes string values.
 // NOTE: internal/iracing/live_windows.go has a duplicate — keep behaviour in sync.

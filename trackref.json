@@ -6,5 +6,15 @@
   "Sebring International Raceway": {
     "corners": 10,
     "comment": "Full: T1-2 (chicane), T3, T4, T5, T6, T7, Tower Turn, T9, T10, T11"
+  },
+  "Watkins Glen": {
+    "corners": 11,
+    "cornerNames": ["T1", "T2", "T3", "T4", "T5", "T6", "T7", "T8", "T9", "T10", "T11"],
+    "comment": "Boot: 11 corners detected and iRacing reports 11 turns, so the positional numbering already matches the official one. Add names over these T-numbers as you learn them, e.g. \"T5 Bus Stop\"."
+  },
+  "Road America": {
+    "corners": 11,
+    "cornerNames": ["", "", "", "", "", "", "", "", "", "", ""],
+    "comment": "11 corners detected but iRacing reports 14 turns, so the generated T-numbers are NOT official turn numbers. Fill these in from a track map, in order from the S/F line; an empty entry keeps the generated label. Detected positions (lap %, length): 1) 9.0-11.8% 180m; 2) 16.3-19.0% 173m; 3) 34.9-37.3% 154m; 4) 39.5-42.3% 180m; 5) 42.3-45.7% 218m (adjoins the previous one with no straight between, so the two are likely one official complex); 6) 49.6-60.9% 725m (long constant radius, almost certainly the Carousel); 7) 65.0-68.1% 199m; 8) 78.2-81.5% 212m (short, straight after a 648m run, almost certainly the Kink); 9) 81.5-83.0% 96m; 10) 83.0-87.0% 257m; 11) 87.0-90.7% 237m"
   }
 }
