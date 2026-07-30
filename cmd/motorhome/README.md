@@ -22,8 +22,17 @@ Parses the `-config` flag, loads the config file, and dispatches to one of eight
 | `pb.go` | `RunPB` — the pb subcommand: `list`, `show`, `diff`, `prune` |
 | `analyze_test.go` | Tests for lap selection and `.ibt` file resolution |
 | `analyze_helpers_test.go` | Tests for `formatMapLine`, `pluralize`, `parseLapArg` |
+| `analyze_helpers_extra_test.go` | Tests for `crossLapComparableLaps`, `selectAnalyzeLap`, `lapNumbers` and friends |
+| `analyze_output_test.go` | Tests for every table printer and both `-dump` modes |
+| `analyze_flow_test.go` | Tests for `analyzeSingleLap` and `resolveNotes` end to end |
 | `analyze_notes_test.go` | Tests for notes file resolution, note/consistency rendering, and the JSON document |
+| `analyze_json_build_test.go` | Tests for `buildAnalyzeResult` and the JSON section builders |
+| `analyze_pb_render_test.go` | Tests for `phasesToPB` and the stored-PB renderers |
+| `live_test.go` | Tests for the live gap/position formatters (Windows-tagged, like `live.go`) |
+| `notes_paths_test.go` | Tests for session-file naming, whisper path resolution, clipboard |
 | `pb_test.go` | Tests for pb entry ordering, filtering and stored-payload markers |
+| `pb_cmd_test.go` | Tests for `pb list`/`show`/`prune`, including that a dry run writes nothing |
+| `pb_exit_test.go` | Re-exec tests for the `os.Exit` refusal paths (see below) |
 | `clipboard.go` | `captureStdout` / `copyToClipboard` — tee analyze stdout into a buffer and pipe it into `clip.exe` (Windows) / `pbcopy` (macOS) |
 | `clipboard_test.go` | Tests for stdout capture and restore |
 | `notes.go` | `RunNotes` — notes subcommand: hotkey listen, record, transcribe, save |
@@ -50,6 +59,17 @@ Runtime file paths are all derived from the config file's directory:
 - `notes/` — voice notes directory
 
 `analyze.go` was ~1150 lines and its package sat at ~10% coverage; the rendering and helper code is now split out so it can be tested directly. `formatMapLine` is the first result of that — the map-summary line used to be inline in `RunAnalyze` and therefore untestable.
+
+## Testing this package
+
+Coverage is ~58%. The uncovered remainder is deliberate, not a backlog: it is the subcommand entry points (`main`, `RunAnalyze`, `RunLive`, `RunNotes`, `RunCamera`), the Win32 keyboard hooks and beeps, `transcribeLocal` (shells out to whisper), and `runPBDiff` (needs a real `.ibt`, which the repo gitignores). Everything reachable without hardware, a live sim, or a process boundary is covered.
+
+Two mechanisms make that possible:
+
+- **The `analyzeOut` sink.** Tests point it at a `bytes.Buffer` via `captureAnalyzeOut`, so every table printer is assertable. Before the sink existed these functions wrote to `os.Stdout` directly and could only be tested by capturing the process's stdout.
+- **`captureStdout`.** The clipboard helper doubles as a test tool for the printers that still use `fmt.Print*` directly (`live.go`, `pb.go`). Note it *tees* — output still reaches the terminal, so a verbose test run is noisy by design.
+
+`pb_exit_test.go` uses the re-exec pattern: `TestMain` checks `MOTORHOME_EXIT_CASE` and, when set, runs one named case that ends in `os.Exit` instead of the normal suite. The parent then asserts on exit code and stderr. This covers the "refuses to guess" contracts — prune with no criteria, an ambiguous `show` filter, an unknown subcommand — which are the safety behaviour of a destructive command and worth pinning even though they cost a subprocess.
 
 ## analyze subcommand (`analyze.go`)
 

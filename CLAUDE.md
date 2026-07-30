@@ -19,6 +19,20 @@ When making any code change, always create or update tests to match:
 
 Tests must be written in the same pass as the code — never left as a follow-up.
 
+### Testing the cmd package
+`cmd/motorhome` sits at ~58% coverage; `internal/analysis` at ~92%. The uncovered
+remainder in `cmd` is deliberate: subcommand entry points, Win32 keyboard
+hooks/beeps, `transcribeLocal`, and `runPBDiff` (needs a real `.ibt`, which is
+gitignored). Two mechanisms make the rest testable:
+- **`analyzeOut`** (`analyze_out.go`) — point it at a buffer with
+  `captureAnalyzeOut` to assert on any analyze table.
+- **`captureStdout`** (`clipboard.go`) — for printers that still use `fmt.Print*`
+  directly (`live.go`, `pb.go`). It *tees*, so verbose test runs are noisy.
+
+`pb_exit_test.go` covers the `os.Exit` refusal paths by re-execing the test
+binary: `TestMain` dispatches on `MOTORHOME_EXIT_CASE`. Use that pattern when
+adding a new "refuses to guess" behaviour rather than leaving it untested.
+
 ## Commit rule
 After completing a feature, bug fix, or any other coherent code change, commit and push to `origin` without waiting for explicit permission. The repo is single-developer, master-only — every change should land. Stage just the files relevant to the change (do not bundle unrelated work-in-progress) and write a focused conventional-style commit message.
 
