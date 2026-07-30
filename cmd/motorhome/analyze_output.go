@@ -6,6 +6,8 @@ package main
 import (
 	"fmt"
 	"os"
+	"strconv"
+	"strings"
 
 	"github.com/rickymw/MotorHome/internal/analysis"
 	"github.com/rickymw/MotorHome/internal/pb"
@@ -14,65 +16,121 @@ import (
 
 // ---- single lap ----
 
-// dumpDir is the directory -dump CSVs are written to (normally the directory
-// holding the .ibt being analysed).
-func analyzeSingleLap(laps []analysis.Lap, lapNum int, segs []trackmap.Segment, brakeEntries pb.BrakeEntryMap, pbPhases []pb.PBPhase, dumpSeg, dumpDir string) {
+// singleLapOpts carries everything the per-lap output stage needs. It is a
+// struct rather than a parameter list because the stage now renders four
+// optional tables plus two dump modes, and positional arguments for that many
+// optional inputs are easy to transpose silently.
+type singleLapOpts struct {
+	laps         []analysis.Lap
+	lapNum       int // 0 = best lap of session
+	segs         []trackmap.Segment
+	brakeEntries pb.BrakeEntryMap
+	pbPhases     []pb.PBPhase
+
+	// consistency is the lap-to-lap spread across comparableLaps; both are
+	// empty/zero when there were too few comparable laps to measure spread.
+	consistency    []analysis.ConsistencyRow
+	comparableLaps []analysis.Lap
+
+	locatedNotes    []analysis.LocatedNote
+	notesSourceFile string
+
+	dumpSeg     string
+	dumpDir     string
+	dumpAllLaps bool // -dump-all: every comparable lap in one CSV
+}
+
+// analyzeSingleLap renders the per-lap tables and handles -dump.
+//
+// opts.dumpDir is the directory -dump CSVs are written to (normally the
+// directory holding the .ibt being analysed).
+func analyzeSingleLap(opts singleLapOpts) {
 	var lap *analysis.Lap
-	if lapNum > 0 {
-		lap = findAnalyzeLap(laps, lapNum)
+	if opts.lapNum > 0 {
+		lap = findAnalyzeLap(opts.laps, opts.lapNum)
 		if lap == nil {
-			analyzeDie("lap %d not found in file", lapNum)
+			analyzeDie("lap %d not found in file", opts.lapNum)
 		}
 		if lap.Kind != analysis.KindFlying {
-			fmt.Printf("Note: Lap %d is a %s — data includes pit lane or standing start.\n\n",
+			aprintf("Note: Lap %d is a %s — data includes pit lane or standing start.\n\n",
 				lap.Number, lap.Kind)
 		}
 		if lap.IsPartialStart {
-			fmt.Printf("Note: Lap %d started mid-recording — lap time is underestimated.\n\n",
+			aprintf("Note: Lap %d started mid-recording — lap time is underestimated.\n\n",
 				lap.Number)
 		}
 	} else {
-		lap = bestAnalyzeLap(laps)
+		lap = bestAnalyzeLap(opts.laps)
 		if lap == nil {
 			analyzeDie("no flying laps found in file (all laps are out laps or in laps)")
 		}
-		fmt.Printf("Selecting best lap: Lap %d (%s)\n\n",
+		aprintf("Selecting best lap: Lap %d (%s)\n\n",
 			lap.Number, analysis.FormatLapTime(lap.LapTime))
 	}
 
-	if segs != nil {
-		phases := analysis.ComputePhases(lap, segs, brakeEntries)
+	if opts.segs != nil {
+		phases := analysis.ComputePhases(lap, opts.segs, opts.brakeEntries)
 		printPhaseTable(lap, phases)
-		if len(pbPhases) > 0 {
-			printPBComparison(phases, pbPhases)
+		if len(opts.pbPhases) > 0 {
+			printPBComparison(phases, opts.pbPhases)
 		}
-		printExitImpact(analysis.ComputeExitImpact(segs, phases))
+		printExitImpact(analysis.ComputeExitImpact(opts.segs, phases))
 	} else {
 		printZoneTable(lap, analysis.ZoneStats(lap))
 	}
 
+	printConsistency(opts.consistency, lapNumbers(opts.comparableLaps))
+	printNotes(opts.locatedNotes, opts.notesSourceFile)
+
 	// Dump segment telemetry to CSV if requested.
-	if dumpSeg != "" {
-		if segs == nil {
-			analyzeDie("-dump requires a track map (run analyze once first to auto-detect segments)")
+	if opts.dumpSeg != "" {
+		runDump(opts, lap)
+	}
+}
+
+// runDump writes the -dump CSV for one segment, either for the single lap being
+// analysed or — with -dump-all — for every comparable lap in one file.
+func runDump(opts singleLapOpts, lap *analysis.Lap) {
+	if opts.segs == nil {
+		analyzeDie("-dump requires a track map (run analyze once first to auto-detect segments)")
+	}
+	segIdx := analysis.ResolveSegmentName(opts.segs, opts.dumpSeg)
+	if segIdx < 0 {
+		analyzeDie("segment %q not found — available: %s", opts.dumpSeg, segmentNames(opts.segs))
+	}
+	segName := opts.segs[segIdx].Name
+	cfg := analysis.DefaultDumpConfig()
+
+	if opts.dumpAllLaps {
+		dumpLaps := opts.comparableLaps
+		if len(dumpLaps) == 0 {
+			analyzeDie("-dump-all found no comparable flying laps — drop the flag to dump lap %d alone", lap.Number)
 		}
-		segIdx := analysis.ResolveSegmentName(segs, dumpSeg)
-		if segIdx < 0 {
-			analyzeDie("segment %q not found — available: %s", dumpSeg, segmentNames(segs))
-		}
-		csvPath := dumpSegmentPath(dumpDir, segs[segIdx].Name, lap.Number)
+		csvPath := dumpSegmentAllLapsPath(opts.dumpDir, segName)
 		csvFile, err := os.Create(csvPath)
 		if err != nil {
 			analyzeDie("creating CSV: %v", err)
 		}
 		defer csvFile.Close()
 
-		cfg := analysis.DefaultDumpConfig()
-		if err := analysis.DumpSegmentCSV(csvFile, lap, segs, segIdx, cfg); err != nil {
+		if err := analysis.DumpSegmentAllLapsCSV(csvFile, dumpLaps, opts.segs, segIdx, cfg); err != nil {
 			analyzeDie("writing CSV: %v", err)
 		}
-		fmt.Printf("Dumped %s telemetry → %s\n", segs[segIdx].Name, csvPath)
+		aprintf("Dumped %s telemetry for %d laps → %s\n", segName, len(dumpLaps), csvPath)
+		return
 	}
+
+	csvPath := dumpSegmentPath(opts.dumpDir, segName, lap.Number)
+	csvFile, err := os.Create(csvPath)
+	if err != nil {
+		analyzeDie("creating CSV: %v", err)
+	}
+	defer csvFile.Close()
+
+	if err := analysis.DumpSegmentCSV(csvFile, lap, opts.segs, segIdx, cfg); err != nil {
+		analyzeDie("writing CSV: %v", err)
+	}
+	aprintf("Dumped %s telemetry → %s\n", segName, csvPath)
 }
 
 // ---- setup output ----
@@ -96,7 +154,7 @@ func printSetupTables(nodes []analysis.SetupNode) {
 	if chassis != nil {
 		printCornerTable("Suspension", chassis.Children)
 	}
-	fmt.Println()
+	aprintln()
 }
 
 // printCornerTable prints a section's per-corner data as an aligned table,
@@ -172,15 +230,15 @@ func printCornerTable(title string, children []analysis.SetupNode) {
 		}
 
 		// Print header.
-		fmt.Printf("  %-*s", labelW, title+":")
+		aprintf("  %-*s", labelW, title+":")
 		for ci, cn := range cornerOrder {
-			fmt.Printf("  %-*s", colW[ci], cornerNames[cn])
+			aprintf("  %-*s", colW[ci], cornerNames[cn])
 		}
-		fmt.Println()
+		aprintln()
 
 		// Print rows.
 		for _, k := range keys {
-			fmt.Printf("  %-*s", labelW, k)
+			aprintf("  %-*s", labelW, k)
 			for ci, cn := range cornerOrder {
 				c := corners[cn]
 				val := ""
@@ -189,9 +247,9 @@ func printCornerTable(title string, children []analysis.SetupNode) {
 						val = leaf.Value
 					}
 				}
-				fmt.Printf("  %-*s", colW[ci], val)
+				aprintf("  %-*s", colW[ci], val)
 			}
-			fmt.Println()
+			aprintln()
 		}
 	}
 
@@ -199,44 +257,44 @@ func printCornerTable(title string, children []analysis.SetupNode) {
 	if len(general) > 0 {
 		for _, g := range general {
 			if g.Value != "" {
-				fmt.Printf("  %s: %s\n", g.Key, g.Value)
+				aprintf("  %s: %s\n", g.Key, g.Value)
 			} else if len(g.Children) > 0 {
 				// Nested non-corner section (e.g. FrontBrakes, InCarDials, Rear).
 				for _, leaf := range g.Children {
 					if leaf.Value != "" {
-						fmt.Printf("  %s: %s\n", leaf.Key, leaf.Value)
+						aprintf("  %s: %s\n", leaf.Key, leaf.Value)
 					}
 				}
 			}
 		}
 	}
-	fmt.Println()
+	aprintln()
 }
 
 // ---- output ----
 
 func printZoneTable(lap *analysis.Lap, zones []analysis.Zone) {
-	fmt.Printf("Lap %d — %s\n\n", lap.Number, analysis.FormatLapTime(lap.LapTime))
-	fmt.Println(" Zone | Dist  | EntSpd | MinSpd | ExtSpd | Brake | Thr  | LatG | ABS | Coast")
-	fmt.Println("------|-------|--------|--------|--------|-------|------|------|-----|------")
+	aprintf("Lap %d — %s\n\n", lap.Number, analysis.FormatLapTime(lap.LapTime))
+	aprintln(" Zone | Dist  | EntSpd | MinSpd | ExtSpd | Brake | Thr  | LatG | ABS | Coast")
+	aprintln("------|-------|--------|--------|--------|-------|------|------|-----|------")
 	for _, z := range zones {
 		if z.SampleCount == 0 {
-			fmt.Printf("  %2d  | %3d%%  |    --- |    --- |    --- |    -- |   -- |   -- |  -- |   ---\n",
+			aprintf("  %2d  | %3d%%  |    --- |    --- |    --- |    -- |   -- |   -- |  -- |   ---\n",
 				z.Index+1, (z.Index+1)*5)
 			continue
 		}
-		fmt.Printf("  %2d  | %3d%%  | %6.1f | %6.1f | %6.1f | %5.0f%% | %4.0f%% | %4.2f | %3d | %5d\n",
+		aprintf("  %2d  | %3d%%  | %6.1f | %6.1f | %6.1f | %5.0f%% | %4.0f%% | %4.2f | %3d | %5d\n",
 			z.Index+1, (z.Index+1)*5,
 			z.SpeedEntryKPH, z.SpeedMinKPH, z.SpeedExitKPH,
 			z.BrakePct, z.ThrottlePct,
 			z.LatGAvg,
 			z.ABSCount, z.CoastSamples)
 	}
-	fmt.Println()
+	aprintln()
 }
 
 func printPhaseTable(lap *analysis.Lap, phases []analysis.Phase) {
-	fmt.Printf("Lap %d — %s\n\n", lap.Number, analysis.FormatLapTime(lap.LapTime))
+	aprintf("Lap %d — %s\n\n", lap.Number, analysis.FormatLapTime(lap.LapTime))
 	// Find the widest segment name for dynamic column sizing.
 	nameW := 4 // minimum "Name"
 	for _, p := range phases {
@@ -247,14 +305,14 @@ func printPhaseTable(lap *analysis.Lap, phases []analysis.Phase) {
 
 	hdr := fmt.Sprintf(" %-*s | Phase | Spd         | OnBrk | PkBrk | Thr%% | LatG | Wheel° | Corr | ABS  | Lock | Spin | Coast", nameW, "Name")
 	sep := fmt.Sprintf("-%s-|-------|-------------|-------|-------|------|------|--------|------|------|------|------|------", dashes(nameW))
-	fmt.Println(hdr)
-	fmt.Println(sep)
+	aprintln(hdr)
+	aprintln(sep)
 	for _, p := range phases {
 		if p.SampleCount == 0 {
 			continue
 		}
 		coastSecs := float32(p.CoastSamples) / 60.0
-		fmt.Printf(" %-*s | %-5s | %5.0f→%5.0f | %4.0f%% | %4.0f%% | %3.0f%% | %4.2f | %6.1f | %4d | %4d | %4d | %4d | %5.2fs\n",
+		aprintf(" %-*s | %-5s | %5.0f→%5.0f | %4.0f%% | %4.0f%% | %3.0f%% | %4.2f | %6.1f | %4d | %4d | %4d | %4d | %5.2fs\n",
 			nameW, p.SegName, p.Kind,
 			p.SpeedEntryKPH, p.SpeedExitKPH,
 			p.BrakePct, p.PeakBrakePct, p.ThrottlePct,
@@ -262,7 +320,7 @@ func printPhaseTable(lap *analysis.Lap, phases []analysis.Phase) {
 			p.PeakSteerDeg, p.Corrections,
 			p.ABSCount, p.LockupSamples, p.WheelspinSamples, coastSecs)
 	}
-	fmt.Println()
+	aprintln()
 }
 
 // printExitImpact prints each corner's exit speed alongside the peak speed
@@ -284,14 +342,72 @@ func printExitImpact(impacts []analysis.ExitImpact) {
 		}
 	}
 
-	fmt.Println("Corner Exit -> Straight Peak:")
-	fmt.Printf("  %-*s  %7s  %-*s  %7s\n", cornerW, "Corner", "ExitSpd", straightW, "Straight", "PeakSpd")
+	aprintln("Corner Exit -> Straight Peak:")
+	aprintf("  %-*s  %7s  %-*s  %7s\n", cornerW, "Corner", "ExitSpd", straightW, "Straight", "PeakSpd")
 	for _, imp := range impacts {
-		fmt.Printf("  %-*s  %6.1f   %-*s  %6.1f\n",
+		aprintf("  %-*s  %6.1f   %-*s  %6.1f\n",
 			cornerW, imp.CornerName, imp.CornerExitSpeedKPH,
 			straightW, imp.StraightName, imp.StraightPeakSpeedKPH)
 	}
-	fmt.Println()
+	aprintln()
+}
+
+// ---- consistency ----
+
+// printConsistency prints the lap-to-lap spread of each segment phase, plus a
+// short list of the phases that vary most.
+//
+// The phase table above it describes a single lap; this describes how
+// repeatable that lap is. Speeds are shown as mean ± SD, while brake/LatG/coast
+// show SD only — their means are already in the phase table and the spread is
+// the new information.
+func printConsistency(rows []analysis.ConsistencyRow, lapNums []int) {
+	if len(rows) == 0 {
+		return
+	}
+
+	nameW := 4 // minimum "Name"
+	for _, r := range rows {
+		if len(r.SegName) > nameW {
+			nameW = len(r.SegName)
+		}
+	}
+
+	// Name the laps rather than just counting them: the spread means nothing
+	// without knowing which laps went into it, and the filtered population is
+	// not the same as the lap list printed above.
+	nums := make([]string, len(lapNums))
+	for i, n := range lapNums {
+		nums[i] = strconv.Itoa(n)
+	}
+	aprintf("Consistency (%d %s: %s):\n\n",
+		len(lapNums), pluralize(len(lapNums), "lap", "laps"), strings.Join(nums, ", "))
+	aprintf(" %-*s | Phase | N  | EntSpd      | ExitSpd     | PkBrk | LatG  | Coast | Best exit\n", nameW, "Name")
+	aprintf("-%s-|-------|----|-------------|-------------|-------|-------|-------|-----------\n", dashes(nameW))
+	for _, r := range rows {
+		aprintf(" %-*s | %-5s | %2d | %5.1f ±%4.1f | %5.1f ±%4.1f | ±%4.1f | ±%4.2f | ±%4.2f | %5.1f (L%d)\n",
+			nameW, r.SegName, r.Kind, r.Laps,
+			r.EntrySpeedMean, r.EntrySpeedSD,
+			r.ExitSpeedMean, r.ExitSpeedSD,
+			r.PeakBrakeSD, r.LatGSD, r.CoastSD,
+			r.BestExitSpeedKPH, r.BestExitLap)
+	}
+	aprintln()
+
+	if top := analysis.MostVariable(rows, 3); len(top) > 0 && top[0].ExitSpeedSD > 0 {
+		aprint("  Most variable exit speed:")
+		for i, r := range top {
+			if r.ExitSpeedSD <= 0 {
+				break
+			}
+			if i > 0 {
+				aprint(",")
+			}
+			aprintf(" %s %s (±%.1f km/h)", r.SegName, r.Kind, r.ExitSpeedSD)
+		}
+		aprintln()
+		aprintln()
+	}
 }
 
 func printTyreSummary(lap *analysis.Lap) {
@@ -302,8 +418,8 @@ func printTyreSummary(lap *analysis.Lap) {
 		return
 	}
 
-	fmt.Printf("Tyres (Lap %d — avg temp, end-of-lap wear):\n", lap.Number)
-	fmt.Printf("  %-6s  %-22s  %-21s  %s\n",
+	aprintf("Tyres (Lap %d — avg temp, end-of-lap wear):\n", lap.Number)
+	aprintf("  %-6s  %-22s  %-21s  %s\n",
 		"Corner", "Temp O/M/I (°C)", "Wear O/M/I (% worn)", "Press (kPa)")
 
 	type row struct {
@@ -316,13 +432,13 @@ func printTyreSummary(lap *analysis.Lap) {
 		wornI := (1 - r.c.WearInner) * 100
 		wornM := (1 - r.c.WearMid) * 100
 		wornO := (1 - r.c.WearOuter) * 100
-		fmt.Printf("  %-6s  %5.1f / %5.1f / %5.1f     %4.2f / %4.2f / %4.2f     %.0f\n",
+		aprintf("  %-6s  %5.1f / %5.1f / %5.1f     %4.2f / %4.2f / %4.2f     %.0f\n",
 			r.name,
 			r.c.TempOuter, r.c.TempMid, r.c.TempInner,
 			wornO, wornM, wornI,
 			r.c.PressureKPa)
 	}
-	fmt.Println()
+	aprintln()
 }
 
 // printPBComparison prints a delta table comparing the current lap's phases
@@ -351,12 +467,12 @@ func printPBComparison(current []analysis.Phase, stored []pb.PBPhase) {
 		}
 	}
 
-	fmt.Println("vs PB:")
-	fmt.Println()
+	aprintln("vs PB:")
+	aprintln()
 	hdr := fmt.Sprintf(" %-*s | Phase | dSpd        | dBrk  | dPkBr | dThr | dLatG  | dCorr | dABS | dLck | dSpn | dCoast", nameW, "Name")
 	sep := fmt.Sprintf("-%s-|-------|-------------|-------|-------|------|--------|-------|------|------|------|-------", dashes(nameW))
-	fmt.Println(hdr)
-	fmt.Println(sep)
+	aprintln(hdr)
+	aprintln(sep)
 
 	for _, p := range current {
 		if p.SampleCount == 0 {
@@ -381,14 +497,14 @@ func printPBComparison(current []analysis.Phase, stored []pb.PBPhase) {
 		dSpn := p.WheelspinSamples - ref.WheelspinSamples
 		dCoast := float32(p.CoastSamples-ref.CoastSamples) / 60.0
 
-		fmt.Printf(" %-*s | %-5s | %+5.0f→%+5.0f | %+5.0f | %+5.0f | %+4.0f | %+5.2f | %+5d | %+4d | %+4d | %+4d | %+6.2fs\n",
+		aprintf(" %-*s | %-5s | %+5.0f→%+5.0f | %+5.0f | %+5.0f | %+4.0f | %+5.2f | %+5d | %+4d | %+4d | %+4d | %+6.2fs\n",
 			nameW, p.SegName, p.Kind,
 			dSpdIn, dSpdOut,
 			dBrk, dPkBr, dThr,
 			dLatG,
 			dCorr, dABS, dLck, dSpn, dCoast)
 	}
-	fmt.Println()
+	aprintln()
 }
 
 // ---- sector times ----
@@ -426,24 +542,24 @@ func printSectorTable(laps []analysis.Lap, sectors []analysis.Sector) {
 
 	best, from := analysis.BestSectorTimes(rows, nums)
 
-	fmt.Println("Sectors:")
-	fmt.Println()
-	fmt.Printf("  %-6s", "Lap")
+	aprintln("Sectors:")
+	aprintln()
+	aprintf("  %-6s", "Lap")
 	for i := range sectors {
-		fmt.Printf(" %9s", fmt.Sprintf("S%d", i+1))
+		aprintf(" %9s", fmt.Sprintf("S%d", i+1))
 	}
-	fmt.Printf("  %10s\n", "Lap")
-	fmt.Printf("  %-6s", "------")
+	aprintf("  %10s\n", "Lap")
+	aprintf("  %-6s", "------")
 	for range sectors {
-		fmt.Printf(" %9s", "---------")
+		aprintf(" %9s", "---------")
 	}
-	fmt.Printf("  %10s\n", "----------")
+	aprintf("  %10s\n", "----------")
 
 	for ri, st := range rows {
-		fmt.Printf("  %-6d", nums[ri])
+		aprintf("  %-6d", nums[ri])
 		for i := range sectors {
 			if i >= len(st) || !st[i].Complete {
-				fmt.Printf(" %9s", "--")
+				aprintf(" %9s", "--")
 				continue
 			}
 			// Mark the session-best time in each sector.
@@ -451,42 +567,42 @@ func printSectorTable(laps []analysis.Lap, sectors []analysis.Sector) {
 			if best[i].Complete && st[i].Seconds == best[i].Seconds && from[i] == nums[ri] {
 				mark = "*"
 			}
-			fmt.Printf(" %8.3f%s", st[i].Seconds, mark)
+			aprintf(" %8.3f%s", st[i].Seconds, mark)
 		}
 		// The lap column is the official LapLastLapTime, not the sum of the
 		// sectors above it. Summing gives a value a few ms different (boundary
 		// crossings are interpolated), which next to the lap list would read as
 		// a bug rather than as rounding.
-		fmt.Printf("  %10s\n", analysis.FormatLapTime(lapTimes[ri]))
+		aprintf("  %10s\n", analysis.FormatLapTime(lapTimes[ri]))
 	}
 
 	// Theoretical best: the sum of the fastest sector times across all laps.
 	var theoretical float32
 	complete := true
-	fmt.Printf("  %-6s", "best")
+	aprintf("  %-6s", "best")
 	for i := range sectors {
 		if i >= len(best) || !best[i].Complete {
-			fmt.Printf(" %9s", "--")
+			aprintf(" %9s", "--")
 			complete = false
 			continue
 		}
 		theoretical += best[i].Seconds
-		fmt.Printf(" %9.3f", best[i].Seconds)
+		aprintf(" %9.3f", best[i].Seconds)
 	}
 	if complete {
-		fmt.Printf("  %10s\n", analysis.FormatLapTime(theoretical))
+		aprintf("  %10s\n", analysis.FormatLapTime(theoretical))
 	} else {
-		fmt.Printf("  %10s\n", "--")
+		aprintf("  %10s\n", "--")
 	}
-	fmt.Println()
+	aprintln()
 	if complete {
-		fmt.Printf("  Theoretical best %s from sectors set on laps", analysis.FormatLapTime(theoretical))
+		aprintf("  Theoretical best %s from sectors set on laps", analysis.FormatLapTime(theoretical))
 		for i := range best {
 			if from[i] >= 0 {
-				fmt.Printf(" %d", from[i])
+				aprintf(" %d", from[i])
 			}
 		}
-		fmt.Println()
-		fmt.Println()
+		aprintln()
+		aprintln()
 	}
 }

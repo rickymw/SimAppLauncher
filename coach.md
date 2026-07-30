@@ -70,6 +70,19 @@ Work through the phase table using the checklist below, in priority order. Skip 
 - Any braking: unexpected unless the straight contains a kink or the segment boundaries need updating
 - High steering angle on a "straight": segment geometry may be inaccurate (check map match %)
 
+**6. Consistency table**
+- The phase table describes one lap; the consistency table describes how repeatably it is driven. A corner that is fast once and slow twice costs more over a stint than one that is uniformly mediocre.
+- A large exit-speed SD is the highest-value finding in the whole output: exit speed propagates down the following straight, so the variance is multiplied.
+- Large SD with a much higher "Best exit" than the mean means the driver has already *found* the corner — the pace exists and is not being repeated. Coach repeatability (reference points, brake marker), not technique.
+- Small SD across the board with slow absolute speeds is the opposite: the driver is consistent at the wrong thing. Coach technique.
+- Check the lap count in the header. Two laps is a weak sample; say so rather than over-reading it.
+
+**7. Voice notes**
+- If a Notes table is present, the driver has told you in their own words what they felt, and where. Weigh it heavily — it is the only subjective channel in the output.
+- Cross-check each note against that segment's phase row. A note saying "rear stepped out" next to a high Spin count is a confirmed diagnosis; the same note with no wheelspin suggests entry instability instead.
+- Notes are placed by wall clock and may land one segment late or early. If a note doesn't fit the segment it landed in, check the adjacent one before dismissing it.
+- Notes marked as outside the recording have no position — treat them as session-level commentary.
+
 ## Step 3 — Deliver findings
 
 For each segment with a meaningful finding, write one line in this format:
@@ -95,6 +108,8 @@ When the user wants to compare laps (e.g. "compare my lap 5 and lap 8", "why was
    .\motorhome.exe analyze -lap 5
    .\motorhome.exe analyze -lap 8
    ```
+
+   Before doing that, check the consistency table from a single plain `analyze` run — if the question is "why was lap 12 slower", a large SD on the corners in question already answers it, and names the laps involved.
 
 2. Diff the phase tables segment by segment. Focus on:
    - **Speed deltas** — where does entry or exit speed differ? A corner with 5+ km/h entry speed difference is a braking point change.
@@ -123,9 +138,15 @@ When the user wants to go deeper on a specific corner (e.g. "tell me more about 
    ```
    .\motorhome.exe analyze -dump T3 -lap 5
    ```
+   To compare the same corner across every comparable lap in one file:
+   ```
+   .\motorhome.exe analyze -dump T3 -dump-all
+   ```
 
 2. The CSV includes 1 second of context before and after the segment boundary at 20Hz. Columns:
    `Dist%, Time, Speed, Throttle, Brake, Steer, Gear, LatG, LongG, ABS, Coast`
+
+   With `-dump-all` a leading `Lap` column is added and `Time` restarts at 0 for each lap, so rows at the same `Time` are directly comparable. Use this when the consistency table flags a corner: it shows *how* the laps diverge, not just that they do. Compare brake-release shape and the Time offset where throttle first opens.
 
 3. Read the CSV row by row and narrate the driver trace:
    - **Approach**: what speed and gear are they arriving in? Is brake application sharp or gradual?
@@ -144,3 +165,5 @@ When the user wants to go deeper on a specific corner (e.g. "tell me more about 
 - If map match % is below 50%, suggest running with `-update-map` before coaching
 - Out laps and in laps are shown in the lap list but should not be used for coaching unless the user specifically asks
 - For multi-lap comparison, always confirm which lap numbers are flying laps before running the comparison — out/in laps will show skewed metrics
+- `-json` gives the same analysis as a structured document (`schema: motorhome.analyze/1.0`) if you would rather read fields than parse the tables. Everything in the tables is present, plus per-segment geometry.
+- If the driver mentions changing the car, run `.\motorhome.exe pb diff` — it lists what differs between the current setup and the one that set their PB, with iRacing's end-of-session tyre readings filtered out. A handling complaint that started after a setup change is a setup finding, not a technique finding.

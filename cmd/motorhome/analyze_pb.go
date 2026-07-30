@@ -16,14 +16,14 @@ import (
 // runStoredPBNoIBT prints the stored PB when no .ibt file was given on the
 // command line. Uses the only entry if pb.json has just one; otherwise lists
 // the available entries.
-func runStoredPBNoIBT(pbPath string) {
+func runStoredPBNoIBT(pbPath string, jsonMode bool) {
 	pbf := loadPBOrDie(pbPath)
 	if len(pbf) == 1 {
 		var entry *pb.PersonalBest
 		for _, e := range pbf {
 			entry = e
 		}
-		printStoredPB(entry)
+		emitStoredPB(entry, jsonMode)
 		return
 	}
 	fmt.Fprintln(os.Stderr, "Multiple PB entries — pass an .ibt file for the session you want, or specify the car/track context:")
@@ -41,11 +41,24 @@ func runStoredPBNoIBT(pbPath string) {
 
 // runStoredPBForCarTrack prints the PB stored for car+track, resolved from
 // the .ibt's session YAML. Errors out if no PB exists for that combination.
-func runStoredPBForCarTrack(pbPath, car, track string) {
+func runStoredPBForCarTrack(pbPath, car, track string, jsonMode bool) {
 	pbf := loadPBOrDie(pbPath)
 	entry := pbf[pb.Key(car, track)]
 	if entry == nil {
 		analyzeDie("no stored PB for %q on %q — drive a flying lap to set one", car, track)
+	}
+	emitStoredPB(entry, jsonMode)
+}
+
+// emitStoredPB renders a stored PB as tables, or as JSON when -json is set.
+// The PB record is already the whole document in that mode — there is no
+// session to describe alongside it.
+func emitStoredPB(entry *pb.PersonalBest, jsonMode bool) {
+	if jsonMode {
+		if err := writeStoredPBJSON(os.Stdout, entry); err != nil {
+			analyzeDie("writing JSON: %v", err)
+		}
+		return
 	}
 	printStoredPB(entry)
 }
@@ -69,9 +82,9 @@ func loadPBOrDie(pbPath string) pb.File {
 // printStoredPB renders a stored PB entry: car/track header, setup tables (if
 // stored), and the phase table from the saved phases. Used by "analyze -lap pb".
 func printStoredPB(entry *pb.PersonalBest) {
-	fmt.Printf("Car:   %s\n", fallback(entry.Car, "(unknown)"))
-	fmt.Printf("Track: %s\n", fallback(entry.Track, "(unknown)"))
-	fmt.Printf("PB:    %s — set %s, %s\n\n",
+	aprintf("Car:   %s\n", fallback(entry.Car, "(unknown)"))
+	aprintf("Track: %s\n", fallback(entry.Track, "(unknown)"))
+	aprintf("PB:    %s — set %s, %s\n\n",
 		entry.LapTimeFormatted, fallback(entry.Date, "?"), fallback(entry.Weather, "weather unknown"))
 
 	if entry.Setup != "" {
@@ -81,7 +94,7 @@ func printStoredPB(entry *pb.PersonalBest) {
 	}
 
 	if len(entry.Phases) == 0 {
-		fmt.Println("(no phase data stored for this PB — set a new PB to populate it)")
+		aprintln("(no phase data stored for this PB — set a new PB to populate it)")
 		return
 	}
 	printStoredPhaseTable(entry.LapTimeFormatted, entry.Phases)
@@ -90,7 +103,7 @@ func printStoredPB(entry *pb.PersonalBest) {
 // printStoredPhaseTable mirrors printPhaseTable but works from stored PBPhase
 // records (no Lap/Samples context).
 func printStoredPhaseTable(lapTimeFormatted string, phases []pb.PBPhase) {
-	fmt.Printf("PB lap — %s\n\n", lapTimeFormatted)
+	aprintf("PB lap — %s\n\n", lapTimeFormatted)
 
 	nameW := 4
 	for _, p := range phases {
@@ -100,14 +113,14 @@ func printStoredPhaseTable(lapTimeFormatted string, phases []pb.PBPhase) {
 	}
 	hdr := fmt.Sprintf(" %-*s | Phase | Spd         | OnBrk | PkBrk | Thr%% | LatG | Wheel° | Corr | ABS  | Lock | Spin | Coast", nameW, "Name")
 	sep := fmt.Sprintf("-%s-|-------|-------------|-------|-------|------|------|--------|------|------|------|------|------", dashes(nameW))
-	fmt.Println(hdr)
-	fmt.Println(sep)
+	aprintln(hdr)
+	aprintln(sep)
 	for _, p := range phases {
 		if p.SampleCount == 0 {
 			continue
 		}
 		coastSecs := float32(p.CoastSamples) / 60.0
-		fmt.Printf(" %-*s | %-5s | %5.0f→%5.0f | %4.0f%% | %4.0f%% | %3.0f%% | %4.2f | %6.1f | %4d | %4d | %4d | %4d | %5.2fs\n",
+		aprintf(" %-*s | %-5s | %5.0f→%5.0f | %4.0f%% | %4.0f%% | %3.0f%% | %4.2f | %6.1f | %4d | %4d | %4d | %4d | %5.2fs\n",
 			nameW, p.SegName, p.Kind,
 			p.SpeedEntryKPH, p.SpeedExitKPH,
 			p.BrakePct, p.PeakBrakePct, p.ThrottlePct,
@@ -115,7 +128,7 @@ func printStoredPhaseTable(lapTimeFormatted string, phases []pb.PBPhase) {
 			p.PeakSteerDeg, p.Corrections,
 			p.ABSCount, p.LockupSamples, p.WheelspinSamples, coastSecs)
 	}
-	fmt.Println()
+	aprintln()
 }
 
 // phasesToPB converts analysis phases to the PB storage format.

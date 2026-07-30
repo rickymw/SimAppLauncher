@@ -3,6 +3,7 @@ package main
 import (
 	"flag"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -19,11 +20,17 @@ import (
 // args contains everything after "analyze" on the command line.
 // trackmapPath is the path to trackmap.json; "" disables load/save.
 // pbPath is the path to pb.json; "" disables load/save.
-func RunAnalyze(args []string, cfg config.Config, trackmapPath, pbPath string) {
+// notesDir is the directory holding voice-note session files; "" disables the
+// notes join.
+func RunAnalyze(args []string, cfg config.Config, trackmapPath, pbPath, notesDir string) {
 	fs := flag.NewFlagSet("analyze", flag.ExitOnError)
 	lapArg := fs.String("lap", "", "lap to analyze: integer for that lap, \"pb\" for stored PB, empty for best of session")
 	updateMap := fs.Bool("update-map", false, "ignore existing track map and re-detect from this session")
 	dumpSeg := fs.String("dump", "", "dump segment telemetry to CSV (name like T3 or 1-based index)")
+	dumpAll := fs.Bool("dump-all", false, "with -dump: write every comparable flying lap into one CSV instead of just the analysed lap")
+	noteLag := fs.Float64("note-lag", analysis.DefaultNoteLag.Seconds(),
+		"seconds subtracted from each voice note's timestamp before placing it on track")
+	jsonOut := fs.Bool("json", false, "emit the full analysis as JSON instead of tables")
 	fs.Usage = func() {
 		fmt.Fprintln(os.Stderr, "Usage: motorhome [-config <path>] analyze [flags] <file.ibt>")
 		fmt.Fprintln(os.Stderr)
@@ -32,10 +39,25 @@ func RunAnalyze(args []string, cfg config.Config, trackmapPath, pbPath string) {
 		fmt.Fprintln(os.Stderr, "  motorhome analyze -lap 2 session.ibt")
 		fmt.Fprintln(os.Stderr, "  motorhome analyze -lap pb            (show stored PB lap)")
 		fmt.Fprintln(os.Stderr, "  motorhome analyze -dump T3 session.ibt")
+		fmt.Fprintln(os.Stderr, "  motorhome analyze -dump T3 -dump-all session.ibt")
+		fmt.Fprintln(os.Stderr, "  motorhome analyze -json session.ibt")
 		fmt.Fprintln(os.Stderr)
 		fs.PrintDefaults()
 	}
 	_ = fs.Parse(args)
+
+	if *dumpAll && *dumpSeg == "" {
+		analyzeDie("-dump-all has no effect without -dump <segment>")
+	}
+
+	// Bind the table sink now, not at package init: main.go swaps os.Stdout for
+	// the clipboard pipe before calling in, and binding earlier would write
+	// past it. In -json mode the tables are still computed but discarded —
+	// stdout carries the JSON document instead.
+	analyzeOut = os.Stdout
+	if *jsonOut {
+		analyzeOut = io.Discard
+	}
 
 	// Parse -lap: "" → best, "pb" → PB lap from pb.json, integer → that lap number.
 	lapMode, lapNum, err := parseLapArg(*lapArg)
@@ -50,7 +72,7 @@ func RunAnalyze(args []string, cfg config.Config, trackmapPath, pbPath string) {
 			// "-lap pb" with no ibtDir falls back to a pure pb.json lookup —
 			// no car/track context, so use the only entry or list.
 			if lapMode == lapModePB {
-				runStoredPBNoIBT(pbPath)
+				runStoredPBNoIBT(pbPath, *jsonOut)
 				return
 			}
 			fs.Usage()
@@ -61,12 +83,12 @@ func RunAnalyze(args []string, cfg config.Config, trackmapPath, pbPath string) {
 		if err != nil {
 			// Same fallback when ibtDir exists but is empty.
 			if lapMode == lapModePB {
-				runStoredPBNoIBT(pbPath)
+				runStoredPBNoIBT(pbPath, *jsonOut)
 				return
 			}
 			analyzeDie("%v", err)
 		}
-		fmt.Printf("File:    %s\n", filepath.Base(ibtPath))
+		aprintf("File:    %s\n", filepath.Base(ibtPath))
 	case 1:
 		arg := fs.Arg(0)
 		if n, err := strconv.Atoi(arg); err == nil {
@@ -82,7 +104,7 @@ func RunAnalyze(args []string, cfg config.Config, trackmapPath, pbPath string) {
 			if ferr != nil {
 				analyzeDie("%v", ferr)
 			}
-			fmt.Printf("File:    %s\n", filepath.Base(ibtPath))
+			aprintf("File:    %s\n", filepath.Base(ibtPath))
 		} else {
 			ibtPath = arg
 		}
@@ -104,14 +126,14 @@ func RunAnalyze(args []string, cfg config.Config, trackmapPath, pbPath string) {
 	// "-lap pb" with an .ibt: use the .ibt only to resolve car/track, then
 	// render the stored PB and exit before the normal analysis flow.
 	if lapMode == lapModePB {
-		runStoredPBForCarTrack(pbPath, meta.CarScreenName, meta.TrackDisplayName)
+		runStoredPBForCarTrack(pbPath, meta.CarScreenName, meta.TrackDisplayName, *jsonOut)
 		return
 	}
 
-	fmt.Printf("Driver:  %s\n", fallback(meta.DriverName, "(unknown)"))
-	fmt.Printf("Car:     %s\n", fallback(meta.CarScreenName, "(unknown)"))
-	fmt.Printf("Track:   %s\n", fallback(meta.TrackDisplayName, "(unknown)"))
-	fmt.Printf("Samples: %d at %d Hz\n\n", f.NumSamples(), f.Header().TickRate)
+	aprintf("Driver:  %s\n", fallback(meta.DriverName, "(unknown)"))
+	aprintf("Car:     %s\n", fallback(meta.CarScreenName, "(unknown)"))
+	aprintf("Track:   %s\n", fallback(meta.TrackDisplayName, "(unknown)"))
+	aprintf("Samples: %d at %d Hz\n\n", f.NumSamples(), f.Header().TickRate)
 
 	if nodes := analysis.ParseCarSetupTree(f.SessionInfo()); nodes != nil {
 		printSetupTables(nodes)
@@ -292,10 +314,10 @@ func RunAnalyze(args []string, cfg config.Config, trackmapPath, pbPath string) {
 				fmt.Fprintf(os.Stderr, "Warning: could not save track map: %v\n", err)
 			}
 			if *updateMap {
-				fmt.Printf("Track map updated: %d segments detected for %s\n\n",
+				aprintf("Track map updated: %d segments detected for %s\n\n",
 					len(segs), meta.TrackDisplayName)
 			} else {
-				fmt.Printf("Track map created: %d segments detected for %s\n\n",
+				aprintf("Track map created: %d segments detected for %s\n\n",
 					len(segs), meta.TrackDisplayName)
 			}
 		}
@@ -335,7 +357,7 @@ func RunAnalyze(args []string, cfg config.Config, trackmapPath, pbPath string) {
 		if newTM, ok := tmf[meta.TrackDisplayName]; ok {
 			detectedLaps = newTM.LapsUsed
 		}
-		fmt.Print(formatMapLine(len(segs), used, geomConf, matchScore, detectedLaps))
+		aprint(formatMapLine(len(segs), used, geomConf, matchScore, detectedLaps))
 
 		// Compare the detected corner count against iRacing's own turn count so
 		// a divergence is visible. They measure different things — detection
@@ -343,21 +365,21 @@ func RunAnalyze(args []string, cfg config.Config, trackmapPath, pbPath string) {
 		// does mean the generated T-numbers are not iRacing's turn numbers.
 		if turns := analysis.ParseTrackNumTurns(f.SessionInfo()); turns > 0 {
 			detected := trackmap.CountCorners(segs)
-			fmt.Printf("Turns:   %d corners detected; iRacing reports %d turns", detected, turns)
+			aprintf("Turns:   %d corners detected; iRacing reports %d turns", detected, turns)
 			if detected != turns && namesApplied == 0 {
-				fmt.Printf(" — labels are positional, not official\n")
-				fmt.Printf("         (set \"cornerNames\" for %q in trackref.json to name them)\n", meta.TrackDisplayName)
+				aprintf(" — labels are positional, not official\n")
+				aprintf("         (set \"cornerNames\" for %q in trackref.json to name them)\n", meta.TrackDisplayName)
 			} else {
-				fmt.Println()
+				aprintln()
 			}
-			fmt.Println()
+			aprintln()
 		}
 
 		// Low match score warning.
 		if matchScore >= 0 && matchScore < 0.70 {
-			fmt.Printf("Warning: lap profile matches stored map at only %.0f%% — consider running with\n", matchScore*100)
-			fmt.Println("         -update-map to regenerate segment boundaries from this session.")
-			fmt.Println()
+			aprintf("Warning: lap profile matches stored map at only %.0f%% — consider running with\n", matchScore*100)
+			aprintln("         -update-map to regenerate segment boundaries from this session.")
+			aprintln()
 		}
 	}
 
@@ -409,40 +431,116 @@ func RunAnalyze(args []string, cfg config.Config, trackmapPath, pbPath string) {
 			if err := pb.Save(pbPath, pbf); err != nil {
 				fmt.Fprintf(os.Stderr, "Warning: could not save pb.json: %v\n", err)
 			}
-			fmt.Printf("PB:      %s — set %s, %s  [NEW PB!]\n\n",
+			aprintf("PB:      %s — set %s, %s  [NEW PB!]\n\n",
 				formatted, sessionDate, fallback(weather, "weather unknown"))
 		} else {
 			stored := pbf[pb.Key(meta.CarScreenName, meta.TrackDisplayName)]
 			delta := bestLap.LapTime - stored.LapTime
-			fmt.Printf("PB:      %s — set %s, %s  (+%.3fs behind)\n\n",
+			aprintf("PB:      %s — set %s, %s  (+%.3fs behind)\n\n",
 				stored.LapTimeFormatted, stored.Date,
 				fallback(stored.Weather, "weather unknown"), delta)
 		}
 	}
 
-	fmt.Println("Laps:")
+	aprintln("Laps:")
 	for _, l := range laps {
 		label := l.Kind.String()
 		if l.IsCut {
 			label += ", cut"
 		}
 		if l.LapTime > 0 {
-			fmt.Printf("  Lap %2d: %s [%s]\n",
+			aprintf("  Lap %2d: %s [%s]\n",
 				l.Number, analysis.FormatLapTime(l.LapTime), label)
 		} else {
-			fmt.Printf("  Lap %2d: incomplete [%s]\n", l.Number, label)
+			aprintf("  Lap %2d: incomplete [%s]\n", l.Number, label)
 		}
 	}
-	fmt.Println()
+	aprintln()
 
 	// Sector times use iRacing's own SplitTimeInfo boundaries, so they line up
 	// with the sim's timing rather than with MotorHome's detected segments.
 	// Absent from some session types, in which case the table is skipped.
-	printSectorTable(laps, analysis.ParseSectors(f.SessionInfo()))
+	sectors := analysis.ParseSectors(f.SessionInfo())
+	printSectorTable(laps, sectors)
 
-	// Dumps go next to the .ibt being analysed. A bare filename would resolve
-	// against the current working directory, which is wherever the launcher
-	// happened to start us (Stream Deck gives no useful CWD, and it may not
-	// even be writable).
-	analyzeSingleLap(laps, lapNum, segs, brakeEntries, pbPhases, *dumpSeg, filepath.Dir(ibtPath))
+	// Cross-lap views (consistency, -dump-all) share one population, so they are
+	// always talking about the same laps. It is wider than the set used for
+	// trackmap detection above — see crossLapComparableLaps.
+	var comparableLaps []analysis.Lap
+	if bestLap != nil {
+		comparableLaps = crossLapComparableLaps(laps, bestLap.LapTime)
+	}
+	consistency := analysis.ComputeConsistency(comparableLaps, segs, brakeEntries)
+
+	// Voice notes recorded during this session, placed on track by timestamp.
+	locatedNotes, notesPath := resolveNotes(notesDir, ibtPath, laps, segs,
+		f.DiskHeader().SessionStartDate, *noteLag)
+
+	opts := singleLapOpts{
+		laps:         laps,
+		lapNum:       lapNum,
+		segs:         segs,
+		brakeEntries: brakeEntries,
+		pbPhases:     pbPhases,
+
+		consistency:    consistency,
+		comparableLaps: comparableLaps,
+
+		locatedNotes:    locatedNotes,
+		notesSourceFile: notesPath,
+
+		dumpSeg: *dumpSeg,
+		// Dumps go next to the .ibt being analysed. A bare filename would
+		// resolve against the current working directory, which is wherever the
+		// launcher happened to start us (Stream Deck gives no useful CWD, and
+		// it may not even be writable).
+		dumpDir:     filepath.Dir(ibtPath),
+		dumpAllLaps: *dumpAll,
+	}
+	analyzeSingleLap(opts)
+
+	if *jsonOut {
+		res := buildAnalyzeResult(analyzeResultInput{
+			ibtPath:        ibtPath,
+			meta:           meta,
+			sessionDate:    f.DiskHeader().SessionStartDate,
+			sampleCount:    f.NumSamples(),
+			tickRate:       f.Header().TickRate,
+			laps:           laps,
+			comparableLaps: comparableLaps,
+			lapNum:         lapNum,
+			segs:           segs,
+			brakeEntries:   brakeEntries,
+			pbPhases:       pbPhases,
+			pbEntry:        pbf[pb.Key(meta.CarScreenName, meta.TrackDisplayName)],
+			sectors:        sectors,
+			consistency:    consistency,
+			notes:          locatedNotes,
+			notesFile:      notesPath,
+			trackMap:       tmf[meta.TrackDisplayName],
+			matchScore:     matchScore,
+			geomConf:       geomConf,
+		})
+		if err := writeAnalyzeJSON(os.Stdout, res); err != nil {
+			analyzeDie("writing JSON: %v", err)
+		}
+	}
+}
+
+// resolveNotes loads and locates the voice notes recorded alongside ibtPath.
+// Failures are warnings, not errors: a broken notes file must not take down an
+// otherwise complete telemetry analysis.
+func resolveNotes(notesDir, ibtPath string, laps []analysis.Lap, segs []trackmap.Segment,
+	recStart time.Time, lagSeconds float64) ([]analysis.LocatedNote, string) {
+
+	if notesDir == "" {
+		return nil, ""
+	}
+	sess, path, err := loadNotesForIbt(notesDir, ibtPath)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Warning: could not read notes file %s: %v\n", path, err)
+		return nil, ""
+	}
+	lag := time.Duration(lagSeconds * float64(time.Second))
+	return locateSessionNotes(sess, laps, segs, recStart, lag), path
 }

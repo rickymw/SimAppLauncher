@@ -21,8 +21,9 @@ func defaultConfigPath() string {
 func main() {
 	cfgPath := flag.String("config", defaultConfigPath(), "path to config file")
 	flag.Usage = func() {
-		fmt.Fprintln(os.Stderr, "Usage: motorhome [-config <path>] <start|stop|status|analyze|notes|live|camera>")
-		fmt.Fprintln(os.Stderr, "       motorhome analyze [-lap N] [-update-map] [file.ibt]")
+		fmt.Fprintln(os.Stderr, "Usage: motorhome [-config <path>] <start|stop|status|analyze|pb|notes|live|camera>")
+		fmt.Fprintln(os.Stderr, "       motorhome analyze [-lap N] [-update-map] [-json] [-dump T3 [-dump-all]] [file.ibt]")
+		fmt.Fprintln(os.Stderr, "       motorhome pb [list|show|diff|prune]")
 		fmt.Fprintln(os.Stderr, "       motorhome notes [set-hotkey]")
 		fmt.Fprintln(os.Stderr, "       motorhome live [-watch] [-hz N] [-raw]")
 		fmt.Fprintln(os.Stderr, "       motorhome camera")
@@ -51,16 +52,18 @@ func main() {
 		finish, err := captureStdout()
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "warning: clipboard capture disabled: %v\n", err)
-			RunAnalyze(args[1:], cfg, trackmapPath, pbPath)
+			RunAnalyze(args[1:], cfg, trackmapPath, pbPath, notesDir)
 			return
 		}
-		RunAnalyze(args[1:], cfg, trackmapPath, pbPath)
+		RunAnalyze(args[1:], cfg, trackmapPath, pbPath, notesDir)
 		out := finish()
 		if err := copyToClipboard(out); err != nil {
 			fmt.Fprintf(os.Stderr, "warning: could not copy to clipboard: %v\n", err)
 		} else {
 			fmt.Fprintln(os.Stderr, "(copied to clipboard)")
 		}
+	case "pb":
+		RunPB(args[1:], cfg, pbPath)
 	case "notes":
 		RunNotes(args[1:], cfg, notesDir, *cfgPath)
 	case "live":

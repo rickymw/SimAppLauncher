@@ -1,7 +1,7 @@
 # CLAUDE.md — MotorHome
 
 ## Project overview
-Windows CLI tool (`motorhome.exe`) that launches, monitors, and closes sim racing apps in sequence, analyses iRacing `.ibt` telemetry files, and records voice notes during a session. Designed for Stream Deck integration. Seven subcommands: `start`, `stop`, `status`, `analyze`, `notes`, `live`, `camera`. Accepts an optional `-config <path>` flag.
+Windows CLI tool (`motorhome.exe`) that launches, monitors, and closes sim racing apps in sequence, analyses iRacing `.ibt` telemetry files, and records voice notes during a session. Designed for Stream Deck integration. Eight subcommands: `start`, `stop`, `status`, `analyze`, `pb`, `notes`, `live`, `camera`. Accepts an optional `-config <path>` flag.
 
 ## Documentation rule
 When making any code change, always review and update documentation to match:
@@ -62,6 +62,13 @@ motorhome analyze -update-map session.ibt           # re-detect track segments f
 motorhome analyze -geo-method lataccel session.ibt  # use lateral G instead of GPS curvature
 motorhome analyze -dump T3 session.ibt              # dump T3 telemetry to CSV for AI analysis
 motorhome analyze -dump 5 -lap 3 session.ibt        # dump 5th segment from lap 3
+motorhome analyze -dump T3 -dump-all session.ibt    # dump T3 from every comparable lap into one CSV
+motorhome analyze -json session.ibt                 # emit the whole analysis as JSON instead of tables
+motorhome analyze -note-lag 3 session.ibt           # shift voice notes 3s earlier when placing them
+motorhome pb                                        # list every stored personal best
+motorhome pb show watkins                           # full record (setup + phases) for one entry
+motorhome pb diff                                   # setup changes since the PB for this session's car/track
+motorhome pb prune -older-than 180                  # preview removal of stale entries (-apply to write)
 motorhome live                                      # one-shot position + gap to car ahead/behind
 motorhome live -watch                               # stream updates at 5 Hz until Ctrl-C
 motorhome live -watch -hz 10                        # poll at 10 Hz
@@ -84,11 +91,11 @@ Each package has its own README with full detail. Below is a terse summary with 
 
 | Package | Role | Details |
 |---|---|---|
-| `cmd/motorhome` | Entry point, flag parsing, subcommand dispatch (`analyze.go`, `notes.go`) | [README](cmd/motorhome/README.md) |
+| `cmd/motorhome` | Entry point, flag parsing, subcommand dispatch (`analyze.go`, `pb.go`, `notes.go`) | [README](cmd/motorhome/README.md) |
 | `internal/config` | `Config`/`App` structs, JSON load, `Validate()` | [README](internal/config/README.md) |
 | `internal/launcher` | `ProcessManager` interface; `RunStart`/`RunStop`/`RunStatus`; `tasklist`/`taskkill`; `SeDebugPrivilege` fallback | [README](internal/launcher/README.md) |
 | `internal/ibt` | Low-level `.ibt` binary parser; `File.Sample(i)` typed accessor | [README](internal/ibt/README.md) |
-| `internal/analysis` | `ExtractLaps`, `ComputePhases`, `ComputeBrakeEntries`, `ComputeTyreSummary`, `DumpSegmentCSV`, `ParseSessionMeta`, `ParseSectors`/`ComputeSectorTimes` | [README](internal/analysis/README.md) |
+| `internal/analysis` | `ExtractLaps`, `ComputePhases`, `ComputeBrakeEntries`, `ComputeTyreSummary`, `ComputeConsistency`, `LocateNotes`, `DumpSegmentCSV`/`DumpSegmentAllLapsCSV`, `FlattenSetup`/`DiffSetups`, `ParseSessionMeta`, `ParseSectors`/`ComputeSectorTimes` | [README](internal/analysis/README.md) |
 | `internal/trackmap` | GPS curvature corner detection (`latlon`) with steering/speed/lat-G validation; fallback `lataccel`; `trackmap.json` load/save | [README](internal/trackmap/README.md) |
 | `internal/pb` | Personal best store; `pb.Update` returns true on new PB; `PBPhase` stores per-segment data for delta comparison | [README](internal/pb/README.md) |
 | `internal/notes` | `Note{Timestamp,Text}`/`Session` types; `AppendNote` load→append→save | [README](internal/notes/README.md) |
@@ -117,15 +124,69 @@ Key top-level fields:
 7. Load `pb.json`; capture the existing entry's `Phases` into a local `pbPhases` (used later by the vs-PB delta table) *before* mutating the entry; update if new PB; if new PB and segments available, store phase data (`PBPhase`) and the raw `CarSetup:` YAML block (`Setup` field) for the PB lap; save
 
    `pb.Update` replaces the entry wholesale and preserves only `BrakeEntries` — the previous PB's `Phases`/`Setup` are dropped. That is deliberate: they describe a different, slower lap, and pairing them with the new lap time would make the record self-inconsistent. When a new PB is set with no track map available (so no replacement phases can be computed), a warning is printed to stderr, because the silent consequence is that the *next* session has no vs-PB table.
-8. Print: header (file, driver, car, track) → setup tables (Tyres + Suspension corners parsed from CarSetup YAML) → tyre summary (avg surface temps, end-of-lap wear, hot pressures, brake bias) → map line → PB line → lap list → sector table → phase table → vs PB delta table (if stored PB phases exist) → corner exit → straight peak table
+8. Print: header (file, driver, car, track) → setup tables (Tyres + Suspension corners parsed from CarSetup YAML) → tyre summary (avg surface temps, end-of-lap wear, hot pressures, brake bias) → map line → PB line → lap list → sector table → phase table → vs PB delta table (if stored PB phases exist) → corner exit → straight peak table → consistency table → notes table
+
+### Two lap populations
+Two different filtered lap sets exist and must not be conflated:
+- `flyingLapsWithinTime` — within **1.5s** (`lapTimeFilterDelta`) of the best lap. Feeds trackmap detection and brake-entry blending, where one sloppy lap genuinely corrupts corner geometry.
+- `crossLapComparableLaps` — within **10%** (`consistencyLapFilterPct`) of the best lap. Feeds the consistency table and `-dump-all`.
+
+Spread is the opposite problem from geometry: filtering down to the laps that were already alike reports "perfectly consistent" for a session that was not, and in practice the 1.5s window often leaves a *single* lap, which has no spread at all (observed on a real 3-flying-lap session where the driver was still improving). A percentage rather than a fixed delta so it scales with lap length.
+
+### analyze output sink and `-json`
+Every analyze table is written through `aprintf`/`aprintln`/`aprint` (`cmd/motorhome/analyze_out.go`), not `fmt.Print*`. `-json` points the sink at `io.Discard` and writes the JSON document to stdout instead; tests point it at a buffer, which is what makes the printers testable.
+
+`analyzeOut` is bound to `os.Stdout` at the **start of `RunAnalyze`**, not at package init — `main.go` swaps `os.Stdout` for the clipboard pipe before calling in, and a package-level initialiser would capture the pre-swap descriptor and bypass the clipboard.
+
+Warnings and errors deliberately bypass the sink and go straight to stderr, so they still reach the user in `-json` mode without corrupting the document on stdout.
+
+The JSON document (`analyze_json.go`) is versioned by `analyzeSchema` (`motorhome.analyze/1.0`) and uses its own `json*` types rather than marshalling the internal analysis structs — those are free to be renamed as internals, this is a published wire format. `-lap pb -json` emits the stored `PersonalBest` record alone, since there is no session to describe alongside it.
+
+### Consistency table
+`Name | Phase | N | EntSpd | ExitSpd | PkBrk | LatG | Coast | Best exit` — the lap-to-lap spread of each segment phase across `crossLapComparableLaps`, followed by a "Most variable exit speed" ranking of the worst three. Speeds show mean ± SD; brake/LatG/coast show SD only, since their means are already in the phase table and the spread is the new information.
+
+The header names the contributing lap numbers (`Consistency (2 laps: 3, 4)`) because that population is not the same as the lap list printed above it.
+
+Pairs are matched by segment name + phase kind. A corner can split entry/mid/exit on one lap and collapse to a single `full` phase on another, so rows seen on fewer than 2 laps are dropped rather than shown with a misleading `± 0.0`.
+
+### Voice notes in analyze
+`Lap | Where | Lap% | Note` — voice notes recorded during the session, placed on the lap and segment being driven when they were spoken.
+
+The notes subcommand names each session file after the `.ibt` it detected, so the join is by filename (`<notesDir>/<ibt basename>.json`). A missing notes file is the normal case, not an error; an unparseable one warns on stderr and is skipped so it can't take down the telemetry analysis.
+
+`notes.Note` carries **two** timestamps: `StartedAt` (recording start) and `Timestamp` (recording stop). Placement uses `Note.Anchor()`, which prefers `StartedAt` — the stop time trails the event by the whole length of the utterance, which is several hundred metres at racing speed. `StartedAt` is `omitempty`, so pre-existing notes files still load and fall back to `Timestamp`.
+
+`-note-lag` (default 2s, `analysis.DefaultNoteLag`) is subtracted before placement to account for recognise-decide-press reaction time. It is an estimate rather than a measurement, which is why it is a flag; but zero would be a *worse* default, since a note about a corner can never be recorded before that corner happened.
+
+Notes falling outside the recording window (spoken in the pits, or after the recording stopped) are printed with dashes for the position columns and counted in a footer, rather than dropped — the text is the point of the note.
 
 The full stdout output is also copied to the system clipboard automatically (via `clip.exe` on Windows, `pbcopy` on macOS) — `(copied to clipboard)` is printed to stderr on success. Stdout is teed via an `os.Pipe` swap in `cmd/motorhome/main.go` around the `RunAnalyze` call (helpers in `cmd/motorhome/clipboard.go`); error paths that exit through `analyzeDie` (`os.Exit(1)`) skip the deferred clipboard write by design — partial broken output is intentionally not copied.
 
 `-update-map` forces re-detection. `-geo-method latlon|lataccel` selects detection method. `-dump <segment>` writes a downsampled (20Hz) CSV of the segment's telemetry for AI analysis — accepts segment name (T3) or 1-based index (3). Output includes 1s of context before/after. The CSV is written **next to the `.ibt` being analysed**, not to the current working directory — a launcher (Stream Deck) gives no useful CWD and it may not be writable.
 
+`-dump-all` (requires `-dump`) writes the same segment from every lap in `crossLapComparableLaps` into one `<seg>_alllaps.csv`, with a leading `Lap` column. Each lap's `Time` restarts at 0 so the traces can be overlaid at equal time-into-the-corner. The filename differs from the single-lap dump deliberately: the two have different column sets and must not overwrite each other. Laps with no samples in the segment are skipped (a truncated lap legitimately misses one); an error is raised only when no lap yielded rows.
+
 The map line branches on whether a stored map was used, not on whether a match score was computed. A stored map with no comparable lap (no valid flying lap, or no track length in the YAML) prints its real geometry confidence, lap/session counts and `GeoMethod` with `match: n/a (no comparable lap)`. Keying this off the match score previously made those sessions report a mature map as a fresh `geometry: low` "first detection".
 
 `-lap` accepts a positive integer (specific lap), empty (best lap of session — default), or `pb` (render the PB stored in `pb.json` without running the full analysis pipeline). For `-lap pb`: when an `.ibt` is available the car/track come from its session YAML; with no `.ibt` (or empty `ibtDir`) the single PB entry is used, or all entries are listed if there are several. The PB record stores `LapTime` / `Date` / `Weather`, the per-segment `Phases`, and the raw `CarSetup:` YAML block — enough to reproduce the setup and phase tables offline, without sample-level telemetry.
+
+### pb subcommand flow (`cmd/motorhome/pb.go`)
+Reads back and maintains `pb.json`, which the analyze flow only ever appends to.
+
+| Command | Behaviour |
+|---|---|
+| `pb list [filter]` | Table of every stored PB: car, track, time, date, and which optional payloads it carries (phases / setup / brake points) |
+| `pb show <filter>` | Full record — setup tables and phase table — for exactly one matching entry |
+| `pb diff [file.ibt]` | Setup differences between a session and that car/track's stored PB setup |
+| `pb prune -older-than N \| -match F [-apply]` | Remove entries; previews unless `-apply` |
+
+`<filter>` is a case-insensitive substring matched against `"car | track"`. `show` and `prune` refuse to guess — a filter matching zero or several entries lists the candidates and exits non-zero. Entries are sorted by track then car, because Go map order is random and listings would otherwise shuffle between runs.
+
+**Prune previews by default.** Deleting a PB throws away accumulated brake-entry positions and the setup that produced the lap, none of which can be recovered from telemetry that may itself be long deleted. It also refuses to run with no criteria rather than selecting everything, and reports (rather than silently skipping) entries whose date won't parse.
+
+**`pb diff` hides session state by default.** iRacing writes end-of-session tyre readings back into the `CarSetup` block (`LastHotPressure`, `LastTemps*`, `TreadRemaining`, `UpdateCount`), so a raw diff of two *identical* setups still reports every corner. `analysis.FilterSessionState` drops them and returns the count; `-all` shows them. On a real Mugello comparison this cut 29 rows to 16 genuine changes (ARB, wing angle, spring perch, dampers).
+
+Note that iRacing's own YAML nests general chassis keys under the *last-seen* subsection, so paths like `Chassis/FrontBrakes/ArbSetting` and `Chassis/FrontBrakes/FuelLevel` are faithful to the source file, not a parser artifact.
 
 ### notes subcommand flow (`cmd/motorhome/notes.go`)
 Toggle model — each press starts or stops recording:
@@ -238,7 +299,9 @@ All live next to the binary in `G:\RACING\SimAppLauncher\`:
 - S/F line wraparound: tiny corners (< 50 m) at the S/F line are auto-removed, but if the first and last segments are both straights they are not merged into one
 - GPS quantisation in iRacing is systematic (same rounding each lap) so averaging more laps does not reduce noise in the `latlon` method — mitigated by bin-averaging, wide triplet spacing, and post-detection validation (steering/speed confirmation)
 - Dynamic weather sessions do not populate `AirTemp` in the session YAML; PB weather shows track temp only in that case
-- `pb.json` is never pruned — old car/track combos accumulate indefinitely
+- `analyze` never prunes `pb.json` — old car/track combos accumulate indefinitely until removed with `motorhome pb prune`
+- Voice notes are placed by wall clock, so their accuracy is bounded by `-note-lag` being an estimate; a note about a corner can land in the adjacent segment
+- `pb diff` compares by setup-field path, so it cannot tell a genuine change from a field iRacing renamed between builds — those show as one added plus one removed field
 
 ## Open improvements
 - Exit codes: `RunStart`/`RunStop` currently always exit 0 even on partial failures

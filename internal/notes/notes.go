@@ -9,9 +9,24 @@ import (
 )
 
 // Note holds a single voice note captured during a session.
+//
+// StartedAt is the better anchor for locating a note in telemetry: Timestamp is
+// taken when recording stops, so it trails the event being described by the
+// whole length of the utterance. It is omitempty and may be zero on notes
+// written before it was recorded — callers must fall back to Timestamp.
 type Note struct {
-	Timestamp time.Time `json:"timestamp"` // UTC moment of key-release
-	Text      string    `json:"text"`      // Whisper transcription
+	StartedAt time.Time `json:"startedAt,omitempty"` // UTC moment recording started
+	Timestamp time.Time `json:"timestamp"`           // UTC moment recording stopped
+	Text      string    `json:"text"`                // Whisper transcription
+}
+
+// Anchor returns the best available estimate of when the driver started
+// speaking: StartedAt when present, otherwise Timestamp.
+func (n Note) Anchor() time.Time {
+	if !n.StartedAt.IsZero() {
+		return n.StartedAt
+	}
+	return n.Timestamp
 }
 
 // Session is the top-level structure for a single notes file.

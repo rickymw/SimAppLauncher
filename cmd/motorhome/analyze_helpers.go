@@ -52,6 +52,17 @@ func dumpSegmentPath(dir, segName string, lapNumber int) string {
 	return filepath.Join(dir, name)
 }
 
+// dumpSegmentAllLapsPath builds the output path for a -dump -dump-all CSV.
+// The "_alllaps" suffix keeps it from colliding with a single-lap dump of the
+// same segment, which has a different column set.
+func dumpSegmentAllLapsPath(dir, segName string) string {
+	name := fmt.Sprintf("%s_alllaps.csv", segName)
+	if dir == "" {
+		return name
+	}
+	return filepath.Join(dir, name)
+}
+
 // segmentNames returns a comma-separated list of segment names for error messages.
 func segmentNames(segs []trackmap.Segment) string {
 	names := make([]string, len(segs))
@@ -142,6 +153,61 @@ func flyingLapsWithinTime(laps []analysis.Lap, bestTime float32) []analysis.Lap 
 		}
 	}
 	return result
+}
+
+// selectAnalyzeLap resolves which lap the output stage describes: the one named
+// by -lap when given, otherwise the best flying lap of the session. Returns nil
+// when the requested lap does not exist or no lap qualifies.
+func selectAnalyzeLap(laps []analysis.Lap, lapNum int) *analysis.Lap {
+	if lapNum > 0 {
+		return findAnalyzeLap(laps, lapNum)
+	}
+	return bestAnalyzeLap(laps)
+}
+
+// consistencyLapFilterPct is how much slower than the session best a flying lap
+// may be and still count towards the cross-lap views (consistency, -dump-all).
+//
+// This is deliberately far wider than lapTimeFilterDelta. That 1.5s window
+// exists to keep corner *geometry* clean, where one sloppy lap genuinely
+// corrupts the map. Spread is the opposite problem: filtering down to the laps
+// that were already alike is what produces "you are perfectly consistent" from
+// a session that was not. In practice the tight window often leaves a single
+// lap, and a single lap has no spread at all.
+//
+// A percentage rather than a fixed delta so it scales with lap length — 10% is
+// ~10s at Phillip Island and ~24s at the Nordschleife, which in both cases
+// separates representative laps from an opening warm-up lap.
+const consistencyLapFilterPct float32 = 0.10
+
+// crossLapComparableLaps returns the laps used for cross-lap views: flying,
+// non-cut, non-partial laps within consistencyLapFilterPct of bestTime, and not
+// anomalously short against the session median.
+func crossLapComparableLaps(laps []analysis.Lap, bestTime float32) []analysis.Lap {
+	threshold := bestTime * (1 + consistencyLapFilterPct)
+	minTime := plausibleLapMinTime(laps)
+	var result []analysis.Lap
+	for i := range laps {
+		l := &laps[i]
+		if l.Kind != analysis.KindFlying || l.IsPartialStart || l.IsCut || l.LapTime <= 0 {
+			continue
+		}
+		if l.LapTime < minTime || l.LapTime > threshold {
+			continue
+		}
+		result = append(result, *l)
+	}
+	return result
+}
+
+// lapNumbers returns the lap numbers of laps, for reporting which laps a
+// cross-lap view was computed from.
+func lapNumbers(laps []analysis.Lap) []int {
+	out := make([]int, len(laps))
+	for i := range laps {
+		out[i] = laps[i].Number
+	}
+	return out
 }
 
 func findAnalyzeLap(laps []analysis.Lap, number int) *analysis.Lap {

@@ -242,6 +242,10 @@ func recordingWorker(ctx *notesCtx) {
 				fmt.Fprintf(os.Stderr, "notes: audio start: %v\n", err)
 				continue
 			}
+			// Captured here, not at stop: analyze locates notes on track by
+			// this timestamp, and the moment the driver started talking is
+			// much closer to the event than the moment they stopped.
+			startedAt := time.Now().UTC()
 			fmt.Println("  [recording...]")
 
 			// Wait for second press or shutdown.
@@ -284,6 +288,7 @@ func recordingWorker(ctx *notesCtx) {
 			}
 
 			note := notes.Note{
+				StartedAt: startedAt,
 				Timestamp: time.Now().UTC(),
 				Text:      text,
 			}

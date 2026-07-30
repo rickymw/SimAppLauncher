@@ -63,6 +63,34 @@ Note the sum of a lap's sectors differs from its official `LapLastLapTime` by a 
 
 `ResolveSegmentName` finds a segment by name (case-insensitive, e.g. "T3") or 1-based index (e.g. "3").
 
+`DumpSegmentAllLapsCSV` writes the same segment from several laps into one file, prefixed with a `Lap` column. Each lap's `Time` column restarts at 0 so the traces can be overlaid at equal time-into-the-corner; a session-relative clock would make that comparison impossible without further arithmetic. Laps with no samples in the segment are skipped (a truncated lap legitimately misses one); an error is returned only when no lap yielded any rows.
+
+### Consistency across laps (`consistency.go`)
+
+`ComputeConsistency` runs `ComputePhases` over a set of laps and reports, per (segment, phase), the mean and sample standard deviation (n−1) of entry speed, exit speed, peak brake, lateral G and coast time, plus the best exit speed seen and which lap set it. The phase table describes one lap; this describes how repeatable it is.
+
+Pairs are matched by segment name + phase kind, the same key the vs-PB table uses. A corner can split into entry/mid/exit on one lap and collapse to a single `full` phase on another (peak steering below the 5° threshold), so the phases present are not identical from lap to lap — `Laps` records how many contributed to each row. Rows observed on fewer than `MinLapsForConsistency` (2) laps are dropped: one observation has no spread, and printing `± 0.0` for it would read as perfect consistency rather than as absent data.
+
+`MostVariable` ranks rows by descending exit-speed spread. Exit speed is the ranking metric because it propagates — a corner exit varying by 5 km/h carries that variance down the whole following straight. It copies before sorting, so the caller's track-ordered slice is left intact.
+
+Callers must pass an already-filtered set of comparable laps; mixing in an out lap would dominate every spread it touches.
+
+### Locating voice notes (`notes.go`)
+
+`LocateNotes` maps each voice note's wall-clock timestamp onto the lap and segment being driven at that moment, and returns the notes sorted by time.
+
+The mapping is anchored on the **first telemetry sample** rather than the disk header's `SessionStartTime` field: the first sample's `SessionTime` is by definition the start of the recording, so the arithmetic holds regardless of how that header field is interpreted.
+
+`lag` is subtracted from each note's timestamp before locating it — see `DefaultNoteLag` (2s). Zero would be a worse default than an estimate: a note about a corner can never be recorded before that corner happened, so an uncorrected timestamp is guaranteed to land late, typically in the following straight. Because it is an estimate rather than a measurement, it is a parameter (`analyze -note-lag`) rather than a constant.
+
+Notes falling outside the recording come back with `Located == false` and keep their `Text`; only the position fields are meaningless.
+
+### Setup comparison (`setup.go`)
+
+`FlattenSetup` walks a parsed `CarSetup` tree into `{Path, Value}` leaves in document order (`Chassis/LeftFront/Camber`). `DiffSetups` compares two flattened setups and returns the fields that differ, in the order they appear in the newer one. Fields present on only one side are reported with the missing side empty rather than skipped — that usually means a different car or iRacing build, and hiding it would make the diff look like a small tweak.
+
+`FilterSessionState` drops leaves that record what happened during the session rather than what the driver set (`UpdateCount`, `LastHotPressure`, `LastTemps*`, `TreadRemaining`). iRacing writes end-of-session tyre readings back into the setup block, so a raw diff of two *identical* setups still reports every corner's pressure, temperature and tread. Filtering them is what makes the diff readable; the count of hidden entries is returned rather than discarded so callers can say how much was suppressed.
+
 ### Legacy zone stats
 
 `ZoneStats` divides the track into 20 equal 5% zones. Retained but not used by the CLI.
@@ -77,6 +105,9 @@ Note the sum of a lap's sectors differs from its official `LapLastLapTime` by a 
 | `Phase` | Per-phase stats: entry/exit/peak speed, brake%, peak brake, throttle%, avg lat G, peak steering angle, steering corrections, ABS, lockup/wheelspin, coast. |
 | `ExitImpact` | Corner exit speed paired with the peak speed reached on the following straight, for one lap. |
 | `DumpConfig` | Controls CSV dump: downsample rate (default 3 = 20Hz) and context samples (default 60 = 1s). |
+| `ConsistencyRow` | Per-(segment, phase) spread across laps: mean/SD of entry speed, exit speed, peak brake, lat G and coast, plus best exit speed and the lap that set it. |
+| `NoteInput` / `LocatedNote` | A voice note awaiting placement, and the same note resolved to a lap, lap distance and segment (`Located` false when it falls outside the recording). |
+| `SetupValue` / `SetupDiffEntry` | A flattened `CarSetup` leaf (`Path`, `Value`), and one difference between two setups (`Path`, `Old`, `New`). |
 | `Zone` | Per-zone stats for the legacy 20-zone split. |
 | `SessionMeta` | Car, track, and driver name parsed from session YAML. |
 | `TyreSummary` / `CornerTyres` | Per-corner avg surface (tread) temps (inner/outer mapped from iRacing tempL/tempR accounting for left- vs right-side), end-of-lap wear, avg hot pressure, and brake bias for one lap. Uses surface temp rather than iRacing's carcass-temp channels, which freeze at a stale value for entire sessions on some cars. |
@@ -98,4 +129,21 @@ exitImpacts := analysis.ComputeExitImpact(segments, phases)
 // Dump a corner's telemetry to CSV for AI analysis.
 segIdx := analysis.ResolveSegmentName(segments, "T3")
 analysis.DumpSegmentCSV(writer, &lap, segments, segIdx, analysis.DefaultDumpConfig())
+
+// Same corner across several laps, in one file with a Lap column.
+analysis.DumpSegmentAllLapsCSV(writer, comparableLaps, segments, segIdx, analysis.DefaultDumpConfig())
+
+// Lap-to-lap spread, and the phases that vary most.
+rows := analysis.ComputeConsistency(comparableLaps, segments, brakeEntries)
+worst := analysis.MostVariable(rows, 3)
+
+// Place voice notes on track.
+located := analysis.LocateNotes(laps, segments, recStart, analysis.DefaultNoteLag, noteInputs)
+
+// Compare two car setups.
+diff := analysis.DiffSetups(
+    analysis.FlattenSetup(analysis.ParseCarSetupTree(pbEntry.Setup)),
+    analysis.FlattenSetup(analysis.ParseCarSetupTree(sessionYAML)),
+)
+diff, hidden := analysis.FilterSessionState(diff)
 ```

@@ -16,6 +16,10 @@ Entries with `LapTime == 0` are stub records created by `BrakeEntrySet` to hold 
 
 `Save` uses atomic write (write-to-temp-then-rename) to prevent file corruption if interrupted mid-write.
 
+## Reading the store back
+
+The store is never pruned by `analyze`, so it grows one entry per car/track combination indefinitely. The `pb` subcommand (`cmd/motorhome/pb.go`) is the way in: `pb list` shows every entry and which optional payloads it carries, `pb show` re-renders one, `pb diff` compares a session's setup against the stored PB setup, and `pb prune` removes entries — previewing by default, writing only with `-apply`.
+
 ## Architecture
 
 | Symbol | Description |
