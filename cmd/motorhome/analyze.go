@@ -31,6 +31,7 @@ func RunAnalyze(args []string, cfg config.Config, trackmapPath, pbPath, notesDir
 	noteLag := fs.Float64("note-lag", analysis.DefaultNoteLag.Seconds(),
 		"seconds subtracted from each voice note's timestamp before placing it on track")
 	jsonOut := fs.Bool("json", false, "emit the full analysis as JSON instead of tables")
+	fuelLaps := fs.Int("fuel-laps", 0, "with fuel data: report the litres needed to complete this many laps")
 	fs.Usage = func() {
 		fmt.Fprintln(os.Stderr, "Usage: motorhome [-config <path>] analyze [flags] <file.ibt>")
 		fmt.Fprintln(os.Stderr)
@@ -472,6 +473,11 @@ func RunAnalyze(args []string, cfg config.Config, trackmapPath, pbPath, notesDir
 	}
 	consistency := analysis.ComputeConsistency(comparableLaps, segs, brakeEntries)
 
+	// Fuel is averaged over the comparable laps only: an out lap covers less
+	// than a full lap of track and would understate consumption.
+	fuel := analysis.ComputeFuel(laps, comparableLaps)
+	printFuel(fuel, *fuelLaps)
+
 	// Voice notes recorded during this session, placed on track by timestamp.
 	locatedNotes, notesPath := resolveNotes(notesDir, ibtPath, laps, segs,
 		f.DiskHeader().SessionStartDate, *noteLag)
@@ -515,6 +521,7 @@ func RunAnalyze(args []string, cfg config.Config, trackmapPath, pbPath, notesDir
 			pbEntry:        pbf[pb.Key(meta.CarScreenName, meta.TrackDisplayName)],
 			sectors:        sectors,
 			consistency:    consistency,
+			fuel:           fuel,
 			notes:          locatedNotes,
 			notesFile:      notesPath,
 			trackMap:       tmf[meta.TrackDisplayName],

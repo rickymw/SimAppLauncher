@@ -107,6 +107,32 @@ func buildAnalyzeResult(in analyzeResultInput) analyzeResult {
 		})
 	}
 
+	if in.fuel.Available {
+		jf := &jsonFuel{
+			StartLitres:        in.fuel.StartLitres,
+			EndLitres:          in.fuel.EndLitres,
+			UsedLitres:         in.fuel.UsedLitres,
+			Refuelled:          in.fuel.Refuelled,
+			LapsMeasured:       in.fuel.LapsMeasured,
+			AvgPerLap:          in.fuel.AvgPerLap,
+			MedianPerLap:       in.fuel.MedianPerLap,
+			WorstPerLap:        in.fuel.WorstPerLap,
+			AvgUsePerHour:      in.fuel.AvgUsePerHour,
+			LapsRemainingAvg:   in.fuel.LapsRemainingAvg,
+			LapsRemainingWorst: in.fuel.LapsRemainingWorst,
+		}
+		for _, lf := range in.fuel.PerLap {
+			jf.PerLap = append(jf.PerLap, jsonLapFuel{
+				Lap:         lf.LapNumber,
+				StartLitres: lf.StartLitres,
+				EndLitres:   lf.EndLitres,
+				UsedLitres:  lf.UsedLitres,
+				Refuelled:   lf.Refuelled,
+			})
+		}
+		res.Fuel = jf
+	}
+
 	for _, n := range in.notes {
 		jn := jsonNote{
 			Text:    n.Text,

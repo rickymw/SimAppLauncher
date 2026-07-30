@@ -18,6 +18,21 @@ import (
 // captured buffer is lost — which is the desired behaviour: we don't want
 // partial broken output copied to the clipboard.
 func captureStdout() (finish func() string, err error) {
+	return captureStdoutTee(true)
+}
+
+// captureStdoutSilent captures os.Stdout without echoing it to the terminal.
+// Used by the coach subcommand, which runs the analyze pipeline purely to
+// obtain its JSON and then prints a document of its own — teeing there would
+// dump the raw JSON above the brief.
+func captureStdoutSilent() (finish func() string, err error) {
+	return captureStdoutTee(false)
+}
+
+// captureStdoutTee is the shared implementation. When tee is false the
+// original stdout is dropped from the copy, so captured output never reaches
+// the terminal.
+func captureStdoutTee(tee bool) (finish func() string, err error) {
 	orig := os.Stdout
 	r, w, err := os.Pipe()
 	if err != nil {
@@ -26,9 +41,14 @@ func captureStdout() (finish func() string, err error) {
 	os.Stdout = w
 
 	var buf bytes.Buffer
+	var sink io.Writer = &buf
+	if tee {
+		sink = io.MultiWriter(orig, &buf)
+	}
+
 	done := make(chan struct{})
 	go func() {
-		_, _ = io.Copy(io.MultiWriter(orig, &buf), r)
+		_, _ = io.Copy(sink, r)
 		close(done)
 	}()
 

@@ -352,6 +352,48 @@ func printExitImpact(impacts []analysis.ExitImpact) {
 	aprintln()
 }
 
+// ---- fuel ----
+
+// printFuel prints fuel consumption and what it implies for stint length.
+//
+// planLaps > 0 adds a line answering "can I finish a race of this many laps",
+// which is the question the numbers exist to serve.
+func printFuel(f analysis.FuelSummary, planLaps int) {
+	if !f.Available {
+		return
+	}
+
+	aprintln("Fuel:")
+	aprintf("  Used:      %.2f L total; %.2f avg, %.2f median, %.2f worst per lap (%d measured %s)\n",
+		f.UsedLitres, f.AvgPerLap, f.MedianPerLap, f.WorstPerLap,
+		f.LapsMeasured, pluralize(f.LapsMeasured, "lap", "laps"))
+
+	// Both figures, because planning a stint on the average runs dry half the
+	// time — the worst-lap rate is the one a stint has to survive.
+	aprintf("  Remaining: %.2f L → %.1f laps at average, %.1f at worst-lap rate\n",
+		f.EndLitres, f.LapsRemainingAvg, f.LapsRemainingWorst)
+
+	if f.Refuelled {
+		aprintln("             (a lap refuelled — remaining is measured at the end of the last lap that didn't)")
+	}
+
+	if f.AvgUsePerHour > 0 {
+		aprintf("  Burn rate: %.1f kg/h average\n", f.AvgUsePerHour)
+	}
+
+	if planLaps > 0 {
+		need := analysis.FuelForLaps(f.WorstPerLap, planLaps, fuelMarginLaps)
+		aprintf("  For %d laps: %.2f L at the worst-lap rate (+%.0f lap margin)",
+			planLaps, need, fuelMarginLaps)
+		if need > f.EndLitres {
+			aprintf(" — %.2f L short of what's in the tank\n", need-f.EndLitres)
+		} else {
+			aprintf(" — %.2f L in hand\n", f.EndLitres-need)
+		}
+	}
+	aprintln()
+}
+
 // ---- consistency ----
 
 // printConsistency prints the lap-to-lap spread of each segment phase, plus a

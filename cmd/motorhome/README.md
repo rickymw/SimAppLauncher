@@ -19,6 +19,8 @@ Parses the `-config` flag, loads the config file, and dispatches to one of eight
 | `analyze_json_build.go` | `buildAnalyzeResult` — maps computed values into the JSON document |
 | `analyze_pb.go` | Stored-PB rendering for `-lap pb` (`runStoredPB*`, `printStoredPB`, `emitStoredPB`) and `phasesToPB` |
 | `analyze_helpers.go` | Lap selection/filtering (`bestAnalyzeLap`, `flyingLapsWithinTime`, `crossLapComparableLaps`), `formatMapLine`, path and formatting helpers |
+| `coach.go` | `RunCoach` — emits a self-contained coaching brief for an AI assistant |
+| `coach_test.go` | Tests for brief structure, orientation gaps, trimming, framework loading |
 | `pb.go` | `RunPB` — the pb subcommand: `list`, `show`, `diff`, `prune` |
 | `analyze_test.go` | Tests for lap selection and `.ibt` file resolution |
 | `analyze_helpers_test.go` | Tests for `formatMapLine`, `pluralize`, `parseLapArg` |
@@ -47,6 +49,7 @@ motorhome [-config <path>] <subcommand> [args]
 
 start / stop / status  →  internal/launcher
 analyze [flags] [file] →  RunAnalyze in analyze.go
+coach [flags] [file]   →  RunCoach in coach.go
 pb [list|show|diff|prune] →  RunPB in pb.go
 notes [set-hotkey]     →  RunNotes in notes.go
 live [-watch] [-hz N]  →  RunLive in live.go
@@ -108,6 +111,22 @@ The consistency header names the contributing lap numbers, because the populatio
 ### Voice notes (`analyze_notes.go`)
 
 The notes subcommand names each session file after the `.ibt` it detected, so the join is by filename: `<notesDir>/<ibt basename>.json`. A missing notes file is the normal case and is not an error; a file that exists but cannot be parsed produces a stderr warning and is skipped, so a broken notes file never takes down an otherwise complete telemetry analysis.
+
+## coach subcommand (`coach.go`)
+
+`RunCoach(args, cfg, trackmapPath, pbPath, notesDir, cfgPath)` emits one self-contained markdown brief for an AI assistant: session orientation → the embedded `coach.md` framework → the analysis as JSON.
+
+It exists so coaching is one command rather than a procedure. The assistant used to run `analyze`, separately read `coach.md`, and reconcile an ASCII table against a framework written for a human; bundling the three removes the dependency on the assistant's working directory and on it remembering the steps.
+
+**No network call and no API key** — the assistant reading the brief is the coach. That was chosen over calling the Anthropic API to keep the repo's zero-external-dependency property.
+
+Implementation notes:
+
+- **Reuses the analyze pipeline wholesale.** `RunAnalyze` is called in-process with `-json` and its stdout captured. A second analysis path would be free to drift from what `analyze` reports.
+- **`captureStdoutSilent`** is the non-teeing sibling of `captureStdout`. The clipboard capture deliberately tees to the terminal; coach must not, or the raw JSON prints above the brief.
+- **`trimForCoaching`** drops the track map's raw segment geometry — no coaching signal, since every segment is already named in the phase rows — replacing it with `SegmentCount`. Map confidence and match score are kept: a low-confidence map means the boundaries are suspect and findings pinned to them need hedging. Nothing else is trimmed.
+- **The orientation names what is missing** in a `Gaps:` line. Coaching around an absent track map or PB without realising it is missing produces confident findings about nothing.
+- A missing `coach.md` warns on stderr and is skipped rather than being fatal; `-no-framework` omits it deliberately.
 
 ## pb subcommand (`pb.go`)
 

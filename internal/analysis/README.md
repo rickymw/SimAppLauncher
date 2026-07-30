@@ -75,6 +75,18 @@ Pairs are matched by segment name + phase kind, the same key the vs-PB table use
 
 Callers must pass an already-filtered set of comparable laps; mixing in an out lap would dominate every spread it touches.
 
+### Fuel and stint planning (`fuel.go`)
+
+`ComputeFuel` derives per-lap consumption from the `FuelLevel` channel and averages it over a caller-supplied population (the comparable laps — an out lap covers less than a full lap of track and would understate consumption).
+
+Consumption is the difference between tank readings at each lap's boundaries, **not** an integration of `FuelUsePerHour`: the rate channel is an instantaneous reading and integrating it accumulates error across a lap, while the level difference is what actually went into the engine. The rate is still reported as an average, but nothing is derived from it.
+
+Session endpoints are deliberately not used for totals. A session that ends with a pit stop has a full tank in its final sample, so `StartLitres - lastSample` reports a completed stint as having used nothing. `UsedLitres` is the sum of per-lap consumption, and `EndLitres` is measured at the end of the last lap that did not refuel. A lap that gained more than `fuelRefuelThreshold` litres is flagged `Refuelled`, has its consumption zeroed (burn and fill cannot be separated within one lap), and is excluded from the averages.
+
+Both an average and a worst-lap figure are reported, because planning a stint on the average runs dry half the time. `FuelForLaps` sizes a plan with a margin expressed in laps rather than a percentage — that is the granularity the decision is actually made at.
+
+A flat or absent channel yields `Available: false`; callers must not render the other fields in that case.
+
 ### Locating voice notes (`notes.go`)
 
 `LocateNotes` maps each voice note's wall-clock timestamp onto the lap and segment being driven at that moment, and returns the notes sorted by time.
@@ -106,6 +118,7 @@ Notes falling outside the recording come back with `Located == false` and keep t
 | `ExitImpact` | Corner exit speed paired with the peak speed reached on the following straight, for one lap. |
 | `DumpConfig` | Controls CSV dump: downsample rate (default 3 = 20Hz) and context samples (default 60 = 1s). |
 | `ConsistencyRow` | Per-(segment, phase) spread across laps: mean/SD of entry speed, exit speed, peak brake, lat G and coast, plus best exit speed and the lap that set it. |
+| `FuelSummary` / `LapFuel` | Per-lap and session fuel consumption, remaining litres, laps of headroom at average and worst-lap rates. `Available` is false when the channel is absent. |
 | `NoteInput` / `LocatedNote` | A voice note awaiting placement, and the same note resolved to a lap, lap distance and segment (`Located` false when it falls outside the recording). |
 | `SetupValue` / `SetupDiffEntry` | A flattened `CarSetup` leaf (`Path`, `Value`), and one difference between two setups (`Path`, `Old`, `New`). |
 | `Zone` | Per-zone stats for the legacy 20-zone split. |
@@ -136,6 +149,10 @@ analysis.DumpSegmentAllLapsCSV(writer, comparableLaps, segments, segIdx, analysi
 // Lap-to-lap spread, and the phases that vary most.
 rows := analysis.ComputeConsistency(comparableLaps, segments, brakeEntries)
 worst := analysis.MostVariable(rows, 3)
+
+// Fuel use and stint headroom.
+fuel := analysis.ComputeFuel(laps, comparableLaps)
+needed := analysis.FuelForLaps(fuel.WorstPerLap, 12, 1) // 12 laps + 1 lap margin
 
 // Place voice notes on track.
 located := analysis.LocateNotes(laps, segments, recStart, analysis.DefaultNoteLag, noteInputs)

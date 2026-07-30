@@ -1,7 +1,7 @@
 # CLAUDE.md — MotorHome
 
 ## Project overview
-Windows CLI tool (`motorhome.exe`) that launches, monitors, and closes sim racing apps in sequence, analyses iRacing `.ibt` telemetry files, and records voice notes during a session. Designed for Stream Deck integration. Eight subcommands: `start`, `stop`, `status`, `analyze`, `pb`, `notes`, `live`, `camera`. Accepts an optional `-config <path>` flag.
+Windows CLI tool (`motorhome.exe`) that launches, monitors, and closes sim racing apps in sequence, analyses iRacing `.ibt` telemetry files, and records voice notes during a session. Designed for Stream Deck integration. Nine subcommands: `start`, `stop`, `status`, `analyze`, `coach`, `pb`, `notes`, `live`, `camera`. Accepts an optional `-config <path>` flag.
 
 ## Documentation rule
 When making any code change, always review and update documentation to match:
@@ -79,6 +79,10 @@ motorhome analyze -dump 5 -lap 3 session.ibt        # dump 5th segment from lap 
 motorhome analyze -dump T3 -dump-all session.ibt    # dump T3 from every comparable lap into one CSV
 motorhome analyze -json session.ibt                 # emit the whole analysis as JSON instead of tables
 motorhome analyze -note-lag 3 session.ibt           # shift voice notes 3s earlier when placing them
+motorhome analyze -fuel-laps 12                     # litres needed to complete 12 more laps
+motorhome coach                                     # self-contained coaching brief for an AI assistant
+motorhome coach -lap 3                              # coach a specific lap
+motorhome coach -no-framework                       # data only, without the embedded framework
 motorhome pb                                        # list every stored personal best
 motorhome pb show watkins                           # full record (setup + phases) for one entry
 motorhome pb diff                                   # setup changes since the PB for this session's car/track
@@ -91,13 +95,17 @@ motorhome camera                                    # restart a stuck/frozen web
 ```
 
 ## AI Coaching workflow
-When the user asks to be coached, to analyse their session, or to review a lap, use Bash to run the analyze command — do not ask them to paste output.
+When the user asks to be coached, to analyse their session, or to review a lap, use Bash to run the coach command — do not ask them to paste output.
 
-1. Run `.\motorhome.exe analyze` (or with a specific `.ibt` path) to get the phase table for the best lap
-2. Read `coach.md` (repo root) for the full coaching framework, column reference, and output format
-3. Deliver per-segment findings using entry/mid/exit phase data and a **Top 3 Actions** list
+```powershell
+.\motorhome.exe coach              # most recent session
+.\motorhome.exe coach -lap 3       # a specific lap
+.\motorhome.exe coach session.ibt  # a specific file
+```
 
-If the user specifies a file or particular lap numbers, pass those through.
+That emits one self-contained brief: session orientation (including a `Gaps:` line naming what is missing), the full `coach.md` framework inline, and the analysis as JSON. **There is no second step — do not separately read `coach.md` or run `analyze`.** Deliver per-segment findings and a **Top 3 Actions** list.
+
+`analyze` remains the human-facing view (formatted tables, auto-copied to the clipboard); `coach` is the machine-facing one. There is no API key and no network call — the assistant reading the brief *is* the coach.
 
 ## Architecture
 
@@ -105,11 +113,11 @@ Each package has its own README with full detail. Below is a terse summary with 
 
 | Package | Role | Details |
 |---|---|---|
-| `cmd/motorhome` | Entry point, flag parsing, subcommand dispatch (`analyze.go`, `pb.go`, `notes.go`) | [README](cmd/motorhome/README.md) |
+| `cmd/motorhome` | Entry point, flag parsing, subcommand dispatch (`analyze.go`, `coach.go`, `pb.go`, `notes.go`) | [README](cmd/motorhome/README.md) |
 | `internal/config` | `Config`/`App` structs, JSON load, `Validate()` | [README](internal/config/README.md) |
 | `internal/launcher` | `ProcessManager` interface; `RunStart`/`RunStop`/`RunStatus`; `tasklist`/`taskkill`; `SeDebugPrivilege` fallback | [README](internal/launcher/README.md) |
 | `internal/ibt` | Low-level `.ibt` binary parser; `File.Sample(i)` typed accessor | [README](internal/ibt/README.md) |
-| `internal/analysis` | `ExtractLaps`, `ComputePhases`, `ComputeBrakeEntries`, `ComputeTyreSummary`, `ComputeConsistency`, `LocateNotes`, `DumpSegmentCSV`/`DumpSegmentAllLapsCSV`, `FlattenSetup`/`DiffSetups`, `ParseSessionMeta`, `ParseSectors`/`ComputeSectorTimes` | [README](internal/analysis/README.md) |
+| `internal/analysis` | `ExtractLaps`, `ComputePhases`, `ComputeBrakeEntries`, `ComputeTyreSummary`, `ComputeConsistency`, `ComputeFuel`, `LocateNotes`, `DumpSegmentCSV`/`DumpSegmentAllLapsCSV`, `FlattenSetup`/`DiffSetups`, `ParseSessionMeta`, `ParseSectors`/`ComputeSectorTimes` | [README](internal/analysis/README.md) |
 | `internal/trackmap` | GPS curvature corner detection (`latlon`) with steering/speed/lat-G validation; fallback `lataccel`; `trackmap.json` load/save | [README](internal/trackmap/README.md) |
 | `internal/pb` | Personal best store; `pb.Update` returns true on new PB; `PBPhase` stores per-segment data for delta comparison | [README](internal/pb/README.md) |
 | `internal/notes` | `Note{Timestamp,Text}`/`Session` types; `AppendNote` load→append→save | [README](internal/notes/README.md) |
@@ -163,6 +171,19 @@ The header names the contributing lap numbers (`Consistency (2 laps: 3, 4)`) bec
 
 Pairs are matched by segment name + phase kind. A corner can split entry/mid/exit on one lap and collapse to a single `full` phase on another, so rows seen on fewer than 2 laps are dropped rather than shown with a misleading `± 0.0`.
 
+### Fuel and stint planning
+`Used | Remaining | Burn rate` — consumption from the `FuelLevel` channel, plus what it implies for stint length. `-fuel-laps N` adds a line answering whether the tank covers N more laps.
+
+Consumption is the **difference between tank readings at each lap's boundaries**, not an integration of `FuelUsePerHour`. The rate channel is an instantaneous reading and integrating it accumulates error across a lap; the level difference is what actually went into the engine. `FuelUsePerHour` is still reported as an average, but nothing is derived from it.
+
+Two figures are always given, average and worst-lap: planning a stint on the average runs dry half the time, so the worst-lap rate is the one a stint has to survive. `fuelMarginLaps` (1 lap) is expressed in laps rather than a percentage because that is how the decision is made in the pits — "a lap in hand" is a concrete amount of running, "5%" is not.
+
+**Session endpoints are not used for totals.** Sessions routinely end with a pit stop that refills the tank, so `StartLitres - LastSample` reports a completed stint as having used nothing and having a full tank (observed on a real Phillip Island session: lap 5 pitted and refuelled to 49 L). `UsedLitres` is therefore the sum of per-lap consumption, and `EndLitres` is measured at the end of the last lap that did **not** refuel. A lap that gained fuel is flagged `Refuelled`, has its consumption zeroed (burn and fill can't be separated within one lap), and is excluded from the averages — and the fact is disclosed in the output rather than silently changing what the numbers mean.
+
+Averages are taken over `crossLapComparableLaps` only. An out lap covers less than a full lap of track and would understate consumption; it still appears in the per-lap breakdown.
+
+A flat or absent `FuelLevel` channel yields `Available: false` and the table is omitted entirely — reporting a session that burned no fuel would be worse than reporting nothing.
+
 ### Voice notes in analyze
 `Lap | Where | Lap% | Note` — voice notes recorded during the session, placed on the lap and segment being driven when they were spoken.
 
@@ -183,6 +204,23 @@ The full stdout output is also copied to the system clipboard automatically (via
 The map line branches on whether a stored map was used, not on whether a match score was computed. A stored map with no comparable lap (no valid flying lap, or no track length in the YAML) prints its real geometry confidence, lap/session counts and `GeoMethod` with `match: n/a (no comparable lap)`. Keying this off the match score previously made those sessions report a mature map as a fresh `geometry: low` "first detection".
 
 `-lap` accepts a positive integer (specific lap), empty (best lap of session — default), or `pb` (render the PB stored in `pb.json` without running the full analysis pipeline). For `-lap pb`: when an `.ibt` is available the car/track come from its session YAML; with no `.ibt` (or empty `ibtDir`) the single PB entry is used, or all entries are listed if there are several. The PB record stores `LapTime` / `Date` / `Weather`, the per-segment `Phases`, and the raw `CarSetup:` YAML block — enough to reproduce the setup and phase tables offline, without sample-level telemetry.
+
+### coach subcommand flow (`cmd/motorhome/coach.go`)
+Emits one self-contained markdown brief for an AI assistant: orientation → embedded `coach.md` framework → the analysis as JSON.
+
+It exists so coaching is one command rather than a procedure. The assistant previously had to run `analyze`, separately read `coach.md`, and reconcile an ASCII table against a framework written for a human. Bundling the three removes the dependency on the assistant's working directory and on it remembering the extra steps.
+
+**No network call and no API key** — the assistant reading the brief is the coach. This was a deliberate choice over calling the Anthropic API: it keeps the repo's zero-external-dependency property (see `internal/camera` and `internal/launcher`) and costs nothing per run.
+
+`RunCoach` **reuses the analyze pipeline wholesale** by calling `RunAnalyze` in-process with `-json` and capturing stdout via `captureStdoutSilent`. A second analysis path would be free to drift from what `analyze` reports; the brief must describe exactly the same session.
+
+`captureStdoutSilent` is the non-teeing sibling of `captureStdout`. The clipboard capture deliberately tees to the terminal; coach must not, or the raw JSON prints above the brief.
+
+`trimForCoaching` drops the track map's raw segment geometry (entry/exit percentages and metre offsets), which carries no coaching signal — every segment is already named in the phase and consistency rows. `SegmentCount` stands in for it. Map confidence and match score are **kept**, because a low-confidence map means the segment boundaries themselves are suspect and findings pinned to them should be hedged. Nothing else is trimmed: phases and consistency dominate the payload but are the substance of the analysis.
+
+The orientation ends with a `Gaps:` line naming what is absent (no track map, no PB, too few laps for consistency, no sector times). Coaching around a missing input without realising it is missing produces confident findings about nothing.
+
+A missing `coach.md` is a stderr warning, not a fatal error — the data section still carries everything measured. `-no-framework` omits it deliberately.
 
 ### pb subcommand flow (`cmd/motorhome/pb.go`)
 Reads back and maintains `pb.json`, which the analyze flow only ever appends to.

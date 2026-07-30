@@ -11,6 +11,8 @@ A Windows CLI tool that launches sim racing apps in sequence, analyses iRacing `
 - **Elevated process support** — kills auto-elevating processes (e.g. SimHub) via `SeDebugPrivilege`
 - **Lap analysis** — phase-based segment stats, PB tracking with per-segment delta comparison
 - **Consistency analysis** — lap-to-lap spread per corner phase, ranking the corners you repeat least well
+- **Fuel and stint planning** — per-lap burn, remaining laps at average *and* worst-lap rates, and whether the tank covers a given race distance
+- **AI coaching in one command** — `coach` bundles the framework and the data into a single brief; no API key, no network call
 - **GPS-based track segmentation** — auto-detects corners and straights from GPS curvature; cached in `trackmap.json`
 - **Voice notes** — press a hotkey to record, auto-transcribed via Whisper, and placed on the exact lap and corner you were driving when you spoke
 - **PB store management** — list, inspect, prune, and diff the setup you're running now against the setup that set your PB
@@ -40,6 +42,7 @@ motorhome [-config <path>] <start|stop|status|analyze|notes|live|camera>
 | `stop` | Kill all configured apps |
 | `status` | Print running/stopped state and PID |
 | `analyze` | Parse an `.ibt` file and print lap telemetry |
+| `coach` | Emit a self-contained coaching brief for an AI assistant to act on |
 | `pb` | List, inspect, diff and prune the personal-best store |
 | `notes` | Record voice notes stamped with track position |
 | `live` | Live position + gap in seconds to the car directly ahead and behind on track |
@@ -218,6 +221,20 @@ Consistency (2 laps: 3, 4):
 
 Speeds are mean ± standard deviation; brake, lateral G and coast show spread only, since their averages are already in the phase table. The header names the laps used — a wider filter than the one feeding corner detection, so that a session where you were still improving still produces a spread.
 
+### Fuel
+
+```
+Fuel:
+  Used:      6.72 L total; 2.18 avg, 2.25 median, 2.25 worst per lap (2 measured laps)
+  Remaining: 42.28 L → 19.4 laps at average, 18.8 at worst-lap rate
+  Burn rate: 56.3 kg/h average
+  For 12 laps: 29.31 L at the worst-lap rate (+1 lap margin) — 12.97 L in hand
+```
+
+Two figures for remaining laps, because planning a stint on the average runs dry half the time — the worst-lap rate is what a stint has to survive. `-fuel-laps N` adds the last line.
+
+Consumption comes from the tank level at each lap's boundaries, not from the instantaneous burn-rate channel. If a lap refuels, its consumption is excluded and "remaining" is measured at the end of the last lap that didn't — otherwise a session that ends with a pit stop reports a full tank and zero fuel used.
+
 ### JSON output
 
 `-json` emits the whole analysis — session metadata, laps, sectors, phases, vs-PB deltas, exit impact, tyres, consistency and notes — as a versioned document, so tools don't have to parse fixed-width tables.
@@ -225,6 +242,34 @@ Speeds are mean ± standard deviation; brake, lateral G and coast show spread on
 ```powershell
 .\motorhome.exe analyze -json | ConvertFrom-Json
 ```
+
+---
+
+## AI Coaching
+
+```powershell
+.\motorhome.exe coach              # most recent session
+.\motorhome.exe coach -lap 3       # a specific lap
+.\motorhome.exe coach -no-framework  # data only
+```
+
+Emits a single self-contained brief — session orientation, the full `coach.md` framework, and the analysis as JSON — for an AI assistant (Claude Code) to act on. **No API key and no network call:** the assistant reading the brief is the coach.
+
+```
+# Coaching brief — Porsche 718 Cayman GT4 at Phillip Island Circuit
+
+You are the race engineer. Read the framework, then the session data below,
+and deliver per-segment findings followed by a **Top 3 Actions** list.
+
+## Session
+
+- Laps: 5 total, 3 flying, 2 comparable
+- Analysed: lap 4 (1:41.554, selected as best)
+- PB: 1:41.554 set 2026-07-29 — this session is 0.000s off it
+- Gaps: no sector times published for this session type
+```
+
+The `Gaps:` line names what's absent, so the coach doesn't build confident findings on data that isn't there. Edit `coach.md` to change how the analysis is interpreted — the brief embeds it, so there's one source of truth.
 
 ---
 

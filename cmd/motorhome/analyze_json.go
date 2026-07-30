@@ -45,15 +45,46 @@ type analyzeResult struct {
 
 	AnalysedLap *jsonAnalysedLap  `json:"analysedLap,omitempty"`
 	Consistency []jsonConsistency `json:"consistency,omitempty"`
+	Fuel        *jsonFuel         `json:"fuel,omitempty"`
 	Notes       []jsonNote        `json:"notes,omitempty"`
 }
 
+type jsonFuel struct {
+	StartLitres float32 `json:"startLitres"`
+	// EndLitres is measured at the end of the last lap that did not refuel,
+	// not at the last sample of the session.
+	EndLitres     float32 `json:"endLitres"`
+	UsedLitres    float32 `json:"usedLitres"`
+	Refuelled     bool    `json:"refuelled,omitempty"`
+	LapsMeasured  int     `json:"lapsMeasured"`
+	AvgPerLap     float32 `json:"avgPerLapLitres"`
+	MedianPerLap  float32 `json:"medianPerLapLitres"`
+	WorstPerLap   float32 `json:"worstPerLapLitres"`
+	AvgUsePerHour float32 `json:"avgUsePerHourKgH,omitempty"`
+	// Two remaining-laps figures: planning a stint on the average runs dry
+	// half the time, so the worst-lap figure is the one a stint must survive.
+	LapsRemainingAvg   float32       `json:"lapsRemainingAvg"`
+	LapsRemainingWorst float32       `json:"lapsRemainingWorst"`
+	PerLap             []jsonLapFuel `json:"perLap,omitempty"`
+}
+
+type jsonLapFuel struct {
+	Lap         int     `json:"lap"`
+	StartLitres float32 `json:"startLitres"`
+	EndLitres   float32 `json:"endLitres"`
+	UsedLitres  float32 `json:"usedLitres"`
+	Refuelled   bool    `json:"refuelled,omitempty"`
+}
+
 type jsonTrackMap struct {
-	Segments     []trackmap.Segment `json:"segments"`
-	GeoMethod    string             `json:"geoMethod,omitempty"`
-	Confidence   string             `json:"confidence,omitempty"`
-	LapsUsed     int                `json:"lapsUsed,omitempty"`
-	SessionsUsed int                `json:"sessionsUsed,omitempty"`
+	Segments []trackmap.Segment `json:"segments,omitempty"`
+	// SegmentCount stands in for Segments when the geometry has been dropped
+	// (the coach brief does this — see trimForCoaching).
+	SegmentCount int    `json:"segmentCount,omitempty"`
+	GeoMethod    string `json:"geoMethod,omitempty"`
+	Confidence   string `json:"confidence,omitempty"`
+	LapsUsed     int    `json:"lapsUsed,omitempty"`
+	SessionsUsed int    `json:"sessionsUsed,omitempty"`
 	// MatchScore is nil when no comparable lap was available to score the
 	// stored map against — distinct from a score of 0, which means the lap
 	// matched nothing.
@@ -214,6 +245,7 @@ type analyzeResultInput struct {
 	pbEntry        *pb.PersonalBest
 	sectors        []analysis.Sector
 	consistency    []analysis.ConsistencyRow
+	fuel           analysis.FuelSummary
 	notes          []analysis.LocatedNote
 	notesFile      string
 

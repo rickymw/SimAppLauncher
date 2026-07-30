@@ -165,6 +165,14 @@ func selectAnalyzeLap(laps []analysis.Lap, lapNum int) *analysis.Lap {
 	return bestAnalyzeLap(laps)
 }
 
+// fuelMarginLaps is the safety margin added to a fuel plan, in laps.
+//
+// One lap, because that is the granularity the decision is made at: a
+// safety-car restart, a slow lap behind traffic, or a formation lap all cost
+// roughly a lap's worth of fuel, and running out is a retirement while
+// carrying a spare lap costs a few tenths.
+const fuelMarginLaps float32 = 1.0
+
 // consistencyLapFilterPct is how much slower than the session best a flying lap
 // may be and still count towards the cross-lap views (consistency, -dump-all).
 //
