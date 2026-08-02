@@ -12,6 +12,11 @@
     "cornerNames": ["T1", "T2", "T3", "T4", "T5", "T6", "T7", "T8", "T9", "T10", "T11"],
     "comment": "Boot: 11 corners detected and iRacing reports 11 turns, so the positional numbering already matches the official one. Add names over these T-numbers as you learn them, e.g. \"T5 Bus Stop\"."
   },
+  "Phillip Island Circuit": {
+    "corners": 9,
+    "cornerNames": ["T1 Doohan", "T2-3", "T4 Honda", "T5", "T6", "T7", "T8-9", "T10-11", "T12"],
+    "comment": "9 corners detected but iRacing reports 12 turns. The three missing turns are same-segment merges, confirmed from the lap-9 steering trace: detected #2 has two left apexes (+90 deg at 21.7%, unwinds to +35%, re-loads to +79 deg at 23.9%); detected #7 likewise (+66 deg at 69.1%, +48 deg at 71.9%); detected #8 reverses direction (right to -131 deg at ~76%, then left to +78 deg at 77.6-79.1%). 1+2+1+1+1+1+2+2+1 = 12, so the official numbering above is determined by position. Names are only filled in where confirmed — turns 5-12 still need reading off the in-sim map. Detected positions (lap %, length, direction, min speed on the 1:37.173 lap): 1) 11.4-16.3% 216m right 190kph; 2) 18.5-27.6% 401m left x2 100kph; 3) 41.4-44.2% 123m right 66kph; 4) 47.2-52.1% 216m left 95kph; 5) 54.4-56.5% 93m left 155kph; 6) 59.9-63.5% 158m right 196kph; 7) 65.9-74.1% 361m left x2 87kph; 8) 74.1-84.0% 436m right-then-left 76kph; 9) 84.0-93.5% 419m left 170kph"
+  },
   "Road America": {
     "corners": 11,
     "cornerNames": ["", "", "", "", "", "", "", "", "", "", ""],
