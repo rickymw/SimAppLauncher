@@ -251,6 +251,7 @@ Consumption comes from the tank level at each lap's boundaries, not from the ins
 .\motorhome.exe coach              # most recent session
 .\motorhome.exe coach -lap 3       # a specific lap
 .\motorhome.exe coach -no-framework  # data only
+.\motorhome.exe coach -table       # turn-by-turn table, for a human
 ```
 
 Emits a single self-contained brief — session orientation, the full `coach.md` framework, and the analysis as JSON — for an AI assistant (Claude Code) to act on. **No API key and no network call:** the assistant reading the brief is the coach.
@@ -270,6 +271,19 @@ and deliver per-segment findings followed by a **Top 3 Actions** list.
 ```
 
 The `Gaps:` line names what's absent, so the coach doesn't build confident findings on data that isn't there. Edit `coach.md` to change how the analysis is interpreted — the brief embeds it, so there's one source of truth.
+
+### `-table` — the same session, for a human
+
+```
+ Turn      | Speed in>min>out | Coast | Lock  | Spin  | ExitSD | Flags             | Grade
+-----------|------------------|-------|-------|-------|--------|-------------------|------
+ T1 Doohan | 201>199>201      | 0.20s |     - |     - |    6.6 |                   | A
+ T2-3      | 184>106>169      | 1.10s | 3.07s |     - |   19.6 | coast lock spread | D
+ T4 Honda  | 122>73>92        | 1.38s | 1.97s | 1.10s |    5.5 | coast lock spin   | D
+ T8-9      | 205>115>115      | 0.58s | 4.32s |     - |   33.5 | lock spread       | C
+```
+
+One row per corner, then a sector-loss table and a ranking of the least repeatable exits. **The Grade is a triage hint, not a measurement** — it counts how many of five fixed thresholds a corner trips, and those thresholds are printed in the legend so a letter can be argued with. There is no "Fix" column on purpose: what to do about a flagged corner is coaching judgement, and generating it from thresholds would be a canned string dressed up as advice.
 
 ---
 

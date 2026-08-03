@@ -20,7 +20,9 @@ Parses the `-config` flag, loads the config file, and dispatches to one of eight
 | `analyze_pb.go` | Stored-PB rendering for `-lap pb` (`runStoredPB*`, `printStoredPB`, `emitStoredPB`) and `phasesToPB` |
 | `analyze_helpers.go` | Lap selection/filtering (`bestAnalyzeLap`, `flyingLapsWithinTime`, `crossLapComparableLaps`), `formatMapLine`, path and formatting helpers |
 | `coach.go` | `RunCoach` — emits a self-contained coaching brief for an AI assistant |
+| `coach_table.go` | `-table`: turn-by-turn table, flag thresholds, grading, sector loss |
 | `coach_test.go` | Tests for brief structure, orientation gaps, trimming, framework loading |
+| `coach_table_test.go` | Tests for per-corner aggregation, grading thresholds, table rendering |
 | `pb.go` | `RunPB` — the pb subcommand: `list`, `show`, `diff`, `prune` |
 | `analyze_test.go` | Tests for lap selection and `.ibt` file resolution |
 | `analyze_helpers_test.go` | Tests for `formatMapLine`, `pluralize`, `parseLapArg` |
@@ -127,6 +129,18 @@ Implementation notes:
 - **`trimForCoaching`** drops the track map's raw segment geometry — no coaching signal, since every segment is already named in the phase rows — replacing it with `SegmentCount`. Map confidence and match score are kept: a low-confidence map means the boundaries are suspect and findings pinned to them need hedging. Nothing else is trimmed.
 - **The orientation names what is missing** in a `Gaps:` line. Coaching around an absent track map or PB without realising it is missing produces confident findings about nothing.
 - A missing `coach.md` warns on stderr and is skipped rather than being fatal; `-no-framework` omits it deliberately.
+
+### `-table` — the turn-by-turn view (`coach_table.go`)
+
+`coach -table` prints one row per corner instead of the AI brief: `Turn | Speed in>min>out | Coast | Lock | Spin | ExitSD | Flags | Grade`, followed by a sector-loss table and a ranking of the least repeatable exits. It is a second renderer over the same `analyzeResult`, for the same reason `analyze_json.go` exists alongside the ASCII tables — the brief is written for an assistant to read, this is the same content collapsed for a human to scan between runs.
+
+- **Corners only.** Straights are dropped: a straight is either flat or a segment-boundary artifact, and including them would double the table. Braking that begins on the straight before a corner is therefore *not* charged to that corner — the legend says so and points at the phase table.
+- **The Grade is a triage hint, not a measurement.** The tool has no model of a well-driven corner. The letter counts how many of five fixed thresholds (`coachCoastFlagSeconds` and friends) a corner trips: 0 flags = A, 4+ = F. The thresholds are heuristics and are printed in the legend beneath the table, so a grade can be argued with rather than taken on faith.
+- **No "Fix" column.** Deciding what to do about a flagged corner is the coaching judgement the assistant supplies; generated from thresholds it would be a canned string dressed up as advice.
+- **Spread needs two laps.** `ExitSD` renders `-` and cannot trip the spread flag below two comparable laps — a one-lap corner has no spread, and grading it clean would be a lie of omission. A footer states how many corners are in that position.
+- **Aggregation is worst-phase, not mean**, for `ExitSD`: one badly repeated phase is the finding, and averaging it against two steady ones hides it. Coast/lock/spin/corrections are summed across the corner's phases.
+- **Renders from the untrimmed result.** `buildCoachTableView` runs before `trimForCoaching`, because classifying a segment as a corner needs the track map's `Kind` — exactly the geometry the brief drops. `cornerSegmentNames` falls back to the phase name (`full` = straight) when the geometry is gone, which is why the table still works on a trimmed result; that fallback misclassifies corners taken under 5° of steering, so it is the fallback and not the rule.
+- **Sector loss is self-vs-self.** Every entry in the `Best` column was set during the same session, so the total is time the driver has already demonstrated rather than a simulated ideal. It is coarse — it names a third of the lap, not a corner — which is why it sits under the turn table instead of replacing it.
 
 ## pb subcommand (`pb.go`)
 

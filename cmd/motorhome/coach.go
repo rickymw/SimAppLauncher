@@ -38,6 +38,7 @@ func RunCoach(args []string, cfg config.Config, trackmapPath, pbPath, notesDir, 
 	fs := flag.NewFlagSet("coach", flag.ExitOnError)
 	lapArg := fs.String("lap", "", "lap to coach: integer for that lap, empty for best of session")
 	noFramework := fs.Bool("no-framework", false, "omit the embedded coaching framework (data only)")
+	table := fs.Bool("table", false, "print a turn-by-turn table for a human instead of the AI brief")
 	fuelLaps := fs.Int("fuel-laps", 0, "also report the fuel needed to complete this many laps")
 	fs.Usage = func() {
 		fmt.Fprintln(os.Stderr, "Usage: motorhome [-config <path>] coach [flags] [file.ibt]")
@@ -48,6 +49,7 @@ func RunCoach(args []string, cfg config.Config, trackmapPath, pbPath, notesDir, 
 		fmt.Fprintln(os.Stderr, "Examples:")
 		fmt.Fprintln(os.Stderr, "  motorhome coach                    (most recent session)")
 		fmt.Fprintln(os.Stderr, "  motorhome coach -lap 3")
+		fmt.Fprintln(os.Stderr, "  motorhome coach -table             (turn-by-turn table, for a human)")
 		fmt.Fprintln(os.Stderr, "  motorhome coach session.ibt")
 		fmt.Fprintln(os.Stderr)
 		fs.PrintDefaults()
@@ -76,8 +78,30 @@ func RunCoach(args []string, cfg config.Config, trackmapPath, pbPath, notesDir, 
 		coachDie("parsing analysis output: %v", err)
 	}
 
+	// -table renders from the untrimmed result: the turn table needs the track
+	// map's segment kinds to tell a corner from a straight, which is exactly the
+	// geometry trimForCoaching drops for the AI brief.
+	if *table {
+		fmt.Print(buildCoachTableView(res))
+		return
+	}
+
 	brief := buildCoachBrief(trimForCoaching(res), coachFrameworkText(*noFramework, cfgPath))
 	fmt.Print(brief)
+}
+
+// buildCoachTableView renders the human-facing turn-by-turn view: the same
+// orientation the brief opens with, then the table.
+//
+// The orientation is kept because the table is meaningless without it — a D on a
+// corner means something different on a 2-lap session with a low-confidence map
+// than on a 20-lap one, and the Gaps line is what says which this was.
+func buildCoachTableView(res analyzeResult) string {
+	var b strings.Builder
+	writeCoachOrientation(&b, res)
+	writeCoachTable(&b, res)
+	writeCoachMostVariable(&b, res)
+	return b.String()
 }
 
 // trimForCoaching drops payload that carries no coaching signal.

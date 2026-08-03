@@ -83,6 +83,7 @@ motorhome analyze -fuel-laps 12                     # litres needed to complete 
 motorhome coach                                     # self-contained coaching brief for an AI assistant
 motorhome coach -lap 3                              # coach a specific lap
 motorhome coach -no-framework                       # data only, without the embedded framework
+motorhome coach -table                              # turn-by-turn table for a human, not the AI brief
 motorhome pb                                        # list every stored personal best
 motorhome pb show watkins                           # full record (setup + phases) for one entry
 motorhome pb diff                                   # setup changes since the PB for this session's car/track
@@ -221,6 +222,14 @@ It exists so coaching is one command rather than a procedure. The assistant prev
 The orientation ends with a `Gaps:` line naming what is absent (no track map, no PB, too few laps for consistency, no sector times). Coaching around a missing input without realising it is missing produces confident findings about nothing.
 
 A missing `coach.md` is a stderr warning, not a fatal error — the data section still carries everything measured. `-no-framework` omits it deliberately.
+
+**`-table`** (`coach_table.go`) swaps the brief for a human-facing turn-by-turn view: one row per corner (`Turn | Speed in>min>out | Coast | Lock | Spin | ExitSD | Flags | Grade`), then a sector-loss table and a ranking of the least repeatable exits. Same `analyzeResult`, second renderer — the same relationship `analyze_json.go` has to the ASCII tables.
+
+The **Grade is a triage hint, not a measurement**: the tool has no model of a well-driven corner, so the letter only counts how many of five fixed thresholds a corner trips (0 flags = A, 4+ = F). The thresholds are printed in the legend beneath the table so a grade can be argued with instead of trusted. There is deliberately **no "Fix" column** — deciding what to do about a flagged corner is the coaching judgement the assistant supplies, and generating it from thresholds would be a canned string dressed up as advice.
+
+Straights are dropped from the table (a straight is either flat or a boundary artifact), which means braking that begins before the corner is not charged to it — the legend says so. `ExitSD` renders `-` below two comparable laps and cannot trip the spread flag: a one-lap corner has no spread, and grading it clean would be a lie of omission. Per-corner aggregation sums coast/lock/spin/corrections but takes the **worst** phase's `ExitSD`, since averaging one badly repeated phase against two steady ones hides the finding.
+
+`-table` renders **before** `trimForCoaching`, because telling a corner from a straight needs the track map's `Kind` — exactly the geometry the brief drops. `cornerSegmentNames` falls back to the phase name (`full` = straight) when geometry is unavailable; that fallback misclassifies corners taken under 5° of steering, so it is a fallback rather than the rule.
 
 ### pb subcommand flow (`cmd/motorhome/pb.go`)
 Reads back and maintains `pb.json`, which the analyze flow only ever appends to.

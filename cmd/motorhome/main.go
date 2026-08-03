@@ -23,7 +23,7 @@ func main() {
 	flag.Usage = func() {
 		fmt.Fprintln(os.Stderr, "Usage: motorhome [-config <path>] <start|stop|status|analyze|coach|pb|notes|live|camera>")
 		fmt.Fprintln(os.Stderr, "       motorhome analyze [-lap N] [-update-map] [-json] [-dump T3 [-dump-all]] [file.ibt]")
-		fmt.Fprintln(os.Stderr, "       motorhome coach [-lap N] [file.ibt]")
+		fmt.Fprintln(os.Stderr, "       motorhome coach [-lap N] [-table] [file.ibt]")
 		fmt.Fprintln(os.Stderr, "       motorhome pb [list|show|diff|prune]")
 		fmt.Fprintln(os.Stderr, "       motorhome notes [set-hotkey]")
 		fmt.Fprintln(os.Stderr, "       motorhome live [-watch] [-hz N] [-raw]")
