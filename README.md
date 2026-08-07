@@ -380,7 +380,9 @@ Gap math uses each car's `CarIdxEstTime` when both are on the same lap, otherwis
 
 Restarts the Windows `FrameServer`/`FrameServerMonitor` services — the shared pipeline every app uses to access a webcam — to clear a stuck or frozen camera without unplugging it.
 
-The case this exists for: when the webcam is redirected into a **Remote Desktop** session, leaving the meeting does not release it — `mstsc.exe` keeps holding the camera indefinitely, so every local app finds it busy and nothing frees it short of a reboot. This command tears down that stale handle. This does **not** require an elevated process, only a one-time grant of `SERVICE_START`/`SERVICE_STOP` rights on those two services to your account (a full PnP device disable/enable would need real admin rights, which aren't reliably obtainable via UAC in this setup):
+The case this exists for: when the webcam is redirected into a **Remote Desktop** session, leaving the meeting does not release it — `mstsc.exe` keeps holding the camera indefinitely, so every local app finds it busy and nothing frees it short of a reboot. This command tears down that stale handle.
+
+**Redirection has two ends.** The camera is attached to the RDP client, but the remote machine runs its own frame server for the redirected device. If apps *inside* the session say "in use or unavailable", the stall is on the remote machine and running this locally will not help — copy `motorhome.exe` over and run it there. It needs no config file or any other repo file, just the exe. This does **not** require an elevated process, only a one-time grant of `SERVICE_START`/`SERVICE_STOP` rights on those two services to your account (a full PnP device disable/enable would need real admin rights, which aren't reliably obtainable via UAC in this setup):
 
 ```powershell
 # One-time setup — run once, elevated. Look up your SID first:

@@ -14,6 +14,19 @@ Restarting the Frame Server tears down that stale client handle and frees the de
 
 This is also why the graceful-stop wait must be generous — see [Runtime and timeouts](#runtime-and-timeouts). There is no client that will ever voluntarily let go, so Windows waits for a release that never comes and eventually forces it.
 
+### Client side vs host side
+
+Redirection has two ends, each with its own Frame Server, and this command only clears the machine it runs on:
+
+| Symptom | Stuck end | Where to run `camera` |
+|---|---|---|
+| Local apps say the camera is busy after leaving a meeting | Client (camera physically attached) | The client |
+| Apps **inside** the RDP session say "in use or unavailable" | Host (session machine) | The remote machine |
+
+Running it on the client cannot clear a host-side stall — that is what makes the far end look like it needs a reboot. Copy the exe over and run it there; it needs no config file (see below) and no other repo files.
+
+If the remote machine has no `FrameServer` service at all (some Server SKUs), the holder is the redirection stack rather than the frame server, and disconnecting/reconnecting the RDP session is the realistic fix short of a reboot.
+
 ## Why not disable/enable the USB PnP device?
 
 That was the first approach tried, using PowerShell's `Disable-PnpDevice`/`Enable-PnpDevice` (and `pnputil`) against the camera's PnP entries. Both failed on this machine even though it can already run `taskkill` against elevated processes via the `SeDebugPrivilege` fallback in [internal/launcher](../launcher/README.md) — disabling/enabling a PnP device needs a genuine administrator token, not just a single grantable privilege, and `ShellExecuteExW`'s `runas` verb doesn't reliably elevate in this environment (see the top-level CLAUDE.md). Restarting the Frame Server services instead only needs `SERVICE_START`/`SERVICE_STOP` rights on those two specific services, which — like `SeDebugPrivilege` — can be granted directly to a non-admin account.
@@ -53,6 +66,15 @@ type Restarter interface {
 `progress` is called with status lines during slow operations, so a wait that legitimately takes ~30s doesn't look like a hang.
 
 `RunCameraRestart(r Restarter)` prints per-service progress and a summary. Tests inject a `mockRestarter` so no real service is touched.
+
+### Runs without a config file
+
+`camera` is the one subcommand dispatched in `main.go` *before* `config.Load`. It reads nothing from the config, and it needs to run from a bare copy of `motorhome.exe` on a machine that has no `launcher.config.json` — the remote end of an RDP session. Loading the config first made that fail with a misleading `error loading config`. `RunCamera` takes no `config.Config` parameter so the independence is explicit rather than incidental.
+
+```powershell
+# works with nothing but the exe present
+.\motorhome.exe camera
+```
 
 ### Windows implementation (`camera_windows.go`)
 

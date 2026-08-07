@@ -38,6 +38,16 @@ func main() {
 		os.Exit(1)
 	}
 
+	// camera reads nothing from the config, and is the one subcommand likely to
+	// be run from a bare copy of the exe on another machine — un-sticking a
+	// webcam redirected into an RDP session means running it on the far end,
+	// where there is no launcher.config.json. Dispatch it before the config
+	// load so a missing config can't block it.
+	if args[0] == "camera" {
+		RunCamera(args[1:])
+		return
+	}
+
 	cfg, err := config.Load(*cfgPath)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "error loading config: %v\n", err)
@@ -71,8 +81,6 @@ func main() {
 		RunNotes(args[1:], cfg, notesDir, *cfgPath)
 	case "live":
 		RunLive(args[1:], cfg)
-	case "camera":
-		RunCamera(args[1:], cfg)
 	default:
 		pm := launcher.NewProcessManager()
 		switch args[0] {
