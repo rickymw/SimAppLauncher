@@ -22,7 +22,7 @@ A Windows CLI tool that launches sim racing apps in sequence, analyses iRacing `
 
 - Windows 10/11
 - [Go 1.21+](https://go.dev/dl/) (to build from source)
-- [whisper-cli](https://github.com/ggerganov/whisper.cpp) (for voice notes)
+- [whisper-cli](https://github.com/ggml-org/whisper.cpp) (for voice notes)
 
 ## Build
 
