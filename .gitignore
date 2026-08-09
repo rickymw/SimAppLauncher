@@ -18,6 +18,7 @@ coverage.out
 # Live data files generated at runtime (not source-controlled)
 trackmap.json
 pb.json
+notes/
 
 # User-specific config (driver name, install paths, hotkey IDs)
 launcher.config.json
