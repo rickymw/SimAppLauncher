@@ -265,7 +265,9 @@ Restarts a stuck/frozen webcam by stopping (if running) and restarting the Windo
 
 **Motivating case:** the webcam is redirected into a Remote Desktop session (`mstsc.exe`), and on leaving the meeting RDP never releases it — the device stays held indefinitely and every local app finds it busy. Nothing frees it short of a reboot or unplugging the camera. Restarting the Frame Server tears down that stale handle; verified to release the device with `mstsc.exe` holding it.
 
-**There are two ends to this, and the command only fixes the one it runs on.** The camera is physically attached to the RDP *client*; the *host* runs its own `FrameServer` mediating the redirected device. A camera that reports "in use or unavailable" **inside** the session is stuck on the host, and running `camera` on the client will not clear it — the binary has to be run on the remote machine.
+**There are two ends to this, and the command only fixes the one it runs on.** The camera is physically attached to the RDP *client*; the *host* runs its own `FrameServer` mediating the redirected device. A camera that reports "in use or unavailable" **inside** the session is stuck on the host, and running `camera` on the client will not clear it — the binary has to be run on the remote machine. Confirmed in practice: running `motorhome camera` on the remote machine cleared it with no reboot.
+
+**Reconnecting the RDP session does not fix the host-side stall** (also confirmed). `FrameServer` is machine-wide rather than per-session, so tearing down and rebuilding the session leaves the stale handle untouched; only stopping the service releases it. Don't offer session reconnect as a workaround for this failure.
 
 `camera` is therefore dispatched in `main.go` **before** `config.Load`, unlike every other subcommand. It reads nothing from the config, and the far end of an RDP session has no `launcher.config.json`; requiring one would fail a bare copy of the exe with a misleading "error loading config". `RunCamera` takes no `config.Config` parameter to keep that explicit.
 

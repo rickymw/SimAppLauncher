@@ -25,7 +25,11 @@ Redirection has two ends, each with its own Frame Server, and this command only 
 
 Running it on the client cannot clear a host-side stall — that is what makes the far end look like it needs a reboot. Copy the exe over and run it there; it needs no config file (see below) and no other repo files.
 
-If the remote machine has no `FrameServer` service at all (some Server SKUs), the holder is the redirection stack rather than the frame server, and disconnecting/reconnecting the RDP session is the realistic fix short of a reboot.
+**Confirmed in practice:** a camera reporting "in use or unavailable" inside an RDP session was cleared by running `motorhome camera` on the remote machine, with no reboot.
+
+**Disconnecting and reconnecting the RDP session does not fix it** — also confirmed. That is the expected result rather than a surprise: `FrameServer` is a machine-wide service, not a per-session one, so tearing down and rebuilding the session leaves the stale handle in place. Only stopping the service releases it. Anything that suggests reconnecting as a workaround is wrong for this failure.
+
+If the remote machine has no `FrameServer` service at all (some Server SKUs), this command has nothing to restart and the holder is elsewhere in the redirection stack; a reboot may then genuinely be the only option.
 
 ## Why not disable/enable the USB PnP device?
 
