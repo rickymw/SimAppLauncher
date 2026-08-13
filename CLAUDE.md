@@ -230,6 +230,8 @@ It exists so coaching is one command rather than a procedure. The assistant prev
 
 `captureStdoutSilent` is the non-teeing sibling of `captureStdout`. The clipboard capture deliberately tees to the terminal; coach must not, or the raw JSON prints above the brief.
 
+Because that pipeline runs in-process, its failures are *coach's* failures as far as the user is concerned. `invokedAs` (`analyze_helpers.go`) carries the subcommand name and the trace flag name, and `RunCoach` sets it before calling in — otherwise `coach -lap 99` reports `analyze: lap 99 not found`, and `coach -segment T99` blames `-trace`, sending the user after a flag that isn't on the command they ran. `dieMessage` is split out of `analyzeDie`/`coachDie` so the wording is assertable in-process; the wiring itself is covered by re-exec cases in `pb_exit_test.go`.
+
 `trimForCoaching` drops the track map's raw segment geometry (entry/exit percentages and metre offsets), which carries no coaching signal — every segment is already named in the phase and consistency rows. `SegmentCount` stands in for it. Map confidence and match score are **kept**, because a low-confidence map means the segment boundaries themselves are suspect and findings pinned to them should be hedged. Nothing else is trimmed: phases and consistency dominate the payload but are the substance of the analysis.
 
 The orientation ends with a `Gaps:` line naming what is absent (no track map, no PB, too few laps for consistency, no sector times). Coaching around a missing input without realising it is missing produces confident findings about nothing.

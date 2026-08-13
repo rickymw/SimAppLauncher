@@ -29,7 +29,8 @@ func buildSegmentTraces(spec string, segs []trackmap.Segment, laps, comparableLa
 	lapNum, hz int) []analysis.SegmentTrace {
 
 	if len(segs) == 0 {
-		analyzeDie("-trace requires a track map (run analyze once first to auto-detect segments)")
+		analyzeDie("%s requires a track map (run analyze once first to auto-detect segments)",
+			invokedAs.traceFlag)
 	}
 	idxs, err := analysis.ResolveSegmentList(segs, spec)
 	if err != nil {
@@ -45,7 +46,7 @@ func buildSegmentTraces(spec string, segs []trackmap.Segment, laps, comparableLa
 	if len(traceLaps) == 0 {
 		lap := selectAnalyzeLap(laps, lapNum)
 		if lap == nil {
-			analyzeDie("-trace found no lap to trace")
+			analyzeDie("%s found no lap to trace", invokedAs.traceFlag)
 		}
 		traceLaps = []analysis.Lap{*lap}
 	}
@@ -56,7 +57,7 @@ func buildSegmentTraces(spec string, segs []trackmap.Segment, laps, comparableLa
 		if err != nil {
 			// One corner missing from every lap does not invalidate the others;
 			// warn and carry on rather than failing the whole run.
-			fmt.Fprintf(os.Stderr, "Warning: -trace %s: %v\n", segs[idx].Name, err)
+			fmt.Fprintf(os.Stderr, "Warning: %s %s: %v\n", invokedAs.traceFlag, segs[idx].Name, err)
 			continue
 		}
 		out = append(out, tr)

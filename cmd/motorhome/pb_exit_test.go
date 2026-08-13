@@ -7,6 +7,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/rickymw/MotorHome/internal/analysis"
 	"github.com/rickymw/MotorHome/internal/config"
 	"github.com/rickymw/MotorHome/internal/pb"
 )
@@ -37,6 +38,16 @@ func TestMain(m *testing.M) {
 		runPBShow([]string{"ferrari"}, writeExitCasePBFile())
 	case "unknown-subcommand":
 		RunPB([]string{"bogus"}, config.Config{}, writeExitCasePBFile())
+	case "coach-trace-bad-segment":
+		// The real wiring: coach sets invokedAs before the shared pipeline runs,
+		// so the segment error must name coach and -segment, not analyze/-trace.
+		invokedAs = coachInvocation
+		buildSegmentTraces("T99", traceTestSegs(), exitCaseTraceLaps(), exitCaseTraceLaps(), 0, 0)
+	case "coach-trace-no-map":
+		invokedAs = coachInvocation
+		buildSegmentTraces("T1", nil, exitCaseTraceLaps(), exitCaseTraceLaps(), 0, 0)
+	case "analyze-trace-no-map":
+		buildSegmentTraces("T1", nil, exitCaseTraceLaps(), exitCaseTraceLaps(), 0, 0)
 	}
 	// A case that returns instead of exiting is itself a failure; make that
 	// visible rather than reporting a misleading exit code 0.
@@ -65,6 +76,12 @@ func writeExitCasePBFile() string {
 		panic(err)
 	}
 	return path
+}
+
+// exitCaseTraceLaps builds the minimal lap set the trace cases need. Like
+// writeExitCasePBFile it runs without a *testing.T, in the child process.
+func exitCaseTraceLaps() []analysis.Lap {
+	return []analysis.Lap{traceTestLap(3, 50)}
 }
 
 // runExitCase re-executes this test binary for one named case and returns its
@@ -151,5 +168,67 @@ func TestRunPB_UnknownSubcommandExitsNonZero(t *testing.T) {
 	}
 	if !strings.Contains(stderr, "pb <list|show|diff|prune>") {
 		t.Errorf("expected usage on stderr, got:\n%s", stderr)
+	}
+}
+
+// coach runs the analyze pipeline in-process, so a failure inside it must still
+// name the command and flag the user typed. Reporting `analyze: ... -trace ...`
+// to someone who typed `coach -segment` sends them looking for a flag that is
+// not on the command they ran.
+func TestCoach_TraceErrorsNameTheCoachInvocation(t *testing.T) {
+	code, stderr := runExitCase(t, "coach-trace-bad-segment")
+
+	if code == 0 {
+		t.Errorf("an unknown segment should exit non-zero, got %d", code)
+	}
+	if !strings.HasPrefix(stderr, "coach: ") {
+		t.Errorf("expected a coach: prefix, got:\n%s", stderr)
+	}
+	if strings.Contains(stderr, "analyze:") {
+		t.Errorf("error blames analyze, which the user did not run:\n%s", stderr)
+	}
+	// The available segments are what let the user correct the typo.
+	if !strings.Contains(stderr, "T1") {
+		t.Errorf("expected the available segments to be listed:\n%s", stderr)
+	}
+}
+
+func TestCoach_TraceNoMapNamesSegmentFlag(t *testing.T) {
+	code, stderr := runExitCase(t, "coach-trace-no-map")
+
+	if code == 0 {
+		t.Errorf("tracing without a track map should exit non-zero, got %d", code)
+	}
+	if !strings.Contains(stderr, "coach: -segment requires a track map") {
+		t.Errorf("expected the message to cite -segment under coach, got:\n%s", stderr)
+	}
+}
+
+// The same path under analyze must still say analyze and -trace — the context is
+// swapped by coach, not permanently changed.
+func TestAnalyze_TraceNoMapNamesTraceFlag(t *testing.T) {
+	code, stderr := runExitCase(t, "analyze-trace-no-map")
+
+	if code == 0 {
+		t.Errorf("tracing without a track map should exit non-zero, got %d", code)
+	}
+	if !strings.Contains(stderr, "analyze: -trace requires a track map") {
+		t.Errorf("expected the message to cite -trace under analyze, got:\n%s", stderr)
+	}
+}
+
+func TestDieMessage(t *testing.T) {
+	if got := dieMessage("coach", "segment %q not found", "T99"); got != "coach: segment \"T99\" not found\n" {
+		t.Errorf("dieMessage = %q", got)
+	}
+	if got := dieMessage("analyze", "no samples found in file"); got != "analyze: no samples found in file\n" {
+		t.Errorf("dieMessage = %q", got)
+	}
+}
+
+// The default must stay analyze: every other subcommand shares these paths.
+func TestInvokedAsDefaultsToAnalyze(t *testing.T) {
+	if invokedAs.cmd != "analyze" || invokedAs.traceFlag != "-trace" {
+		t.Errorf("invokedAs = %+v, want the analyze invocation", invokedAs)
 	}
 }

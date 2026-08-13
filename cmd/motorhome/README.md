@@ -40,7 +40,7 @@ Parses the `-config` flag, loads the config file, and dispatches to one of eight
 | `notes_paths_test.go` | Tests for session-file naming, whisper path resolution, clipboard |
 | `pb_test.go` | Tests for pb entry ordering, filtering and stored-payload markers |
 | `pb_cmd_test.go` | Tests for `pb list`/`show`/`prune`, including that a dry run writes nothing |
-| `pb_exit_test.go` | Re-exec tests for the `os.Exit` refusal paths (see below) |
+| `pb_exit_test.go` | Re-exec tests for the `os.Exit` refusal paths (see below) and for error attribution under `coach` |
 | `clipboard.go` | `captureStdout` / `copyToClipboard` — tee analyze stdout into a buffer and pipe it into `clip.exe` (Windows) / `pbcopy` (macOS) |
 | `clipboard_test.go` | Tests for stdout capture and restore |
 | `notes.go` | `RunNotes` — notes subcommand: hotkey listen, record, transcribe, save |
@@ -140,6 +140,7 @@ Implementation notes:
 
 - **Reuses the analyze pipeline wholesale.** `RunAnalyze` is called in-process with `-json` and its stdout captured. A second analysis path would be free to drift from what `analyze` reports.
 - **`captureStdoutSilent`** is the non-teeing sibling of `captureStdout`. The clipboard capture deliberately tees to the terminal; coach must not, or the raw JSON prints above the brief.
+- **`invokedAs`** names the subcommand the user actually typed, so failures inside the shared pipeline attribute themselves correctly. `RunCoach` sets it to `coachInvocation` before calling in; without that, `coach -lap 99` reports `analyze: lap 99 not found` and `coach -segment T99` cites `-trace` — a flag that is not on the command the user ran. It also carries `traceFlag` (`-trace` vs `-segment`) for the same reason. A package var rather than a threaded parameter, for the same reason `analyzeOut` is one: the die paths are scattered across the pipeline. `dieMessage` is split out from `analyzeDie`/`coachDie` so the wording can be asserted without re-execing the test binary.
 - **`trimForCoaching`** drops the track map's raw segment geometry — no coaching signal, since every segment is already named in the phase rows — replacing it with `SegmentCount`. Map confidence and match score are kept: a low-confidence map means the boundaries are suspect and findings pinned to them need hedging. Nothing else is trimmed.
 - **The orientation names what is missing** in a `Gaps:` line. Coaching around an absent track map or PB without realising it is missing produces confident findings about nothing.
 - A missing `coach.md` warns on stderr and is skipped rather than being fatal; `-no-framework` omits it deliberately.

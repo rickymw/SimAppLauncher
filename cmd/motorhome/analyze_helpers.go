@@ -255,9 +255,42 @@ func fallback(s, def string) string {
 	return s
 }
 
+// invocation describes the subcommand the user actually typed, for the benefit
+// of errors raised inside the shared analyze pipeline.
+type invocation struct {
+	cmd string
+	// traceFlag is the flag that asked for segment traces. The same code serves
+	// `analyze -trace` and `coach -segment`.
+	traceFlag string
+}
+
+var (
+	analyzeInvocation = invocation{cmd: "analyze", traceFlag: "-trace"}
+	coachInvocation   = invocation{cmd: "coach", traceFlag: "-segment"}
+)
+
+// invokedAs is how failures inside the pipeline describe themselves.
+//
+// `coach` runs RunAnalyze in-process, so without this every failure reports
+// itself as "analyze:" and blames flags like -trace that the user never typed —
+// they typed `coach -segment`. An error should name the command that was run,
+// not the internals it happened to go through.
+//
+// A package var rather than a threaded parameter for the same reason analyzeOut
+// is one: the die paths are scattered across the pipeline, and passing a context
+// through every one of them would be a large change to carry a message prefix.
+var invokedAs = analyzeInvocation
+
 func analyzeDie(format string, args ...any) {
-	fmt.Fprintf(os.Stderr, "analyze: "+format+"\n", args...)
+	fmt.Fprint(os.Stderr, dieMessage(invokedAs.cmd, format, args...))
 	os.Exit(1)
+}
+
+// dieMessage renders the single stderr line a die path writes. Split out from
+// the die functions so the wording can be asserted in-process, without
+// re-execing the test binary to survive the os.Exit.
+func dieMessage(cmd, format string, args ...any) string {
+	return fmt.Sprintf(cmd+": "+format+"\n", args...)
 }
 
 // nthLatestIbtFile returns the path of the nth most recently modified .ibt file

@@ -70,6 +70,12 @@ func RunCoach(args []string, cfg config.Config, trackmapPath, pbPath, notesDir, 
 		}
 	}
 
+	// RunAnalyze is about to run in-process, and anything it refuses to do is
+	// coach refusing as far as the user is concerned. Without this its errors
+	// arrive prefixed "analyze:" and cite flags like -trace that the user never
+	// typed.
+	invokedAs = coachInvocation
+
 	// Reuse the analyze pipeline wholesale rather than reimplementing it: the
 	// brief must describe exactly what `analyze` would report, and a second
 	// code path would be free to drift from it.
@@ -163,7 +169,7 @@ func trimForCoaching(res analyzeResult) analyzeResult {
 }
 
 func coachDie(format string, args ...any) {
-	fmt.Fprintf(os.Stderr, "coach: "+format+"\n", args...)
+	fmt.Fprint(os.Stderr, dieMessage(coachInvocation.cmd, format, args...))
 	os.Exit(1)
 }
 
