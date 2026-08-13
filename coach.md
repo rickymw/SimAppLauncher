@@ -21,6 +21,22 @@ For the human-readable tables instead, or to inspect a specific corner:
 .\motorhome.exe coach -lap 3       # coach a specific lap
 ```
 
+### Following up on one corner
+
+Once the tables have identified the corner that is costing the most, re-run focused on it:
+
+```
+.\motorhome.exe coach -segment T3        # or T3,T4
+.\motorhome.exe coach -segment T3 -hz 20 # if the trace comes back too large
+```
+
+That returns the same brief with the per-segment rows for every other corner removed, plus the corner's **sample-level telemetry** — every comparable lap overlaid at equal time-into-the-corner. Use it when the aggregate rows have told you *which* corner is wrong but not *what* is wrong in it: pedal timing, where the brake release actually happens, whether one lap's throttle application is late, how the steering trace differs between the fast lap and the slow one.
+
+Two rules when reading a focused brief:
+
+- Its orientation carries a **Focus:** line. Everything outside those corners is gone, so do not characterise the lap as a whole or rank the focused corners against the rest — you are not seeing the rest.
+- Below 60Hz, `ABS` and `Coast` are 1 if the event occurred anywhere in the window a row covers, not at that instant. Every other column is a point sample. The block says which rate it is.
+
 The analysis covers:
 - Session info (car, track, PB delta)
 - Lap list with out/in lap and cut markers

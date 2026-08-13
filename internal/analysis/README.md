@@ -65,6 +65,22 @@ Note the sum of a lap's sectors differs from its official `LapLastLapTime` by a 
 
 `DumpSegmentAllLapsCSV` writes the same segment from several laps into one file, prefixed with a `Lap` column. Each lap's `Time` column restarts at 0 so the traces can be overlaid at equal time-into-the-corner; a session-relative clock would make that comparison impossible without further arithmetic. Laps with no samples in the segment are skipped (a truncated lap legitimately misses one); an error is returned only when no lap yielded any rows.
 
+`DownsampleRateForHz` converts a requested output rate into a sample stride, rounding to the nearest whole stride (25Hz → stride 2 → 30Hz output). Rates that don't divide `SampleRateHz` (60) evenly therefore differ from what was asked for, which is why `DumpConfig.OutputHz` exists and why headers report it rather than the request.
+
+**ABS and Coast are maxima over the window a row covers, not point samples.** Decimation is right for continuous channels — speed read every third sample is still speed — but these two are 0/1 events, and taking every third one discards two thirds of each ABS activation. A lock-up lasting a few frames could vanish from the CSV entirely, which is precisely the signal someone dumping a problem corner is looking for. `binaryFlagsOverWindow` reduces them by max instead; at `DownsampleRate` 1 the window is one sample and the behaviour is unchanged. Both dump headers disclose this when the rate is below 60Hz, since a reader would otherwise assume every column was read at the same instant.
+
+### In-process segment traces (`trace.go`)
+
+`BuildSegmentTrace` returns a `SegmentTrace` — the same rows `DumpSegmentAllLapsCSV` writes, carried in memory instead of to a file, so a caller can embed a corner's samples in something it is generating. `cmd/motorhome`'s `coach -segment` is the reason it exists: aggregate rows say an exit is slow and varies, but only the samples say the throttle came in 0.4s later on the lap that lost the time.
+
+It shares `segmentEffBounds`, `segmentSampleRange` and `writeDumpRows` with the CSV path, so the numbers and their formatting are identical by construction rather than by agreement — a test asserts the rows match `DumpSegmentAllLapsCSV` byte for byte.
+
+`Rows` are pre-formatted CSV strings rather than structured numbers. That is a deliberate concession to the consumer: the trace's purpose is to be read by a language model inside a brief, where an indent-encoded array of objects costs several times the tokens of the same numbers as CSV and is harder to scan. `Columns` names them.
+
+`DefaultTraceConfig` is full 60Hz where `DefaultDumpConfig` settles for 20Hz. The 20Hz figure buys token headroom a focused trace does not need, and the detail it costs — the exact frame a brake release or lock-up starts — is what someone zooming into one corner came for.
+
+`ResolveSegmentList` resolves a comma-separated list of names or 1-based indices ("T3", "T3,T4", "3,4") to segment indices, deduplicated and sorted into **track order** regardless of the order given: everything else in the output is presented in track order, and someone who wrote "T7,T3" meant "these two corners", not "in this sequence". An unrecognised entry fails the whole list rather than being skipped — a typo that silently traced fewer corners than asked for would read as "that corner had no data", a different and much more misleading answer.
+
 ### Consistency across laps (`consistency.go`)
 
 `ComputeConsistency` runs `ComputePhases` over a set of laps and reports, per (segment, phase), the mean and sample standard deviation (n−1) of entry speed, exit speed, peak brake, lateral G and coast time, plus the best exit speed seen and which lap set it. The phase table describes one lap; this describes how repeatable it is.
@@ -116,7 +132,8 @@ Notes falling outside the recording come back with `Located == false` and keep t
 | `LapKind` | `KindFlying`, `KindOutLap`, `KindInLap`, `KindOutInLap`. |
 | `Phase` | Per-phase stats: entry/exit/peak speed, brake%, peak brake, throttle%, avg lat G, peak steering angle, steering corrections, ABS, lockup/wheelspin, coast. |
 | `ExitImpact` | Corner exit speed paired with the peak speed reached on the following straight, for one lap. |
-| `DumpConfig` | Controls CSV dump: downsample rate (default 3 = 20Hz) and context samples (default 60 = 1s). |
+| `DumpConfig` | Controls dump/trace output: downsample rate (`DefaultDumpConfig` 3 = 20Hz, `DefaultTraceConfig` 1 = 60Hz) and context samples (default 60 = 1s). `OutputHz` reports the rate actually emitted. |
+| `SegmentTrace` | One segment's telemetry across several laps, in memory: segment name/kind, emitted rate, context seconds, contributing lap numbers, and CSV `Columns` + `Rows`. |
 | `ConsistencyRow` | Per-(segment, phase) spread across laps: mean/SD of entry speed, exit speed, peak brake, lat G and coast, plus best exit speed and the lap that set it. |
 | `FuelSummary` / `LapFuel` | Per-lap and session fuel consumption, remaining litres, laps of headroom at average and worst-lap rates. `Available` is false when the channel is absent. |
 | `NoteInput` / `LocatedNote` | A voice note awaiting placement, and the same note resolved to a lap, lap distance and segment (`Located` false when it falls outside the recording). |
@@ -145,6 +162,12 @@ analysis.DumpSegmentCSV(writer, &lap, segments, segIdx, analysis.DefaultDumpConf
 
 // Same corner across several laps, in one file with a Lap column.
 analysis.DumpSegmentAllLapsCSV(writer, comparableLaps, segments, segIdx, analysis.DefaultDumpConfig())
+
+// The same rows in memory instead of a file, at a chosen rate.
+cfg := analysis.DefaultTraceConfig() // 60Hz
+cfg.DownsampleRate = analysis.DownsampleRateForHz(20)
+idxs, err := analysis.ResolveSegmentList(segments, "T3,T4")
+trace, err := analysis.BuildSegmentTrace(comparableLaps, segments, idxs[0], cfg)
 
 // Lap-to-lap spread, and the phases that vary most.
 rows := analysis.ComputeConsistency(comparableLaps, segments, brakeEntries)

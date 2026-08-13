@@ -248,7 +248,7 @@ func TestWriteCoachMostVariable_OmittedWithoutSpread(t *testing.T) {
 }
 
 func TestBuildCoachTableView_IncludesOrientation(t *testing.T) {
-	out := buildCoachTableView(coachTableResult())
+	out := buildCoachTableView(coachTableResult(), nil)
 
 	if !strings.Contains(out, "## Session") {
 		t.Errorf("table view must keep the orientation:\n%s", out)

@@ -9,6 +9,12 @@ import (
 	"github.com/rickymw/MotorHome/internal/trackmap"
 )
 
+// SampleRateHz is the tick rate every dump and trace assumes .ibt telemetry was
+// recorded at. iRacing writes 60Hz; the real rate is on the file header, but the
+// sample-count-derived figures elsewhere in this package have assumed 60 since
+// they were introduced and changing that here would silently move them.
+const SampleRateHz = 60
+
 // DumpConfig controls CSV dump output.
 type DumpConfig struct {
 	// DownsampleRate controls how many 60Hz samples to skip between output rows.
@@ -26,6 +32,50 @@ func DefaultDumpConfig() DumpConfig {
 		DownsampleRate: 3,  // 60Hz → 20Hz
 		ContextSamples: 60, // 1 second at 60Hz
 	}
+}
+
+// DefaultTraceConfig returns the config used when the caller has already
+// narrowed the output to a named corner or two.
+//
+// Full 60Hz, where DefaultDumpConfig settles for 20Hz. The 20Hz figure buys
+// token headroom that a focused trace does not need — one corner across a
+// handful of laps at 60Hz is smaller than a whole session at 20Hz — and the
+// detail it costs (the exact frame a brake release or lock-up starts) is
+// precisely what someone zooming into one corner is looking for.
+func DefaultTraceConfig() DumpConfig {
+	return DumpConfig{
+		DownsampleRate: 1,  // full 60Hz
+		ContextSamples: 60, // 1 second at 60Hz
+	}
+}
+
+// DownsampleRateForHz converts a requested output rate into a sample stride.
+//
+// Rates that do not divide SampleRateHz evenly are rounded to the nearest whole
+// stride, so the emitted rate can differ from the one asked for. Callers should
+// report OutputHz rather than the request.
+func DownsampleRateForHz(hz int) int {
+	if hz < 1 {
+		return 1
+	}
+	if hz >= SampleRateHz {
+		return 1
+	}
+	// Round to nearest rather than truncating: -hz 25 should give 30Hz
+	// (stride 2), not 20Hz (stride 3).
+	rate := (SampleRateHz + hz/2) / hz
+	if rate < 1 {
+		return 1
+	}
+	return rate
+}
+
+// OutputHz reports the rate rows are actually emitted at.
+func (c DumpConfig) OutputHz() int {
+	if c.DownsampleRate < 1 {
+		return SampleRateHz
+	}
+	return SampleRateHz / c.DownsampleRate
 }
 
 // ResolveSegmentName finds a segment by name (case-insensitive) or 1-based
@@ -120,14 +170,11 @@ func writeDumpRows(w io.Writer, samples []SampleData, cfg DumpConfig, prefix str
 	for i := 0; i < len(samples); i += cfg.DownsampleRate {
 		s := samples[i]
 
-		abs := 0
-		if s.ABSActive {
-			abs = 1
+		end := i + cfg.DownsampleRate
+		if end > len(samples) {
+			end = len(samples)
 		}
-		coast := 0
-		if s.Throttle < 0.05 && s.Brake < 0.05 {
-			coast = 1
-		}
+		abs, coast := binaryFlagsOverWindow(samples[i:end])
 
 		fmt.Fprintf(w, "%s%.4f,%.3f,%.1f,%.0f,%.0f,%.1f,%d,%.2f,%.2f,%d,%d\n",
 			prefix,
@@ -144,6 +191,31 @@ func writeDumpRows(w io.Writer, samples []SampleData, cfg DumpConfig, prefix str
 			coast,
 		)
 	}
+}
+
+// binaryFlagsOverWindow reduces the ABS and coast flags across every sample a
+// single output row stands for, taking the maximum rather than the value at the
+// row's own sample.
+//
+// Plain decimation is right for continuous channels — speed read every third
+// sample is still speed — but ABS and coast are 0/1 events. Taking every third
+// one discards two thirds of each ABS activation, and a lock-up lasting a few
+// frames can disappear from the trace entirely. That is exactly the signal
+// someone zooming into a problem corner is looking for, so the row reports
+// whether the event occurred anywhere in the window it represents.
+//
+// At DownsampleRate 1 the window is a single sample and this is a no-op, so the
+// full-rate output is unchanged.
+func binaryFlagsOverWindow(win []SampleData) (abs, coast int) {
+	for _, s := range win {
+		if s.ABSActive {
+			abs = 1
+		}
+		if s.Throttle < 0.05 && s.Brake < 0.05 {
+			coast = 1
+		}
+	}
+	return abs, coast
 }
 
 // DumpSegmentCSV writes a downsampled CSV of telemetry for a single segment
@@ -171,8 +243,7 @@ func DumpSegmentCSV(w io.Writer, lap *Lap, segs []trackmap.Segment, segIdx int, 
 
 	fmt.Fprintf(w, "# Segment: %s (%s)\n", seg.Name, seg.Kind)
 	fmt.Fprintf(w, "# Lap: %d, Time: %s\n", lap.Number, FormatLapTime(lap.LapTime))
-	fmt.Fprintf(w, "# Rate: %dHz (downsampled from 60Hz)\n", 60/cfg.DownsampleRate)
-	fmt.Fprintf(w, "# Context: %d samples before/after segment boundary\n", cfg.ContextSamples/cfg.DownsampleRate)
+	writeDumpRateHeader(w, cfg)
 
 	fmt.Fprintln(w, dumpColumns)
 	writeDumpRows(w, samples, cfg, "")
@@ -230,8 +301,7 @@ func DumpSegmentAllLapsCSV(w io.Writer, laps []Lap, segs []trackmap.Segment, seg
 
 	fmt.Fprintf(w, "# Segment: %s (%s)\n", seg.Name, seg.Kind)
 	fmt.Fprintf(w, "# Laps: %d (%s)\n", len(windows), lapListSummary(dumped))
-	fmt.Fprintf(w, "# Rate: %dHz (downsampled from 60Hz)\n", 60/cfg.DownsampleRate)
-	fmt.Fprintf(w, "# Context: %d samples before/after segment boundary\n", cfg.ContextSamples/cfg.DownsampleRate)
+	writeDumpRateHeader(w, cfg)
 	fmt.Fprintln(w, "# Time restarts at 0 for each lap so the traces can be overlaid.")
 
 	fmt.Fprintln(w, "Lap,"+dumpColumns)
@@ -239,6 +309,19 @@ func DumpSegmentAllLapsCSV(w io.Writer, laps []Lap, segs []trackmap.Segment, seg
 		writeDumpRows(w, win.samples, cfg, fmt.Sprintf("%d,", win.lap.Number))
 	}
 	return nil
+}
+
+// writeDumpRateHeader writes the rate/context comment lines shared by both dump
+// modes, disclosing that ABS and Coast are maxima over the window rather than
+// point samples — otherwise a reader would reasonably assume every column was
+// read at the same instant.
+func writeDumpRateHeader(w io.Writer, cfg DumpConfig) {
+	fmt.Fprintf(w, "# Rate: %dHz (downsampled from %dHz)\n", cfg.OutputHz(), SampleRateHz)
+	fmt.Fprintf(w, "# Context: %d samples before/after segment boundary\n", cfg.ContextSamples/cfg.DownsampleRate)
+	if cfg.DownsampleRate > 1 {
+		fmt.Fprintf(w, "# ABS and Coast are 1 if set anywhere in the %d-sample window a row covers.\n",
+			cfg.DownsampleRate)
+	}
 }
 
 // lapListSummary renders "3 (1:24.512), 5 (1:24.331)" for a dump header.

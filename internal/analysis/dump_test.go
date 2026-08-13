@@ -87,8 +87,10 @@ func TestDumpSegmentCSV(t *testing.T) {
 			commentCount++
 		}
 	}
-	if commentCount != 4 {
-		t.Errorf("expected 4 comment lines, got %d", commentCount)
+	// Four metadata lines plus the downsampling disclosure, which only appears
+	// when DownsampleRate > 1 (it is 3 here).
+	if commentCount != 5 {
+		t.Errorf("expected 5 comment lines, got %d", commentCount)
 	}
 
 	// Header line (first non-comment).

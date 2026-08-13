@@ -25,7 +25,7 @@ import (
 
 // analyzeSchema identifies the shape of the JSON document. Bump the minor part
 // for additive changes, the major part when a consumer would break.
-const analyzeSchema = "motorhome.analyze/1.0"
+const analyzeSchema = "motorhome.analyze/1.1"
 
 type analyzeResult struct {
 	Schema      string `json:"schema"`
@@ -47,6 +47,19 @@ type analyzeResult struct {
 	Consistency []jsonConsistency `json:"consistency,omitempty"`
 	Fuel        *jsonFuel         `json:"fuel,omitempty"`
 	Notes       []jsonNote        `json:"notes,omitempty"`
+
+	// Traces is present only when -trace named segments. Unlike the rest of the
+	// document these carry the analysis struct directly, as trackMap.segments
+	// and zones already do — SegmentTrace is a transport shape (CSV rows behind
+	// a column header) rather than an internal one, so there is nothing to
+	// insulate the wire format from.
+	Traces []analysis.SegmentTrace `json:"traces,omitempty"`
+
+	// Focus names the segments the document was narrowed to, when it was.
+	// Its absence means the document describes the whole session — a consumer
+	// must be able to tell "T3 was the only problem" from "T3 was all I was
+	// shown".
+	Focus []string `json:"focus,omitempty"`
 }
 
 type jsonFuel struct {
@@ -252,6 +265,8 @@ type analyzeResultInput struct {
 	trackMap   *trackmap.TrackMap
 	matchScore float32
 	geomConf   trackmap.GeometryConfidence
+
+	traces []analysis.SegmentTrace
 }
 
 // writeAnalyzeJSON encodes res to w as indented JSON with a trailing newline.

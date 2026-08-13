@@ -16,13 +16,17 @@ Parses the `-config` flag, loads the config file, and dispatches to one of eight
 | `analyze_output.go` | All terminal rendering: `analyzeSingleLap`, setup tables, sector table, zone/phase/exit-impact/tyre/vs-PB/consistency tables, `runDump` |
 | `analyze_notes.go` | Voice notes in analyze: `notesFileForIbt`, `loadNotesForIbt`, `locateSessionNotes`, `printNotes` |
 | `analyze_json.go` | The `-json` wire format: `analyzeResult` and its `json*` types, `writeAnalyzeJSON` |
+| `analyze_trace.go` | `-trace`/`-hz`: `buildSegmentTraces`, `printTraces`, and the large-trace stderr note |
 | `analyze_json_build.go` | `buildAnalyzeResult` — maps computed values into the JSON document |
 | `analyze_pb.go` | Stored-PB rendering for `-lap pb` (`runStoredPB*`, `printStoredPB`, `emitStoredPB`) and `phasesToPB` |
 | `analyze_helpers.go` | Lap selection/filtering (`bestAnalyzeLap`, `flyingLapsWithinTime`, `crossLapComparableLaps`), `formatMapLine`, path and formatting helpers |
 | `coach.go` | `RunCoach` — emits a self-contained coaching brief for an AI assistant |
 | `coach_table.go` | `-table`: turn-by-turn table, flag thresholds, grading, sector loss |
+| `coach_focus.go` | `-segment`: `focusOnSegments` narrows the brief to named corners |
 | `coach_test.go` | Tests for brief structure, orientation gaps, trimming, framework loading |
 | `coach_table_test.go` | Tests for per-corner aggregation, grading thresholds, table rendering |
+| `coach_focus_test.go` | Tests for segment filtering, the focus disclosure, and trace rendering |
+| `analyze_trace_test.go` | Tests for trace building, lap population, `-hz` and `printTraces` |
 | `pb.go` | `RunPB` — the pb subcommand: `list`, `show`, `diff`, `prune` |
 | `analyze_test.go` | Tests for lap selection and `.ibt` file resolution |
 | `analyze_helpers_test.go` | Tests for `formatMapLine`, `pluralize`, `parseLapArg` |
@@ -91,7 +95,17 @@ Two mechanisms make that possible:
 
 Stdout is wrapped by `captureStdout` in `main.go` so the full analyze output is teed into a buffer while still streaming to the terminal; after `RunAnalyze` returns, the buffer is piped into `clip.exe` (Windows) / `pbcopy` (macOS) so the user can paste it straight into Claude. `analyzeDie` calls `os.Exit(1)` which skips the deferred clipboard write — partial broken output is intentionally not copied.
 
-Flags: `-lap N|pb`, `-update-map`, `-geo-method latlon|lataccel`, `-dump <seg>`, `-dump-all`, `-json`, `-note-lag <seconds>`
+Flags: `-lap N|pb`, `-update-map`, `-geo-method latlon|lataccel`, `-dump <seg>`, `-dump-all`, `-trace <segs>`, `-hz N`, `-json`, `-note-lag <seconds>`
+
+### `-trace` and `-hz` (`analyze_trace.go`)
+
+`-trace T3,T4` prints sample-level telemetry for named segments inline, where `-dump` writes it to a CSV file. The two are not redundant: a file is for plotting or handing to something else, and inline rows are what let `coach -segment` put a corner's samples in front of the assistant doing the coaching. Both share `DumpConfig` and `writeDumpRows`, so the numbers and formatting are identical.
+
+Traces are built once in `RunAnalyze` and rendered twice — through `printTraces` to the table sink for a human, and into the JSON document's `traces` field for `coach`. In `-json` mode the sink is `io.Discard`, so the terminal rendering costs nothing there.
+
+They cover **every comparable lap**, not just the analysed one. Comparing laps against each other is the point of zooming in: one lap's trace shows what the driver did, not which of the things they did was the one that varied. A session with no comparable set falls back to the analysed lap alone.
+
+`-hz N` sets the output rate for both `-dump` and `-trace`, defaulting to each path's own default (20Hz for dump, 60Hz for trace). It is rejected without one of them rather than silently ignored. Above `traceRowsWarnThreshold` (2000) rows a stderr note reports the size and points at `-hz 20` — 60Hz is the right default for a focused trace, but the cost is invisible until something downstream chokes on it, and since binary channels are now aggregated rather than decimated, dropping to 20Hz costs resolution on the continuous traces and nothing else.
 
 ### Output sink and `-json`
 
@@ -129,6 +143,16 @@ Implementation notes:
 - **`trimForCoaching`** drops the track map's raw segment geometry — no coaching signal, since every segment is already named in the phase rows — replacing it with `SegmentCount`. Map confidence and match score are kept: a low-confidence map means the boundaries are suspect and findings pinned to them need hedging. Nothing else is trimmed.
 - **The orientation names what is missing** in a `Gaps:` line. Coaching around an absent track map or PB without realising it is missing produces confident findings about nothing.
 - A missing `coach.md` warns on stderr and is skipped rather than being fatal; `-no-framework` omits it deliberately.
+
+### `-segment` — focusing on named corners (`coach_focus.go`)
+
+`coach -segment T3` narrows the brief to one or more corners and inlines their samples. The aggregate rows the brief normally carries answer *which* corner is costing time; they cannot answer *what is happening in it*, because a mean and a standard deviation describe a corner rather than replaying it. Focusing swaps breadth for depth: per-segment rows for everything else come out, and the segment's actual telemetry (via `analyze -trace`) goes in as fenced CSV blocks after the JSON.
+
+`focusOnSegments` filters only per-segment collections — phases, vs-PB deltas, exit impact, consistency. Session-level content stays whole: the lap list, sector times, fuel, the PB header and the voice notes are small, they are the context that makes a single corner interpretable, and a sector time is the one thing that says whether the focused corner is where the time is actually going. Segment geometry is kept too, because `-table` needs it to tell a corner from a straight.
+
+**The trade is only safe if the reader knows it was made.** A narrowed brief is otherwise indistinguishable from a whole-session one, so `focusOnSegments` sets `Focus` and `writeCoachOrientation` turns it into a bolded line stating that other corners were removed and that the lap must not be characterised as a whole. Without it the assistant would confidently report the session's main problem having been shown one corner of it — the same failure mode the `Gaps:` line exists to prevent.
+
+Traces travel outside the JSON document rather than inside it: they are already CSV, and nesting them in an indent-encoded object would cost tokens and readability for nothing. `-hz N` sets their rate (default 60). `-table` accepts `-segment` but not the traces — a 60Hz CSV is not something a human scans between runs, and the table has no column for it.
 
 ### `-table` — the turn-by-turn view (`coach_table.go`)
 

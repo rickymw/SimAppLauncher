@@ -97,6 +97,8 @@ Use the **Open** action pointing directly at `motorhome.exe` — no PowerShell w
 .\motorhome.exe analyze -update-map session.ibt  # force re-detect segments
 .\motorhome.exe analyze -dump T3 session.ibt     # dump T3 telemetry to CSV (written next to the .ibt)
 .\motorhome.exe analyze -dump T3 -dump-all       # dump T3 from every comparable lap into one CSV
+.\motorhome.exe analyze -trace T3,T4             # print T3/T4 sample telemetry inline (60Hz)
+.\motorhome.exe analyze -trace T3 -hz 20         # same, downsampled to 20Hz
 .\motorhome.exe analyze -json                    # structured output instead of tables
 .\motorhome.exe analyze -note-lag 3              # shift voice notes 3s earlier when placing them
 ```
@@ -252,6 +254,8 @@ Consumption comes from the tank level at each lap's boundaries, not from the ins
 .\motorhome.exe coach -lap 3       # a specific lap
 .\motorhome.exe coach -no-framework  # data only
 .\motorhome.exe coach -table       # turn-by-turn table, for a human
+.\motorhome.exe coach -segment T3  # one corner, with its sample-level telemetry
+.\motorhome.exe coach -segment T3,T4 -hz 20
 ```
 
 Emits a single self-contained brief — session orientation, the full `coach.md` framework, and the analysis as JSON — for an AI assistant (Claude Code) to act on. **No API key and no network call:** the assistant reading the brief is the coach.
@@ -284,6 +288,24 @@ The `Gaps:` line names what's absent, so the coach doesn't build confident findi
 ```
 
 One row per corner, then a sector-loss table and a ranking of the least repeatable exits. **The Grade is a triage hint, not a measurement** — it counts how many of five fixed thresholds a corner trips, and those thresholds are printed in the legend so a letter can be argued with. There is no "Fix" column on purpose: what to do about a flagged corner is coaching judgement, and generating it from thresholds would be a canned string dressed up as advice.
+
+### `-segment` — zooming into one corner
+
+The default brief tells you *which* corner is costing time. It can't tell you *what's happening in it* — a mean and a standard deviation describe a corner, they don't replay it. `-segment` drops the per-segment rows for everything else and inlines the corner's actual telemetry, every comparable lap overlaid:
+
+```
+## T2-3 (corner) — laps 5, 6, 7, 8, 9 at 60Hz
+
+Lap,Dist%,Time,Speed,Throttle,Brake,Steer,Gear,LatG,LongG,ABS,Coast
+5,0.1523,0.000,186.4,100,0,-2.1,4,-0.18,0.31,0,0
+5,0.1532,0.017,186.9,100,0,-2.3,4,-0.15,0.30,0,0
+```
+
+That's the difference between "your T2-3 exit varies by 19 km/h" and "on lap 6 you were still at 12% throttle 0.4s after the apex you took at 60% on lap 5".
+
+The brief says in its orientation that it was narrowed, so the assistant doesn't characterise the whole lap from one corner of it. `-hz N` trades resolution for size (60Hz default; a long complex across five laps runs to a few thousand rows). ABS and lock-ups survive downsampling — they're reported if they occurred anywhere in the window a row covers, not sampled at one instant.
+
+`analyze -trace T3,T4` prints the same traces without the brief around them.
 
 ---
 

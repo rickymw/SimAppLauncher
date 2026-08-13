@@ -28,6 +28,8 @@ func RunAnalyze(args []string, cfg config.Config, trackmapPath, pbPath, notesDir
 	updateMap := fs.Bool("update-map", false, "ignore existing track map and re-detect from this session")
 	dumpSeg := fs.String("dump", "", "dump segment telemetry to CSV (name like T3 or 1-based index)")
 	dumpAll := fs.Bool("dump-all", false, "with -dump: write every comparable flying lap into one CSV instead of just the analysed lap")
+	traceSeg := fs.String("trace", "", "print sample-level telemetry for these segments (comma-separated, e.g. T3,T4)")
+	hz := fs.Int("hz", 0, "output rate for -dump and -trace (default 20 for -dump, 60 for -trace)")
 	noteLag := fs.Float64("note-lag", analysis.DefaultNoteLag.Seconds(),
 		"seconds subtracted from each voice note's timestamp before placing it on track")
 	jsonOut := fs.Bool("json", false, "emit the full analysis as JSON instead of tables")
@@ -41,6 +43,8 @@ func RunAnalyze(args []string, cfg config.Config, trackmapPath, pbPath, notesDir
 		fmt.Fprintln(os.Stderr, "  motorhome analyze -lap pb            (show stored PB lap)")
 		fmt.Fprintln(os.Stderr, "  motorhome analyze -dump T3 session.ibt")
 		fmt.Fprintln(os.Stderr, "  motorhome analyze -dump T3 -dump-all session.ibt")
+		fmt.Fprintln(os.Stderr, "  motorhome analyze -trace T3,T4       (sample-level telemetry inline)")
+		fmt.Fprintln(os.Stderr, "  motorhome analyze -trace T3 -hz 20")
 		fmt.Fprintln(os.Stderr, "  motorhome analyze -json session.ibt")
 		fmt.Fprintln(os.Stderr)
 		fs.PrintDefaults()
@@ -49,6 +53,14 @@ func RunAnalyze(args []string, cfg config.Config, trackmapPath, pbPath, notesDir
 
 	if *dumpAll && *dumpSeg == "" {
 		analyzeDie("-dump-all has no effect without -dump <segment>")
+	}
+	if *hz != 0 {
+		if *hz < 1 || *hz > analysis.SampleRateHz {
+			analyzeDie("-hz must be between 1 and %d, got %d", analysis.SampleRateHz, *hz)
+		}
+		if *dumpSeg == "" && *traceSeg == "" {
+			analyzeDie("-hz has no effect without -dump or -trace")
+		}
 	}
 
 	// Bind the table sink now, not at package init: main.go swaps os.Stdout for
@@ -502,8 +514,18 @@ func RunAnalyze(args []string, cfg config.Config, trackmapPath, pbPath, notesDir
 		// it may not even be writable).
 		dumpDir:     filepath.Dir(ibtPath),
 		dumpAllLaps: *dumpAll,
+		dumpHz:      *hz,
 	}
 	analyzeSingleLap(opts)
+
+	// Traces are built once and rendered twice: to the table sink for a human
+	// running `analyze -trace`, and into the JSON document for `coach -segment`.
+	// In -json mode the sink is io.Discard, so printTraces costs nothing there.
+	var traces []analysis.SegmentTrace
+	if *traceSeg != "" {
+		traces = buildSegmentTraces(*traceSeg, segs, laps, comparableLaps, lapNum, *hz)
+		printTraces(traces)
+	}
 
 	if *jsonOut {
 		res := buildAnalyzeResult(analyzeResultInput{
@@ -527,6 +549,7 @@ func RunAnalyze(args []string, cfg config.Config, trackmapPath, pbPath, notesDir
 			trackMap:       tmf[meta.TrackDisplayName],
 			matchScore:     matchScore,
 			geomConf:       geomConf,
+			traces:         traces,
 		})
 		if err := writeAnalyzeJSON(os.Stdout, res); err != nil {
 			analyzeDie("writing JSON: %v", err)

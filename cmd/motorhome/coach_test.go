@@ -41,7 +41,7 @@ func coachTestResult() analyzeResult {
 }
 
 func TestBuildCoachBrief_Structure(t *testing.T) {
-	out := buildCoachBrief(coachTestResult(), "FRAMEWORK BODY HERE")
+	out := buildCoachBrief(coachTestResult(), "FRAMEWORK BODY HERE", nil, nil)
 
 	for _, want := range []string{
 		"# Coaching brief — Porsche 718 GT4 at Phillip Island",
@@ -67,7 +67,7 @@ func TestBuildCoachBrief_Structure(t *testing.T) {
 // The embedded JSON must be valid and complete — it is the entire payload the
 // coach reasons over.
 func TestBuildCoachBrief_EmbeddedJSONParses(t *testing.T) {
-	out := buildCoachBrief(coachTestResult(), "")
+	out := buildCoachBrief(coachTestResult(), "", nil, nil)
 
 	start := strings.Index(out, "```json")
 	if start < 0 {
@@ -89,7 +89,7 @@ func TestBuildCoachBrief_EmbeddedJSONParses(t *testing.T) {
 }
 
 func TestBuildCoachBrief_Orientation(t *testing.T) {
-	out := buildCoachBrief(coachTestResult(), "")
+	out := buildCoachBrief(coachTestResult(), "", nil, nil)
 
 	for _, want := range []string{
 		"session.ibt",
@@ -111,7 +111,7 @@ func TestBuildCoachBrief_NewPBReadsAsFaster(t *testing.T) {
 	res := coachTestResult()
 	res.PB.DeltaToBest = -0.42
 
-	out := buildCoachBrief(res, "")
+	out := buildCoachBrief(res, "", nil, nil)
 	if !strings.Contains(out, "beat it by 0.420s") {
 		t.Errorf("expected a beat-the-PB phrasing:\n%s", out)
 	}
@@ -129,7 +129,7 @@ func TestBuildCoachBrief_NamesGaps(t *testing.T) {
 	res.PB = nil
 	res.Sectors = nil
 
-	out := buildCoachBrief(res, "")
+	out := buildCoachBrief(res, "", nil, nil)
 	for _, want := range []string{"no track map", "no consistency data", "no stored PB", "no sector times"} {
 		if !strings.Contains(out, want) {
 			t.Errorf("gap %q not reported:\n%s", want, out)
@@ -138,7 +138,7 @@ func TestBuildCoachBrief_NamesGaps(t *testing.T) {
 }
 
 func TestBuildCoachBrief_NoGapsLineWhenComplete(t *testing.T) {
-	out := buildCoachBrief(coachTestResult(), "")
+	out := buildCoachBrief(coachTestResult(), "", nil, nil)
 	if strings.Contains(out, "- Gaps:") {
 		t.Errorf("complete session should have no Gaps line:\n%s", out)
 	}
@@ -148,14 +148,14 @@ func TestBuildCoachBrief_MentionsVoiceNotes(t *testing.T) {
 	res := coachTestResult()
 	res.Notes = []jsonNote{{Text: "loose on exit", Located: true, Lap: 3, Segment: "T1"}}
 
-	out := buildCoachBrief(res, "")
+	out := buildCoachBrief(res, "", nil, nil)
 	if !strings.Contains(out, "Voice notes: 1") {
 		t.Errorf("expected the notes count in the orientation:\n%s", out)
 	}
 }
 
 func TestBuildCoachBrief_NoFramework(t *testing.T) {
-	out := buildCoachBrief(coachTestResult(), "")
+	out := buildCoachBrief(coachTestResult(), "", nil, nil)
 	if strings.Contains(out, "# Framework") {
 		t.Errorf("empty framework should not produce a Framework heading:\n%s", out)
 	}
@@ -169,7 +169,7 @@ func TestBuildCoachBrief_CutLapsCounted(t *testing.T) {
 	res := coachTestResult()
 	res.Laps = append(res.Laps, jsonLap{Number: 5, Kind: "flying lap", Complete: true, Cut: true})
 
-	out := buildCoachBrief(res, "")
+	out := buildCoachBrief(res, "", nil, nil)
 	if !strings.Contains(out, "1 cut") {
 		t.Errorf("cut laps should be surfaced:\n%s", out)
 	}

@@ -22,6 +22,7 @@ import (
 	"path/filepath"
 	"strings"
 
+	"github.com/rickymw/MotorHome/internal/analysis"
 	"github.com/rickymw/MotorHome/internal/config"
 )
 
@@ -40,6 +41,8 @@ func RunCoach(args []string, cfg config.Config, trackmapPath, pbPath, notesDir, 
 	noFramework := fs.Bool("no-framework", false, "omit the embedded coaching framework (data only)")
 	table := fs.Bool("table", false, "print a turn-by-turn table for a human instead of the AI brief")
 	fuelLaps := fs.Int("fuel-laps", 0, "also report the fuel needed to complete this many laps")
+	segment := fs.String("segment", "", "focus on these corners: comma-separated names or 1-based indices (e.g. T3,T4)")
+	hz := fs.Int("hz", 0, "sample rate for the traces -segment inlines (default 60)")
 	fs.Usage = func() {
 		fmt.Fprintln(os.Stderr, "Usage: motorhome [-config <path>] coach [flags] [file.ibt]")
 		fmt.Fprintln(os.Stderr)
@@ -49,12 +52,23 @@ func RunCoach(args []string, cfg config.Config, trackmapPath, pbPath, notesDir, 
 		fmt.Fprintln(os.Stderr, "Examples:")
 		fmt.Fprintln(os.Stderr, "  motorhome coach                    (most recent session)")
 		fmt.Fprintln(os.Stderr, "  motorhome coach -lap 3")
+		fmt.Fprintln(os.Stderr, "  motorhome coach -segment T3       (one corner, with its samples)")
+		fmt.Fprintln(os.Stderr, "  motorhome coach -segment T3,T4 -hz 20")
 		fmt.Fprintln(os.Stderr, "  motorhome coach -table             (turn-by-turn table, for a human)")
 		fmt.Fprintln(os.Stderr, "  motorhome coach session.ibt")
 		fmt.Fprintln(os.Stderr)
 		fs.PrintDefaults()
 	}
 	_ = fs.Parse(args)
+
+	if *hz != 0 {
+		if *hz < 1 || *hz > analysis.SampleRateHz {
+			coachDie("-hz must be between 1 and %d, got %d", analysis.SampleRateHz, *hz)
+		}
+		if *segment == "" {
+			coachDie("-hz sets the rate of the traces -segment inlines; it has no effect on its own")
+		}
+	}
 
 	// Reuse the analyze pipeline wholesale rather than reimplementing it: the
 	// brief must describe exactly what `analyze` would report, and a second
@@ -65,6 +79,14 @@ func RunCoach(args []string, cfg config.Config, trackmapPath, pbPath, notesDir, 
 	}
 	if *fuelLaps > 0 {
 		analyzeArgs = append(analyzeArgs, "-fuel-laps", fmt.Sprint(*fuelLaps))
+	}
+	// -table wants the focused corners but not their samples: a 60Hz CSV is not
+	// something a human scans between runs, and the table has no column for it.
+	if *segment != "" && !*table {
+		analyzeArgs = append(analyzeArgs, "-trace", *segment)
+		if *hz > 0 {
+			analyzeArgs = append(analyzeArgs, "-hz", fmt.Sprint(*hz))
+		}
 	}
 	analyzeArgs = append(analyzeArgs, fs.Args()...)
 
@@ -78,15 +100,30 @@ func RunCoach(args []string, cfg config.Config, trackmapPath, pbPath, notesDir, 
 		coachDie("parsing analysis output: %v", err)
 	}
 
+	var focus []string
+	if *segment != "" {
+		var ferr error
+		res, focus, ferr = focusOnSegments(res, *segment)
+		if ferr != nil {
+			coachDie("%v", ferr)
+		}
+	}
+
 	// -table renders from the untrimmed result: the turn table needs the track
 	// map's segment kinds to tell a corner from a straight, which is exactly the
 	// geometry trimForCoaching drops for the AI brief.
 	if *table {
-		fmt.Print(buildCoachTableView(res))
+		fmt.Print(buildCoachTableView(res, focus))
 		return
 	}
 
-	brief := buildCoachBrief(trimForCoaching(res), coachFrameworkText(*noFramework, cfgPath))
+	// Traces travel outside the JSON document. They are already CSV; nesting
+	// them in an indent-encoded object would cost tokens and readability for
+	// nothing, and as their own fenced blocks they read as what they are.
+	traces := res.Traces
+	res.Traces = nil
+
+	brief := buildCoachBrief(trimForCoaching(res), coachFrameworkText(*noFramework, cfgPath), focus, traces)
 	fmt.Print(brief)
 }
 
@@ -96,9 +133,9 @@ func RunCoach(args []string, cfg config.Config, trackmapPath, pbPath, notesDir, 
 // The orientation is kept because the table is meaningless without it — a D on a
 // corner means something different on a 2-lap session with a low-confidence map
 // than on a 20-lap one, and the Gaps line is what says which this was.
-func buildCoachTableView(res analyzeResult) string {
+func buildCoachTableView(res analyzeResult, focus []string) string {
 	var b strings.Builder
-	writeCoachOrientation(&b, res)
+	writeCoachOrientation(&b, res, focus)
 	writeCoachTable(&b, res)
 	writeCoachMostVariable(&b, res)
 	return b.String()
@@ -172,13 +209,16 @@ func coachFrameworkText(omit bool, cfgPath string) string {
 }
 
 // buildCoachBrief renders the markdown brief.
-func buildCoachBrief(res analyzeResult, framework string) string {
+func buildCoachBrief(res analyzeResult, framework string, focus []string,
+	traces []analysis.SegmentTrace) string {
+
 	var b strings.Builder
-	writeCoachBrief(&b, res, framework)
+	writeCoachBrief(&b, res, framework, focus, traces)
 	return b.String()
 }
 
-func writeCoachBrief(w io.Writer, res analyzeResult, framework string) {
+func writeCoachBrief(w io.Writer, res analyzeResult, framework string, focus []string,
+	traces []analysis.SegmentTrace) {
 	fmt.Fprintf(w, "# Coaching brief — %s at %s\n\n",
 		fallback(res.Car, "(unknown car)"), fallback(res.Track, "(unknown track)"))
 
@@ -186,7 +226,7 @@ func writeCoachBrief(w io.Writer, res analyzeResult, framework string) {
 	fmt.Fprintln(w, "and deliver per-segment findings followed by a **Top 3 Actions** list.")
 	fmt.Fprintln(w)
 
-	writeCoachOrientation(w, res)
+	writeCoachOrientation(w, res, focus)
 
 	if framework != "" {
 		fmt.Fprintln(w, "---")
@@ -214,12 +254,60 @@ func writeCoachBrief(w io.Writer, res analyzeResult, framework string) {
 	// can never run.
 	_ = enc.Encode(res)
 	fmt.Fprintln(w, "```")
+
+	writeCoachTraces(w, traces)
+}
+
+// writeCoachTraces appends the sample-level traces as fenced CSV blocks.
+//
+// These are the reason -segment exists. The aggregate rows above say a corner is
+// slow and inconsistent; these say on which lap, at which point in the corner,
+// and by how much — the difference between "your T3 exit varies" and "on lap 4
+// you were still at 12% throttle 0.4s after the apex you took at 60% on lap 3".
+func writeCoachTraces(w io.Writer, traces []analysis.SegmentTrace) {
+	if len(traces) == 0 {
+		return
+	}
+
+	fmt.Fprintln(w)
+	fmt.Fprintln(w, "---")
+	fmt.Fprintln(w)
+	fmt.Fprintln(w, "# Sample-level traces")
+	fmt.Fprintln(w)
+	fmt.Fprintln(w, "One block per focused corner, every comparable lap overlaid. Compare the laps")
+	fmt.Fprintln(w, "against each other at equal `Time`, and against the phase rows above.")
+	fmt.Fprintln(w)
+	fmt.Fprintln(w, "Columns: `Lap`; `Dist%` position round the lap (0–1); `Time` seconds from the")
+	fmt.Fprintln(w, "start of *that lap's* window, restarting at 0 for each lap so the traces")
+	fmt.Fprintln(w, "overlay; `Speed` km/h; `Throttle`/`Brake` 0–100; `Steer` degrees at the wheel")
+	fmt.Fprintln(w, "(+ = left, not road-wheel angle); `Gear`; `LatG`/`LongG` in g; `ABS` and")
+	fmt.Fprintln(w, "`Coast` 0/1. Each block includes ~1s of lead-in and lead-out beyond the")
+	fmt.Fprintln(w, "segment boundary, so braking before the corner is visible.")
+	fmt.Fprintln(w)
+
+	for _, tr := range traces {
+		fmt.Fprintf(w, "## %s (%s) — laps %s at %dHz\n\n",
+			tr.Segment, tr.Kind, intsJoin(tr.Laps), tr.RateHz)
+		if tr.RateHz < analysis.SampleRateHz {
+			fmt.Fprintf(w,
+				"Downsampled from %dHz. `ABS` and `Coast` are 1 if set anywhere in the window a\n"+
+					"row covers, so brief events survive; every other column is a point sample.\n\n",
+				analysis.SampleRateHz)
+		}
+		fmt.Fprintln(w, "```csv")
+		fmt.Fprintln(w, tr.Columns)
+		for _, row := range tr.Rows {
+			fmt.Fprintln(w, row)
+		}
+		fmt.Fprintln(w, "```")
+		fmt.Fprintln(w)
+	}
 }
 
 // writeCoachOrientation summarises the session in prose, so the reader knows
 // what kind of session it was before reading a single number — a 3-lap
 // practice run and a 40-lap race warrant different coaching.
-func writeCoachOrientation(w io.Writer, res analyzeResult) {
+func writeCoachOrientation(w io.Writer, res analyzeResult, focus []string) {
 	fmt.Fprintln(w, "## Session")
 	fmt.Fprintln(w)
 	fmt.Fprintf(w, "- File: %s\n", fallback(res.File, "(unknown)"))
@@ -273,6 +361,18 @@ func writeCoachOrientation(w io.Writer, res analyzeResult) {
 
 	if len(res.Notes) > 0 {
 		fmt.Fprintf(w, "- Voice notes: %d (the driver's own words — weigh them heavily)\n", len(res.Notes))
+	}
+
+	// Stated last so it is the thing read immediately before the data, and
+	// stated at all because a narrowed brief is otherwise indistinguishable
+	// from a whole-session one. Findings about corners that were removed cannot
+	// be made; "the rest of the lap is fine" is not something this document
+	// supports.
+	if len(focus) > 0 {
+		fmt.Fprintf(w, "- **Focus: %s.** Per-segment rows for every other corner were removed\n",
+			strings.Join(focus, ", "))
+		fmt.Fprintln(w, "  before this was written. Coach only what is here, and do not")
+		fmt.Fprintln(w, "  characterise the lap as a whole or rank these corners against the rest.")
 	}
 	fmt.Fprintln(w)
 }

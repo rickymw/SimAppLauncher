@@ -24,6 +24,7 @@ func buildAnalyzeResult(in analyzeResultInput) analyzeResult {
 		SessionDate: in.sessionDate.Local().Format("2006-01-02T15:04:05Z07:00"),
 		Samples:     in.sampleCount,
 		TickRateHz:  in.tickRate,
+		Traces:      in.traces,
 	}
 
 	comparable := map[int]bool{}

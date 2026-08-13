@@ -77,6 +77,8 @@ motorhome analyze -geo-method lataccel session.ibt  # use lateral G instead of G
 motorhome analyze -dump T3 session.ibt              # dump T3 telemetry to CSV for AI analysis
 motorhome analyze -dump 5 -lap 3 session.ibt        # dump 5th segment from lap 3
 motorhome analyze -dump T3 -dump-all session.ibt    # dump T3 from every comparable lap into one CSV
+motorhome analyze -trace T3,T4                      # print T3/T4 sample telemetry inline (60Hz)
+motorhome analyze -trace T3 -hz 20                  # same, downsampled to 20Hz
 motorhome analyze -json session.ibt                 # emit the whole analysis as JSON instead of tables
 motorhome analyze -note-lag 3 session.ibt           # shift voice notes 3s earlier when placing them
 motorhome analyze -fuel-laps 12                     # litres needed to complete 12 more laps
@@ -84,6 +86,8 @@ motorhome coach                                     # self-contained coaching br
 motorhome coach -lap 3                              # coach a specific lap
 motorhome coach -no-framework                       # data only, without the embedded framework
 motorhome coach -table                              # turn-by-turn table for a human, not the AI brief
+motorhome coach -segment T3                         # focus on one corner, with its sample-level telemetry
+motorhome coach -segment T3,T4 -hz 20               # two corners, traces downsampled to 20Hz
 motorhome pb                                        # list every stored personal best
 motorhome pb show watkins                           # full record (setup + phases) for one entry
 motorhome pb diff                                   # setup changes since the PB for this session's car/track
@@ -202,6 +206,15 @@ The full stdout output is also copied to the system clipboard automatically (via
 
 `-dump-all` (requires `-dump`) writes the same segment from every lap in `crossLapComparableLaps` into one `<seg>_alllaps.csv`, with a leading `Lap` column. Each lap's `Time` restarts at 0 so the traces can be overlaid at equal time-into-the-corner. The filename differs from the single-lap dump deliberately: the two have different column sets and must not overwrite each other. Laps with no samples in the segment are skipped (a truncated lap legitimately misses one); an error is raised only when no lap yielded rows.
 
+### Sample-level traces (`-trace`, `-hz`)
+`-trace T3,T4` prints the same rows `-dump` would write, **inline** rather than to a file, and puts them in the `-json` document's `traces` field. That inline form is what makes `coach -segment` possible: aggregate rows say an exit is slow and varies, but only the samples say the throttle came in 0.4s later on the lap that lost the time. Both paths share `DumpConfig` and `writeDumpRows`, so the numbers and their formatting are identical by construction (a test asserts the rows match `DumpSegmentAllLapsCSV` byte for byte).
+
+Traces cover **every comparable lap**, not just the analysed one — comparing laps against each other is the point of zooming in. A session with no comparable set falls back to the analysed lap alone. Segments resolve through `analysis.ResolveSegmentList`, which accepts names or 1-based indices, dedupes, and returns them in track order regardless of the order given; an unrecognised entry fails the whole list rather than being skipped, because a typo that silently traced fewer corners would read as "that corner had no data".
+
+`-hz N` sets the output rate for `-dump` and `-trace` (defaults: 20Hz for dump, 60Hz for trace) and is rejected without one of them. Rates that don't divide 60 evenly round to the nearest stride, so `DumpConfig.OutputHz` reports what was actually emitted rather than what was asked for.
+
+**ABS and Coast are maxima over the window each row covers, not point samples.** Decimation suits continuous channels — speed read every third sample is still speed — but these two are 0/1 events, and taking every third one discarded two thirds of every ABS activation, so a lock-up lasting a few frames could vanish from a 20Hz dump entirely. That is the exact signal someone dumping a problem corner is looking for. This changed the existing `-dump` output too, and both dump headers now disclose it below 60Hz. Above 2000 trace rows a stderr note reports the size and suggests `-hz 20`, which — now that the binary channels survive downsampling — costs resolution on the continuous traces and nothing else.
+
 The map line branches on whether a stored map was used, not on whether a match score was computed. A stored map with no comparable lap (no valid flying lap, or no track length in the YAML) prints its real geometry confidence, lap/session counts and `GeoMethod` with `match: n/a (no comparable lap)`. Keying this off the match score previously made those sessions report a mature map as a fresh `geometry: low` "first detection".
 
 `-lap` accepts a positive integer (specific lap), empty (best lap of session — default), or `pb` (render the PB stored in `pb.json` without running the full analysis pipeline). For `-lap pb`: when an `.ibt` is available the car/track come from its session YAML; with no `.ibt` (or empty `ibtDir`) the single PB entry is used, or all entries are listed if there are several. The PB record stores `LapTime` / `Date` / `Weather`, the per-segment `Phases`, and the raw `CarSetup:` YAML block — enough to reproduce the setup and phase tables offline, without sample-level telemetry.
@@ -222,6 +235,12 @@ It exists so coaching is one command rather than a procedure. The assistant prev
 The orientation ends with a `Gaps:` line naming what is absent (no track map, no PB, too few laps for consistency, no sector times). Coaching around a missing input without realising it is missing produces confident findings about nothing.
 
 A missing `coach.md` is a stderr warning, not a fatal error — the data section still carries everything measured. `-no-framework` omits it deliberately.
+
+**`-segment T3`** (`coach_focus.go`) narrows the brief to named corners and inlines their samples. The aggregate rows answer *which* corner is costing time; they cannot answer *what is happening in it*, because a mean and an SD describe a corner rather than replaying it. `focusOnSegments` filters only the per-segment collections — phases, vs-PB, exit impact, consistency. Session-level content stays whole (lap list, sectors, fuel, PB header, voice notes): it is small, it is the context that makes one corner interpretable, and a sector time is the one thing that says whether the focused corner is where the time is actually going. Segment geometry is kept because `-table` needs it to tell a corner from a straight.
+
+The narrowing **must be disclosed or it is a trap**: a filtered brief is otherwise indistinguishable from a whole-session one, so `Focus` is set on the document and the orientation carries a bolded line saying other corners were removed and the lap must not be characterised as a whole. Without it the assistant reports the session's main problem having been shown one corner of it — the failure mode the `Gaps:` line already exists to prevent.
+
+Traces are rendered as fenced CSV blocks **after** the JSON rather than inside it: they are already CSV, and nesting them in an indent-encoded object costs tokens and readability for nothing. `-hz N` sets their rate (default 60). `-table` accepts `-segment` but never the traces — a 60Hz CSV is not something a human scans between runs.
 
 **`-table`** (`coach_table.go`) swaps the brief for a human-facing turn-by-turn view: one row per corner (`Turn | Speed in>min>out | Coast | Lock | Spin | ExitSD | Flags | Grade`), then a sector-loss table and a ranking of the least repeatable exits. Same `analyzeResult`, second renderer — the same relationship `analyze_json.go` has to the ASCII tables.
 

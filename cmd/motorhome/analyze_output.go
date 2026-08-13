@@ -38,6 +38,7 @@ type singleLapOpts struct {
 	dumpSeg     string
 	dumpDir     string
 	dumpAllLaps bool // -dump-all: every comparable lap in one CSV
+	dumpHz      int  // -hz override; 0 = DefaultDumpConfig's 20Hz
 }
 
 // analyzeSingleLap renders the per-lap tables and handles -dump.
@@ -100,6 +101,9 @@ func runDump(opts singleLapOpts, lap *analysis.Lap) {
 	}
 	segName := opts.segs[segIdx].Name
 	cfg := analysis.DefaultDumpConfig()
+	if opts.dumpHz > 0 {
+		cfg.DownsampleRate = analysis.DownsampleRateForHz(opts.dumpHz)
+	}
 
 	if opts.dumpAllLaps {
 		dumpLaps := opts.comparableLaps
