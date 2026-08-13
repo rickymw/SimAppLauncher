@@ -200,5 +200,5 @@ When the user wants to go deeper on a specific corner (e.g. "tell me more about 
 - If map match % is below 50%, suggest running with `-update-map` before coaching
 - Out laps and in laps are shown in the lap list but should not be used for coaching unless the user specifically asks
 - For multi-lap comparison, always confirm which lap numbers are flying laps before running the comparison — out/in laps will show skewed metrics
-- `-json` gives the same analysis as a structured document (`schema: motorhome.analyze/1.0`) if you would rather read fields than parse the tables. Everything in the tables is present, plus per-segment geometry.
+- `-json` gives the same analysis as a structured document (`schema: motorhome.analyze/1.1`) if you would rather read fields than parse the tables. Everything in the tables is present, plus per-segment geometry.
 - If the driver mentions changing the car, run `.\motorhome.exe pb diff` — it lists what differs between the current setup and the one that set their PB, with iRacing's end-of-session tyre readings filtered out. A handling complaint that started after a setup change is a setup finding, not a technique finding.

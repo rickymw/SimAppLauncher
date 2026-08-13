@@ -169,7 +169,7 @@ To give corners their real numbers and names, add a `cornerNames` list to the tr
 }
 ```
 
-An empty entry keeps the generated label, so you can name corners as you learn them. The names then appear everywhere — phase table, vs-PB table, corner-exit table and `-dump` filenames. If the list length doesn't match the detected corner count it is refused with a warning rather than applied out of step, which would mislabel every corner after the mismatch.
+An empty entry keeps the generated label, so you can name corners as you learn them. The names then appear everywhere — phase table, vs-PB table, corner-exit table, `-dump` filenames, and the name you pass to `coach -segment`. If the list length doesn't match the detected corner count it is refused with a warning rather than applied out of step, which would mislabel every corner after the mismatch.
 
 ### Sector table
 
@@ -201,7 +201,9 @@ Claude can run the analysis and deliver structured coaching feedback automatical
 > "Coach me on my latest session"
 > "Analyse my last session and give me coaching feedback"
 
-Claude runs `analyze`, identifies the best and most-recent flying laps, reads `coach.md`, and delivers per-segment findings and a **Top 3 Actions** list.
+Claude runs `coach`, which emits one self-contained brief — session orientation, the `coach.md` framework, and the analysis as JSON — and delivers per-segment findings and a **Top 3 Actions** list. It's a single command; there's no separate `analyze` run or `coach.md` read.
+
+Once that names the corner costing the most, ask it to go deeper on that one — `coach -segment T3` narrows the brief and inlines the corner's sample-level telemetry, so the answer moves from "your T3 exit varies" to which lap did what, and when.
 
 ---
 

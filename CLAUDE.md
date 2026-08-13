@@ -110,6 +110,15 @@ When the user asks to be coached, to analyse their session, or to review a lap, 
 
 That emits one self-contained brief: session orientation (including a `Gaps:` line naming what is missing), the full `coach.md` framework inline, and the analysis as JSON. **There is no second step — do not separately read `coach.md` or run `analyze`.** Deliver per-segment findings and a **Top 3 Actions** list.
 
+When a finding needs the samples rather than the aggregates — pedal timing, where the brake release actually happens, which lap's throttle came in late — re-run focused on that corner:
+
+```powershell
+.\motorhome.exe coach -segment T3        # or T3,T4
+.\motorhome.exe coach -segment T3 -hz 20 # if the trace comes back too large
+```
+
+The focused brief carries a `Focus:` line: everything outside those corners has been removed, so do not characterise the lap as a whole or rank the focused corners against the rest from it. Reach for this *after* the full brief has identified the corner, not instead of it.
+
 `analyze` remains the human-facing view (formatted tables, auto-copied to the clipboard); `coach` is the machine-facing one. There is no API key and no network call — the assistant reading the brief *is* the coach.
 
 ## Architecture
@@ -151,7 +160,7 @@ Key top-level fields:
 7. Load `pb.json`; capture the existing entry's `Phases` into a local `pbPhases` (used later by the vs-PB delta table) *before* mutating the entry; update if new PB; if new PB and segments available, store phase data (`PBPhase`) and the raw `CarSetup:` YAML block (`Setup` field) for the PB lap; save
 
    `pb.Update` replaces the entry wholesale and preserves only `BrakeEntries` — the previous PB's `Phases`/`Setup` are dropped. That is deliberate: they describe a different, slower lap, and pairing them with the new lap time would make the record self-inconsistent. When a new PB is set with no track map available (so no replacement phases can be computed), a warning is printed to stderr, because the silent consequence is that the *next* session has no vs-PB table.
-8. Print: header (file, driver, car, track) → setup tables (Tyres + Suspension corners parsed from CarSetup YAML) → tyre summary (avg surface temps, end-of-lap wear, hot pressures, brake bias) → map line → PB line → lap list → sector table → phase table → vs PB delta table (if stored PB phases exist) → corner exit → straight peak table → consistency table → notes table
+8. Print: header (file, driver, car, track) → setup tables (Tyres + Suspension corners parsed from CarSetup YAML) → tyre summary (avg surface temps, end-of-lap wear, hot pressures, brake bias) → map line → PB line → lap list → sector table → phase table → vs PB delta table (if stored PB phases exist) → corner exit → straight peak table → consistency table → notes table → segment traces (only with `-trace`)
 
 ### Two lap populations
 Two different filtered lap sets exist and must not be conflated:
@@ -167,7 +176,7 @@ Every analyze table is written through `aprintf`/`aprintln`/`aprint` (`cmd/motor
 
 Warnings and errors deliberately bypass the sink and go straight to stderr, so they still reach the user in `-json` mode without corrupting the document on stdout.
 
-The JSON document (`analyze_json.go`) is versioned by `analyzeSchema` (`motorhome.analyze/1.0`) and uses its own `json*` types rather than marshalling the internal analysis structs — those are free to be renamed as internals, this is a published wire format. `-lap pb -json` emits the stored `PersonalBest` record alone, since there is no session to describe alongside it.
+The JSON document (`analyze_json.go`) is versioned by `analyzeSchema` (`motorhome.analyze/1.1`) and uses its own `json*` types rather than marshalling the internal analysis structs — those are free to be renamed as internals, this is a published wire format. `-lap pb -json` emits the stored `PersonalBest` record alone, since there is no session to describe alongside it.
 
 ### Consistency table
 `Name | Phase | N | EntSpd | ExitSpd | PkBrk | LatG | Coast | Best exit` — the lap-to-lap spread of each segment phase across `crossLapComparableLaps`, followed by a "Most variable exit speed" ranking of the worst three. Speeds show mean ± SD; brake/LatG/coast show SD only, since their means are already in the phase table and the spread is the new information.
@@ -305,7 +314,7 @@ Detected corners are auto-labelled `T1`, `T2`, … in track order from the S/F l
 
 The analyze output therefore prints a `Turns:` line comparing the two, e.g. `11 corners detected; iRacing reports 14 turns — labels are positional, not official`. A mismatch is not itself an error; it means the T-numbers can't be trusted as official ones.
 
-To fix attribution, add `cornerNames` to the track's `trackref.json` entry: one free-text entry per **detected** corner, in track order. Entries can carry the number, a name, or both (`"T11 Kink"`); an empty entry keeps the generated label, so a track can be annotated a few corners at a time. Names are applied in memory by `trackmap.ApplyCornerNames` on every run and flow through the phase, vs-PB, exit-impact and `-dump` output.
+To fix attribution, add `cornerNames` to the track's `trackref.json` entry: one free-text entry per **detected** corner, in track order. Entries can carry the number, a name, or both (`"T11 Kink"`); an empty entry keeps the generated label, so a track can be annotated a few corners at a time. Names are applied in memory by `trackmap.ApplyCornerNames` on every run and flow through the phase, vs-PB, exit-impact, `-dump` and `-trace`/`-segment` output — so a renamed corner is also what you pass to `coach -segment`.
 
 `cornerNames` lives in `trackref.json`, not `trackmap.json`, because the latter is regenerated by detection and hand edits to it are lost.
 
@@ -389,6 +398,8 @@ All live next to the binary in `G:\RACING\SimAppLauncher\`:
 - Dynamic weather sessions do not populate `AirTemp` in the session YAML; PB weather shows track temp only in that case
 - `analyze` never prunes `pb.json` — old car/track combos accumulate indefinitely until removed with `motorhome pb prune`
 - Voice notes are placed by wall clock, so their accuracy is bounded by `-note-lag` being an estimate; a note about a corner can land in the adjacent segment
+- `coach -segment` and `analyze -trace` need a track map to name corners against, so neither works on the first session at a new track (nothing to resolve `T3` to yet)
+- A focused trace is large: one long corner complex across five comparable laps at 60Hz is ~3,900 rows, several times the whole unfocused brief. `-hz 20` cuts it to about a third and no longer loses ABS or lock-ups, but the default is not free
 - `pb diff` compares by setup-field path, so it cannot tell a genuine change from a field iRacing renamed between builds — those show as one added plus one removed field
 
 ## Open improvements
