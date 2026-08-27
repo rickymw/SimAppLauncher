@@ -17,6 +17,7 @@ A Windows CLI tool that launches sim racing apps in sequence, analyses iRacing `
 - **Voice notes** — press a hotkey to record, auto-transcribed via Whisper, and placed on the exact lap and corner you were driving when you spoke
 - **PB store management** — list, inspect, prune, and diff the setup you're running now against the setup that set your PB
 - **JSON output** — the whole analysis as a structured document for AI coaching or any other downstream tool
+- **Web interface** — `motorhome gui` serves a local dashboard covering the rig controls, the settings file, session analysis, live gaps and the PB store. No dependencies, no build step, loopback only
 
 ## Requirements
 
@@ -33,7 +34,7 @@ go build -o motorhome.exe ./cmd/motorhome
 ## Subcommands
 
 ```
-motorhome [-config <path>] <start|stop|status|analyze|coach|pb|notes|live|camera|usb>
+motorhome [-config <path>] <start|stop|status|analyze|coach|pb|notes|live|camera|usb|gui>
 ```
 
 | Subcommand | Description |
@@ -48,6 +49,7 @@ motorhome [-config <path>] <start|stop|status|analyze|coach|pb|notes|live|camera
 | `live` | Live position + gap in seconds to the car directly ahead and behind on track |
 | `camera` | Restart a stuck/frozen webcam by restarting the Windows Camera Frame Server |
 | `usb` | List the sim-racing USB devices and enable/disable them individually |
+| `gui` | Serve the web interface on `127.0.0.1` — rig control, settings, analysis, live gaps, personal bests |
 
 ---
 
@@ -525,6 +527,59 @@ See [internal/usbdev/README.md](internal/usbdev/README.md) for why devices are m
 
 ---
 
+## Web Interface
+
+```powershell
+.\motorhome.exe gui                     # serve on 127.0.0.1:7777 and open a browser
+.\motorhome.exe gui -port 8080          # a different port
+.\motorhome.exe gui -no-open            # do not open a browser
+```
+
+Five panels:
+
+| Panel | What it does |
+|---|---|
+| **Rig** | Start/stop/status of the configured apps, USB device toggles, camera restart |
+| **Live** | Position, lap, and gaps to the cars ahead and behind, streamed at 2–30 Hz |
+| **Sessions** | Pick an `.ibt` and render the full analysis — laps, sectors, phases, vs-PB deltas, exit impact, tyres, consistency, fuel, voice notes |
+| **Personal bests** | Browse `pb.json`; open an entry for its setup, phase data and stored brake points |
+| **Settings** | Edit `launcher.config.json` — driver, paths, hotkey, and the app list with reordering |
+
+Runs in the foreground until Ctrl-C.
+
+### It only listens on loopback
+
+The interface can launch processes, rewrite your config and disable your pedals,
+so it binds `127.0.0.1` and **there is no flag to change that**. It also requires
+the `Host` header to be a loopback literal, which is what blocks DNS
+rebinding — binding to 127.0.0.1 stops other machines connecting, but not a
+remote page that points its own hostname at 127.0.0.1 and drives the API through
+your browser.
+
+This is not a login. It assumes one user on one machine, which is what a rig is.
+
+### No dependencies, no build step
+
+The page is plain HTML, CSS and JavaScript embedded in the binary with
+`go:embed`, served by `net/http`. Nothing to install, nothing to compile, and
+the zero-dependency property the rest of the tool has is unchanged.
+
+### How it relates to the CLI
+
+Nothing is reimplemented. Status and start/stop call the same `internal/launcher`
+functions the CLI prints from; the analysis panel re-runs `motorhome analyze
+-json` as a subprocess (so a bad lap number returns an error instead of killing
+the server); USB toggles go through `motorhome usb`, which already handles the
+UAC elevation; and the live panel builds its gaps with the same helper `motorhome
+live` uses.
+
+`coach` has no panel — the brief exists to be pasted into an AI assistant, and a
+browser is not where that happens. Use `motorhome coach`.
+
+See [internal/gui/README.md](internal/gui/README.md) for the design detail.
+
+---
+
 ## Testing
 
 ```powershell
@@ -550,6 +605,7 @@ go test -tags e2e -v ./internal/launcher/ -run TestE2E_FullStack -timeout 120s  
 | `internal/audio` | Microphone recording via WinMM | [README](internal/audio/README.md) |
 | `internal/camera` | Restarts the Windows Camera Frame Server | [README](internal/camera/README.md) |
 | `internal/usbdev` | Identifies sim-racing USB devices and enables/disables them | [README](internal/usbdev/README.md) |
+| `internal/gui` | Local web interface served by `motorhome gui` | [README](internal/gui/README.md) |
 
 ---
 
@@ -561,3 +617,7 @@ go test -tags e2e -v ./internal/launcher/ -run TestE2E_FullStack -timeout 120s  
 - `start`/`stop` always exit 0 even on partial failures
 - Same-direction corner complexes (e.g. Maggotts/Becketts) not auto-merged; only direction-reversing chicanes are detected
 - Segment names are auto-labelled T1/S1 etc — hand-edit `trackmap.json` for real corner names
+- `gui` runs in the foreground until Ctrl-C — a Stream Deck button leaves a console window open; there is no tray icon or background mode
+- `gui` is loopback-only with no authentication, so it serves one user on one machine — reaching it from a phone would need more than a bind-address change
+- `gui` has no `coach` panel, no progress bar during an analysis, and no undo for the changes it makes
+- The `gui` settings form takes typed paths — there is no file picker

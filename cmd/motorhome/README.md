@@ -4,7 +4,7 @@ Main entry point and subcommand dispatch for the `motorhome` CLI.
 
 ## What it does
 
-Parses the `-config` flag, loads the config file, and dispatches to one of ten subcommands: `start`, `stop`, `status`, `analyze`, `coach`, `pb`, `notes`, `live`, `camera`, `usb`.
+Parses the `-config` flag, loads the config file, and dispatches to one of eleven subcommands: `start`, `stop`, `status`, `analyze`, `coach`, `pb`, `notes`, `live`, `camera`, `usb`, `gui`.
 
 ## Files
 
@@ -50,6 +50,10 @@ Parses the `-config` flag, loads the config file, and dispatches to one of ten s
 | `usb.go` | `RunUSB` — list and enable/disable the sim-racing USB devices |
 | `elevate_windows.go` | `winIsElevated` / `winRelaunchElevated` — token check and `ShellExecuteExW runas` re-exec used by `usb` |
 | `usb_test.go` | Tests for usb listing, toggling, absent devices and the elevation hand-off |
+| `gui.go` | `RunGUI` — serve the web interface; `subcommandRunner` re-exec helper, `openBrowser` |
+| `gui_windows.go` | `attachPlatformDeps` — wires the shared-memory, SetupAPI and service-control providers into `gui.Deps`; builds `LiveSnapshot` via `gapsFromLive` |
+| `gui_other.go` | The same, as a no-op, so the package builds off Windows |
+| `gui_test.go` | Re-exec tests for `subcommandRunner`: config threading, stderr capture, timeout |
 
 ## Dispatch
 
@@ -64,6 +68,7 @@ notes [set-hotkey]     →  RunNotes in notes.go
 live [-watch] [-hz N]  →  RunLive in live.go
 camera                 →  RunCamera in camera.go
 usb [on|off|toggle]    →  RunUSB in usb.go
+gui [-port N]          →  RunGUI in gui.go
 ```
 
 Runtime file paths are all derived from the config file's directory:
@@ -262,3 +267,52 @@ claiming a change that didn't happen; an unplugged one prints `not connected`
 and is skipped instead of failing the command, so `usb off all` still works with
 the wheelbase off the rig. A target that is *entirely* unplugged is an error,
 checked before elevating.
+
+## gui subcommand (`gui.go`)
+
+Serves the web interface (`internal/gui`) on `127.0.0.1` and opens a browser.
+`-port N` changes the port; `-no-open` suppresses the browser. There is
+deliberately no flag for the bind address — see
+[internal/gui/README.md](../../internal/gui/README.md).
+
+`RunGUI` assembles a `gui.Deps` and hands it to the server. The cross-platform
+half (config load/save, the process manager, the subcommand runner) is wired
+here; `attachPlatformDeps` in `gui_windows.go` adds the three Windows-only
+providers, and its `gui_other.go` twin is a no-op so the package still builds
+elsewhere.
+
+### `subcommandRunner`
+
+Returns the `RunSubcommand` the GUI uses to re-exec this binary. Two things it
+must get right:
+
+- **`-config` is threaded through explicitly**, ahead of the subcommand's own
+  arguments. The server may have been started with a `-config` pointing
+  somewhere other than next to the exe, and a child that quietly used its own
+  default would read a different `ibtDir` and write a different `pb.json` than
+  the interface is showing.
+- **`CombinedOutput`, not `Output`.** The subcommands split their reporting
+  across both streams — `analyze` writes its JSON to stdout and its one-line
+  failure reason to stderr — and the caller needs whichever it got.
+
+A `context.WithTimeout` bounds each run, and an expired deadline is reported as
+`"<subcommand> timed out after <d>"` rather than as the generic kill error.
+
+`gui_test.go` covers all three by re-execing the test binary through the
+`TestMain` dispatch `pb_exit_test.go` established (`gui-echo-argv`,
+`gui-echo-stderr`, `gui-hang`).
+
+### The live snapshot
+
+`liveProvider.Snapshot` calls `gapsFromLive` — the helper `live.go` already uses
+— rather than recomputing which car is ahead. That function encodes decisions
+that are not obvious (shortest on-track distance rather than race position, the
+`EstTime` fallback when two cars straddle the S/F line), and a second
+implementation would eventually disagree with the terminal about the same
+moment.
+
+It differs from `printGapView` in one place: the Win32 reason goes into
+`Detail`, not `Message`. `live` printing `OpenFileMappingW: The system cannot
+find the file specified` is right for a command whose `-raw` mode exists to
+troubleshoot exactly that; a dashboard panel leads with "iRacing is not running"
+and keeps the diagnostic as small print.

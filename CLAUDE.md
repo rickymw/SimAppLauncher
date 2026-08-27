@@ -1,7 +1,7 @@
 # CLAUDE.md — MotorHome
 
 ## Project overview
-Windows CLI tool (`motorhome.exe`) that launches, monitors, and closes sim racing apps in sequence, analyses iRacing `.ibt` telemetry files, and records voice notes during a session. Designed for Stream Deck integration. Ten subcommands: `start`, `stop`, `status`, `analyze`, `coach`, `pb`, `notes`, `live`, `camera`, `usb`. Accepts an optional `-config <path>` flag.
+Windows CLI tool (`motorhome.exe`) that launches, monitors, and closes sim racing apps in sequence, analyses iRacing `.ibt` telemetry files, and records voice notes during a session. Designed for Stream Deck integration. Eleven subcommands: `start`, `stop`, `status`, `analyze`, `coach`, `pb`, `notes`, `live`, `camera`, `usb`, `gui`. Accepts an optional `-config <path>` flag.
 
 ## Documentation rule
 When making any code change, always review and update documentation to match:
@@ -103,6 +103,8 @@ motorhome usb off pedals                            # disable one device (silent
 motorhome usb on pedals                             # re-enable it
 motorhome usb toggle handbrake                      # flip whichever way it currently is
 motorhome usb off all                               # disable every connected sim device
+motorhome gui                                       # web interface on 127.0.0.1:7777, opens a browser
+motorhome gui -port 8080 -no-open                   # different port, do not open a browser
 ```
 
 ## AI Coaching workflow
@@ -145,6 +147,7 @@ Each package has its own README with full detail. Below is a terse summary with 
 | `internal/audio` | WinMM `Recorder.Start/Stop`; `BuildWAV` for Whisper input | [README](internal/audio/README.md) |
 | `internal/camera` | `Restarter` interface; Windows impl stops/starts `FrameServer`+`FrameServerMonitor` via raw SCM syscalls to un-stick a frozen webcam | [README](internal/camera/README.md) |
 | `internal/usbdev` | `Controller` interface; identifies sim-racing USB devices by VID/PID and enables/disables them via raw SetupAPI syscalls | [README](internal/usbdev/README.md) |
+| `internal/gui` | Stdlib-only local web interface; `Deps` injection keeps it cross-platform, `guardLocal` keeps it loopback-only | [README](internal/gui/README.md) |
 
 ### Config (`launcher.config.json`)
 Lives next to the binary by default. Override with `-config <path>`. Validated on load — rejects empty `name`/`path`, negative `delayMs`, invalid `windowStyle`.
@@ -391,6 +394,87 @@ Why this matters: iRacing's track-limits enforcement is lenient — a driver who
 ### Driver/car resolution
 `ParseSessionMeta(yaml, driverName)`: match `UserName` case-insensitively → fallback `DriverCarIdx` → first `CarScreenName`.
 
+### gui subcommand flow (`cmd/motorhome/gui.go`)
+
+Serves the web interface on `127.0.0.1` and opens a browser. Five panels: rig
+control (apps + USB + camera), settings, session analysis, live gaps, personal
+bests. Full detail in [internal/gui/README.md](internal/gui/README.md).
+
+**A browser, not a window.** Every Go GUI toolkit brings a dependency tree this
+repo does not have — fyne pulls cgo and OpenGL, walk pulls `golang.org/x/sys` —
+and `go.mod`'s empty require block is a property `internal/camera`,
+`internal/launcher` and `internal/usbdev` all went out of their way to keep.
+`net/http` and `go:embed` are already in the standard library. It is also the
+only option that survives being driven over RDP.
+
+**Dispatched before `config.Load`**, like `camera` and `usb`, but for a
+different reason: the settings panel exists to *fix* the config, so failing at
+load would mean a malformed `launcher.config.json` locks the user out of the one
+screen that repairs it. `RunGUI` takes no `config.Config` to keep that explicit;
+the server re-reads the file per request anyway, so a load failure is reported
+per-panel and the form can still save a good document over the broken one.
+
+**It binds loopback and there is no flag to change that.** The API launches
+processes, rewrites `launcher.config.json` and disables input devices.
+`guardLocal` additionally requires `Host` to be a loopback literal, which is what
+blocks DNS rebinding — binding to 127.0.0.1 stops other *machines* connecting
+but not a remote page pointing its own hostname at 127.0.0.1 and driving the API
+through the user's browser. `Origin`, when present, must match `Host`. "Reachable
+from my phone" and "reachable from everything on the wifi" are the same change,
+and only one of them is ever what someone means.
+
+**`analyze` runs out-of-process, unlike `coach`.** `RunCoach` calls `RunAnalyze`
+in-process to guarantee the brief describes what analyze reports; the GUI cannot,
+for two reasons that only apply to a server. Every error path in the pipeline
+ends in `analyzeDie → os.Exit(1)`, so a mistyped lap number would take the whole
+interface down mid-session; and the pipeline writes package globals
+(`analyzeOut`, `invokedAs`) and swaps `os.Stdout`, none of which survives two
+requests at once. There is no drift risk despite the separate path, because it is
+not a separate path — `RunSubcommand` re-execs *this* binary running the *same*
+subcommand, with `-config` threaded through explicitly so the child cannot read a
+different config than the interface is showing.
+
+`extractJSONDocument` exists because that child's combined output has prose on
+both sides of the document: analyze's stderr warnings ahead of it, and
+`(copied to clipboard)` behind it — `main.go` wraps every analyze run in the
+clipboard tee regardless of `-json`. It decodes exactly one JSON value and slices
+at the decoder's offset rather than trimming to the first `{`, which handles only
+the leading half.
+
+**USB writes go through the `usb` subcommand**, not through the injected
+`Controller`. `SetupDiCallClassInstaller` needs a full administrator token, and
+`usb` already knows how to re-exec itself under UAC and replay the elevated
+child's output — so the browser and the Stream Deck elevate the same way, and
+there is one place where that has to be right. Enumeration stays in-process.
+
+**`internal/gui` is cross-platform.** Shared memory, SetupAPI and the service
+control manager arrive through `Deps` as interfaces, wired in by
+`cmd/motorhome/gui_windows.go`. A nil provider answers **501**, so the page can
+tell "this build cannot do that" from "no such route". The live snapshot is built
+by calling `gapsFromLive` — the helper `live.go` already uses — rather than
+recomputing which car is ahead, so the browser and the terminal cannot disagree
+about the same moment.
+
+`LiveSnapshot` splits `Message` (plain reason) from `Detail` (the Win32
+diagnostic). `live` prints the diagnostic as its whole message, which is right
+for a command with a `-raw` troubleshooting mode; a panel glanced at mid-session
+is not that.
+
+### launcher: computed results vs printed lines (`internal/launcher/ops.go`)
+
+`Status`/`Start`/`Stop` return `[]AppResult`; `RunStatus`/`RunStart`/`RunStop`
+are thin printers over them. Same relationship `analyze_json.go` has to the ASCII
+tables — one set of values, two renderers. The GUI needs the values as data, and
+a second implementation of "is this app running, and if not, launch it" would be
+free to drift from what the CLI reports. The per-app `delayMs` stays inside
+`Start`: it is part of what "start the rig" means, so a caller that skipped it
+would be starting a different sequence rather than the same one faster.
+
+The GUI's stop handler runs `Stop` and then re-reads `Status`, merging any kill
+failures in. A kill that returns without error says taskkill was *accepted*, not
+that the process is gone — SimHub restarts itself — so the panel shows the rig's
+actual state rather than the state the stop attempt implied.
+
 ## Adding a new subcommand
 
 1. **Business logic** — add a new package `internal/<name>/` with its own `README.md`
@@ -436,6 +520,12 @@ All live next to the binary in `G:\RACING\SimAppLauncher\`:
 - `coach -segment` and `analyze -trace` need a track map to name corners against, so neither works on the first session at a new track (nothing to resolve `T3` to yet)
 - A focused trace is large: one long corner complex across five comparable laps at 60Hz is ~3,900 rows, several times the whole unfocused brief. `-hz 20` cuts it to about a third and no longer loses ABS or lock-ups, but the default is not free
 - `pb diff` compares by setup-field path, so it cannot tell a genuine change from a field iRacing renamed between builds — those show as one added plus one removed field
+- `gui` runs in the foreground until Ctrl-C. A Stream Deck button pointed at it leaves a console window open; there is no tray icon and no background/detach mode
+- `gui` serves one user on one machine by design (loopback only, no auth). Reaching it from a phone or tablet would need a bind-address change *and* something in front of it — the guard is not a login
+- `gui` has no `coach` panel. The coach brief is written to be pasted into an AI assistant, and a browser is not where that happens; `motorhome coach` remains the way to get one
+- A `gui` analysis holds the request for as long as the analysis takes (a few seconds on a 45 MB `.ibt`) with only a spinner. There is no progress reporting — the analyze subcommand has no progress to report
+- `gui` state changes have no undo. Disabling the wrong USB device or removing an app from the settings form is recoverable, but only by doing the opposite
+- The settings form does not browse the filesystem — paths are typed. A file picker would need either an upload control (wrong: it copies the file) or a server-side directory browser (a filesystem-listing endpoint on a machine-local server, which is more surface than the feature is worth)
 
 ## Open improvements
 - Exit codes: `RunStart`/`RunStop` currently always exit 0 even on partial failures

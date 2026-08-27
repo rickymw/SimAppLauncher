@@ -8,6 +8,28 @@ Implements the `start`, `stop`, and `status` subcommands. Iterates the app list 
 
 ## How it works
 
+### Computed results vs printed lines
+
+`Status`, `Start` and `Stop` (`ops.go`) do the work and return `[]AppResult`.
+`RunStatus`, `RunStart` and `RunStop` (`launcher.go`) are thin printers over
+them.
+
+That split exists because the GUI needs these as data, not as formatted lines,
+and a second implementation of "is this app running, and if not, launch it"
+would be free to drift from what the CLI reports. It is the same relationship
+`analyze_json.go` has to the ASCII tables: one set of values, two renderers.
+
+`AppResult.Err` is a string rather than an `error` because these are marshalled
+straight to JSON by the GUI, and an error value would encode as `{}`.
+`AppResult.Running()` treats *launched*, *already-running* and *running* alike,
+and deliberately excludes *failed* — counting a failed status check as running
+would report the rig as up on the strength of an error.
+
+The per-app `delayMs` sleep stays inside `Start` rather than being hoisted into
+the caller. It is part of what "start the rig" means — some apps will not attach
+until the one before them is up — so a caller that skipped it would be starting
+a different sequence, not the same one faster.
+
 ### ProcessManager interface
 
 All OS calls go through a `ProcessManager` interface so tests can inject a `mockPM` without touching real processes:
@@ -38,7 +60,8 @@ type ProcessManager interface {
 
 | File | Contents |
 |---|---|
-| `launcher.go` | `ProcessManager` interface, `RunStart`, `RunStop`, `RunStatus` |
+| `launcher.go` | `ProcessManager` interface; `RunStart`, `RunStop`, `RunStatus` — printers over `ops.go` |
+| `ops.go` | `Status`, `Start`, `Stop` returning `[]AppResult`; `Outcome`, `CountRunning`, `processName` |
 | `process_windows.go` | `Spawn`, `IsRunning`, `Kill`, `SeDebugPrivilege` fallback |
 | `elevate_windows.go` | UAC elevation via `ShellExecuteExW` |
 | `output.go` | Formatted print helpers (`PrintLaunched`, `PrintClosed`, etc.) |

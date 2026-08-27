@@ -1,11 +1,13 @@
 package main
 
 import (
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/rickymw/MotorHome/internal/analysis"
 	"github.com/rickymw/MotorHome/internal/config"
@@ -48,6 +50,20 @@ func TestMain(m *testing.M) {
 		buildSegmentTraces("T1", nil, exitCaseTraceLaps(), exitCaseTraceLaps(), 0, 0)
 	case "analyze-trace-no-map":
 		buildSegmentTraces("T1", nil, exitCaseTraceLaps(), exitCaseTraceLaps(), 0, 0)
+
+	// The GUI's subcommandRunner cases. They are here rather than in their own
+	// TestMain because a package gets only one, and they need the same re-exec
+	// machinery: what is under test is the argv the child receives and the
+	// streams the parent gets back.
+	case "gui-echo-argv":
+		fmt.Println(strings.Join(os.Args[1:], " "))
+	case "gui-echo-stderr":
+		fmt.Fprintln(os.Stderr, "analyze: lap 99 not found")
+		os.Exit(1)
+	case "gui-hang":
+		// Long enough that the parent's timeout is what ends this, but bounded
+		// so a broken timeout leaves a process that still exits on its own.
+		time.Sleep(30 * time.Second)
 	}
 	// A case that returns instead of exiting is itself a failure; make that
 	// visible rather than reporting a misleading exit code 0.

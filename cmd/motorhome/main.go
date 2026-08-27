@@ -21,13 +21,14 @@ func defaultConfigPath() string {
 func main() {
 	cfgPath := flag.String("config", defaultConfigPath(), "path to config file")
 	flag.Usage = func() {
-		fmt.Fprintln(os.Stderr, "Usage: motorhome [-config <path>] <start|stop|status|analyze|coach|pb|notes|live|camera|usb>")
+		fmt.Fprintln(os.Stderr, "Usage: motorhome [-config <path>] <start|stop|status|analyze|coach|pb|notes|live|camera|usb|gui>")
 		fmt.Fprintln(os.Stderr, "       motorhome analyze [-lap N] [-update-map] [-json] [-dump T3 [-dump-all]] [file.ibt]")
 		fmt.Fprintln(os.Stderr, "       motorhome coach [-lap N] [-table] [file.ibt]")
 		fmt.Fprintln(os.Stderr, "       motorhome pb [list|show|diff|prune]")
 		fmt.Fprintln(os.Stderr, "       motorhome notes [set-hotkey]")
 		fmt.Fprintln(os.Stderr, "       motorhome live [-watch] [-hz N] [-raw]")
 		fmt.Fprintln(os.Stderr, "       motorhome camera")
+		fmt.Fprintln(os.Stderr, "       motorhome gui [-port N] [-no-open]")
 		fmt.Fprintln(os.Stderr, "       motorhome usb [list] [-v]")
 		fmt.Fprintf(os.Stderr, "       motorhome usb <on|off|toggle> <%s>\n", usbTargetHint())
 		flag.PrintDefaults()
@@ -52,6 +53,16 @@ func main() {
 		return
 	case "usb":
 		os.Exit(RunUSB(args[1:]))
+	case "gui":
+		// Also dispatched ahead of the config load, but for a different reason
+		// than camera and usb: the GUI's settings panel exists to *fix* the
+		// config. Failing here would mean a malformed launcher.config.json
+		// locks the user out of the one screen that can repair it. The server
+		// re-reads the config on every request anyway, so a load failure is
+		// reported per-panel and the settings form can still save a good one
+		// over it.
+		RunGUI(args[1:], *cfgPath, filepath.Join(filepath.Dir(*cfgPath), "pb.json"))
+		return
 	}
 
 	cfg, err := config.Load(*cfgPath)

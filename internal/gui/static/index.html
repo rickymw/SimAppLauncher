@@ -1,0 +1,159 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>MotorHome</title>
+<link rel="stylesheet" href="/style.css">
+</head>
+<body>
+
+<header class="topbar">
+  <h1>MotorHome</h1>
+  <nav class="tabs" id="tabs">
+    <button class="tab" data-panel="rig" aria-selected="true">Rig</button>
+    <button class="tab" data-panel="live" aria-selected="false">Live</button>
+    <button class="tab" data-panel="sessions" aria-selected="false">Sessions</button>
+    <button class="tab" data-panel="pb" aria-selected="false">Personal bests</button>
+    <button class="tab" data-panel="settings" aria-selected="false">Settings</button>
+  </nav>
+</header>
+
+<main>
+
+<!-- ───────────────────────────── Rig ───────────────────────────── -->
+<section class="panel" id="panel-rig">
+  <div class="grid">
+
+    <div class="card">
+      <div class="card-head">
+        <h2>Apps</h2>
+        <span class="summary" id="rig-summary"></span>
+      </div>
+      <div class="actions">
+        <button class="btn primary" id="btn-start">Start all</button>
+        <button class="btn danger" id="btn-stop">Stop all</button>
+        <button class="btn" id="btn-refresh-status">Refresh</button>
+      </div>
+      <div id="rig-status"><p class="muted">Loading…</p></div>
+    </div>
+
+    <div class="card">
+      <div class="card-head"><h2>USB devices</h2></div>
+      <p class="muted small">
+        Disabling a device removes its HID node, so nothing can bind phantom
+        input to it. Changing a state needs administrator rights and elevates
+        silently.
+      </p>
+      <div id="usb-list"><p class="muted">Loading…</p></div>
+      <div class="actions" id="usb-all-actions" hidden>
+        <button class="btn" data-usb-all="on">Enable all</button>
+        <button class="btn" data-usb-all="off">Disable all</button>
+      </div>
+      <pre class="output" id="usb-output" hidden></pre>
+    </div>
+
+    <div class="card">
+      <div class="card-head"><h2>Camera</h2></div>
+      <p class="muted small">
+        Restarts the Windows Frame Server to release a webcam a closed app never
+        let go of. Can block up to ~30s while Windows waits on the stuck client.
+      </p>
+      <div class="actions">
+        <button class="btn" id="btn-camera">Restart camera pipeline</button>
+      </div>
+      <pre class="output" id="camera-output" hidden></pre>
+    </div>
+
+  </div>
+</section>
+
+<!-- ───────────────────────────── Live ───────────────────────────── -->
+<section class="panel" id="panel-live" hidden>
+  <div class="card">
+    <div class="card-head">
+      <h2>Live gaps</h2>
+      <span class="summary" id="live-state">idle</span>
+    </div>
+    <div class="actions">
+      <button class="btn primary" id="btn-live-toggle">Start streaming</button>
+      <label class="inline">Rate
+        <select id="live-hz">
+          <option value="2">2 Hz</option>
+          <option value="5" selected>5 Hz</option>
+          <option value="10">10 Hz</option>
+          <option value="30">30 Hz</option>
+        </select>
+      </label>
+    </div>
+    <div id="live-view"><p class="muted">Not streaming.</p></div>
+  </div>
+</section>
+
+<!-- ─────────────────────────── Sessions ─────────────────────────── -->
+<section class="panel" id="panel-sessions" hidden>
+  <div class="card">
+    <div class="card-head"><h2>Session</h2></div>
+    <div class="actions wrap">
+      <label class="inline">File
+        <select id="session-file"><option value="">most recent</option></select>
+      </label>
+      <label class="inline">Lap
+        <input id="session-lap" type="text" placeholder="best" size="6">
+      </label>
+      <label class="inline">Fuel laps
+        <input id="session-fuel" type="number" min="1" placeholder="—" size="4">
+      </label>
+      <label class="inline checkbox">
+        <input id="session-updatemap" type="checkbox"> Re-detect track map
+      </label>
+      <button class="btn primary" id="btn-analyze">Analyse</button>
+    </div>
+    <p class="muted small" id="session-dir"></p>
+  </div>
+  <div id="analysis"><p class="muted">Pick a session and press Analyse.</p></div>
+</section>
+
+<!-- ───────────────────────── Personal bests ────────────────────── -->
+<section class="panel" id="panel-pb" hidden>
+  <div class="card">
+    <div class="card-head">
+      <h2>Personal bests</h2>
+      <span class="summary" id="pb-summary"></span>
+    </div>
+    <div class="actions">
+      <input id="pb-filter" type="text" placeholder="filter by car or track" size="28">
+      <button class="btn" id="btn-pb-refresh">Refresh</button>
+    </div>
+    <div id="pb-list"><p class="muted">Loading…</p></div>
+  </div>
+  <div id="pb-detail"></div>
+</section>
+
+<!-- ─────────────────────────── Settings ─────────────────────────── -->
+<section class="panel" id="panel-settings" hidden>
+  <div class="card">
+    <div class="card-head">
+      <h2>Settings</h2>
+      <span class="summary" id="settings-path"></span>
+    </div>
+    <div id="settings-form"><p class="muted">Loading…</p></div>
+    <div class="actions">
+      <button class="btn primary" id="btn-save-settings">Save</button>
+      <button class="btn" id="btn-reload-settings">Discard changes</button>
+    </div>
+    <p class="muted small">
+      Saved settings are validated before they are written — the same check
+      <code>motorhome start</code> runs on load, so the tool cannot lock itself
+      out of its own config.
+    </p>
+  </div>
+</section>
+
+</main>
+
+<div class="toast" id="toast" hidden></div>
+
+<script src="/app.js"></script>
+</body>
+</html>

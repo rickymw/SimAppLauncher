@@ -2,7 +2,6 @@ package launcher
 
 import (
 	"fmt"
-	"time"
 
 	"github.com/rickymw/MotorHome/internal/config"
 )
@@ -20,64 +19,41 @@ type ProcessManager interface {
 	Kill(processName string) error
 }
 
+// RunStart launches the apps and prints what happened. The work is in Start;
+// this is only the terminal rendering of it (see ops.go).
 func RunStart(cfg config.Config, pm ProcessManager) {
-	launched := 0
-	alreadyRunning := 0
-	for _, app := range cfg.Apps {
-		name := app.ProcessName
-		if name == "" {
-			name = app.Name
-		}
-		pid, running, err := pm.IsRunning(name)
-		if err != nil {
-			PrintFailed(app.Name, "status check failed: "+err.Error())
-			continue
-		}
-		if running {
-			PrintAlreadyRunning(app.Name, pid)
-			alreadyRunning++
-			continue
-		}
-		result := pm.Spawn(app)
-		if result.Err != nil {
-			PrintFailed(app.Name, result.Err.Error())
-		} else {
-			PrintLaunched(app.Name, result.PID)
-			launched++
-		}
-		if app.DelayMs > 0 {
-			time.Sleep(time.Duration(app.DelayMs) * time.Millisecond)
+	results := Start(cfg, pm)
+	for _, r := range results {
+		switch r.Outcome {
+		case OutcomeAlreadyRunning:
+			PrintAlreadyRunning(r.Name, r.PID)
+		case OutcomeLaunched:
+			PrintLaunched(r.Name, r.PID)
+		default:
+			PrintFailed(r.Name, r.Err)
 		}
 	}
-	fmt.Printf("\nDone. %d/%d apps running.\n", launched+alreadyRunning, len(cfg.Apps))
+	fmt.Printf("\nDone. %d/%d apps running.\n", CountRunning(results), len(cfg.Apps))
 }
 
+// RunStop kills the apps and prints what happened.
 func RunStop(cfg config.Config, pm ProcessManager) {
-	for _, app := range cfg.Apps {
-		name := app.ProcessName
-		if name == "" {
-			name = app.Name
+	for _, r := range Stop(cfg, pm) {
+		if r.Outcome == OutcomeFailed {
+			PrintFailed(r.Name, r.Err)
+			continue
 		}
-		err := pm.Kill(name)
-		if err != nil {
-			PrintFailed(app.Name, err.Error())
-		} else {
-			PrintClosed(app.Name)
-		}
+		PrintClosed(r.Name)
 	}
 }
 
+// RunStatus prints the running/stopped state of every app.
 func RunStatus(cfg config.Config, pm ProcessManager) {
-	for _, app := range cfg.Apps {
-		name := app.ProcessName
-		if name == "" {
-			name = app.Name
-		}
-		pid, running, err := pm.IsRunning(name)
-		if err != nil {
-			PrintStatusError(app.Name, err.Error())
+	for _, r := range Status(cfg, pm) {
+		if r.Outcome == OutcomeFailed {
+			PrintStatusError(r.Name, r.Err)
 			continue
 		}
-		PrintStatus(app.Name, running, pid)
+		PrintStatus(r.Name, r.Running(), r.PID)
 	}
 }
