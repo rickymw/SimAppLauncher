@@ -20,18 +20,31 @@ When making any code change, always create or update tests to match:
 Tests must be written in the same pass as the code — never left as a follow-up.
 
 ### Testing the cmd package
-`cmd/motorhome` sits at ~58% coverage; `internal/analysis` at ~92%. The uncovered
-remainder in `cmd` is deliberate: subcommand entry points, Win32 keyboard
-hooks/beeps, `transcribeLocal`, and `runPBDiff` (needs a real `.ibt`, which is
-gitignored). Two mechanisms make the rest testable:
+`cmd/motorhome` sits at ~61% coverage; `internal/analysis` at ~92%,
+`internal/config` ~91%, `internal/gui` ~86% (`internal/launcher/ops.go` is at
+100%, which is the point of having split it out from the printers). The
+uncovered remainder in `cmd` is
+deliberate: subcommand entry points (`main`, `RunAnalyze`, `RunLive`,
+`RunNotes`, `RunCamera`, `RunGUI`), Win32 keyboard hooks/beeps,
+`transcribeLocal`, and `runPBDiff` (needs a real `.ibt`, which is gitignored).
+Two mechanisms make the rest testable:
 - **`analyzeOut`** (`analyze_out.go`) — point it at a buffer with
   `captureAnalyzeOut` to assert on any analyze table.
 - **`captureStdout`** (`clipboard.go`) — for printers that still use `fmt.Print*`
   directly (`live.go`, `pb.go`). It *tees*, so verbose test runs are noisy.
 
+The low-looking numbers on `internal/usbdev` (~45%), `internal/camera` (~18%)
+and `internal/iracing` (~43%) are all the same thing: those packages are mostly
+raw Win32 syscall bodies that cannot run without the hardware. The
+cross-platform halves — parsing, matching, resolution, formatting — are covered
+directly, and the interface boundary (`Controller`, `Restarter`, `LiveProvider`)
+is what lets the layers above them be tested at all.
+
 `pb_exit_test.go` covers the `os.Exit` refusal paths by re-execing the test
 binary: `TestMain` dispatches on `MOTORHOME_EXIT_CASE`. Use that pattern when
-adding a new "refuses to guess" behaviour rather than leaving it untested.
+adding a new "refuses to guess" behaviour rather than leaving it untested. The
+GUI's `subcommandRunner` cases (`gui-echo-argv`, `gui-echo-stderr`, `gui-hang`)
+ride the same dispatch — a package gets only one `TestMain`.
 
 ## Commit rule
 After completing a feature, bug fix, or any other coherent code change, commit and push to `origin` without waiting for explicit permission. The repo is single-developer, master-only — every change should land. Stage just the files relevant to the change (do not bundle unrelated work-in-progress) and write a focused conventional-style commit message.

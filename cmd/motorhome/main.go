@@ -30,7 +30,7 @@ func main() {
 		fmt.Fprintln(os.Stderr, "       motorhome camera")
 		fmt.Fprintln(os.Stderr, "       motorhome gui [-port N] [-no-open]")
 		fmt.Fprintln(os.Stderr, "       motorhome usb [list|scan] [-v]")
-		fmt.Fprintf(os.Stderr, "       motorhome usb <on|off|toggle> <%s>\n", usbTargetHint())
+		fmt.Fprintf(os.Stderr, "       motorhome usb <on|off|toggle> <%s>   (`usb list` names your devices)\n", usbTargetHint())
 		flag.PrintDefaults()
 	}
 	flag.Parse()

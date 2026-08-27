@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"io"
 	"os"
-	"strings"
 
 	"github.com/rickymw/MotorHome/internal/config"
 	"github.com/rickymw/MotorHome/internal/usbdev"
@@ -258,13 +257,12 @@ func usbApply(ctrl usbdev.Controller, action string, devs []usbdev.Device) int {
 	return 0
 }
 
-// usbTargetHint is used by the usage text to name the aliases without needing a
-// rig attached.
-func usbTargetHint() string {
-	names := make([]string, 0, len(usbdev.KnownDevices)+1)
-	for _, k := range usbdev.KnownDevices {
-		names = append(names, k.Alias)
-	}
-	names = append(names, "all")
-	return strings.Join(names, "|")
-}
+// usbTargetHint is the placeholder the usage text uses for a device target.
+//
+// It deliberately names no aliases. It used to list usbdev.KnownDevices, which
+// was accurate while that was the only possible list; now the devices come from
+// the config, and flag.Usage is built before the config is read — so naming the
+// built-ins would confidently advertise four aliases that a user with their own
+// list does not have. A generic placeholder plus a pointer to `usb list`, which
+// prints the real thing, is the honest version.
+func usbTargetHint() string { return "alias|all" }

@@ -6,6 +6,7 @@ import (
 	"errors"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strings"
@@ -1003,3 +1004,11 @@ func TestStaticAssetsAreEmbedded(t *testing.T) {
 
 // jsonPath escapes a Windows path for embedding in a JSON string literal.
 func jsonPath(p string) string { return strings.ReplaceAll(p, `\`, `\\`) }
+
+// urlQuery escapes a value for use in a query string.
+func urlQuery(s string) string { return url.QueryEscape(s) }
+
+// writeFile is a terse os.WriteFile for test fixtures.
+func writeFile(path, content string) error {
+	return os.WriteFile(path, []byte(content), 0o644)
+}
