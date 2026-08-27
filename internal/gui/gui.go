@@ -42,8 +42,16 @@ var staticFS embed.FS
 // this process does not have and must not try to acquire while holding an HTTP
 // request open — those go out through RunSubcommand to the `usb` subcommand,
 // which already knows how to re-exec itself under UAC.
+//
+// Both methods take the known-device list per call rather than the provider
+// holding one, because the settings panel can now edit that list: a controller
+// built once at boot would keep matching against the devices the server started
+// with, and a device added through the picker would not appear until a restart.
 type USBProvider interface {
-	Enumerate() ([]usbdev.Device, error)
+	Enumerate(known []usbdev.Known) ([]usbdev.Device, error)
+	// Scan reports every USB device on the machine, including unrecognised
+	// ones, so the picker can offer them.
+	Scan(known []usbdev.Known) ([]usbdev.Scanned, error)
 }
 
 // CameraProvider restarts the OS camera pipeline. Mirrors camera.Restarter.
@@ -126,6 +134,7 @@ func (s *Server) Handler() http.Handler {
 
 	mux.HandleFunc("GET /api/usb", s.handleUSBList)
 	mux.HandleFunc("POST /api/usb", s.handleUSBSet)
+	mux.HandleFunc("GET /api/usb/scan", s.handleUSBScan)
 	mux.HandleFunc("POST /api/camera", s.handleCamera)
 
 	mux.HandleFunc("GET /api/live", s.handleLive)

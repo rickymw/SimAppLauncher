@@ -216,3 +216,11 @@ tbody tr:last-child td { border-bottom: none; }
 .toast.ok { border-left-color: var(--good); }
 
 .busy { opacity: 0.6; pointer-events: none; }
+
+.subhead {
+  margin: 18px 0 6px;
+  font-size: 12px;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  color: var(--muted);
+}

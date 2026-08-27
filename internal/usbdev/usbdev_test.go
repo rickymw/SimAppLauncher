@@ -77,7 +77,7 @@ func TestParseVIDPID(t *testing.T) {
 }
 
 func TestMatch(t *testing.T) {
-	known, ok := match(`USB\VID_30B7&PID_1001\SP24776C025F602628`)
+	known, ok := match(KnownDevices, `USB\VID_30B7&PID_1001\SP24776C025F602628`)
 	if !ok {
 		t.Fatal("expected the Heusinkveld pedals to match")
 	}
@@ -85,7 +85,7 @@ func TestMatch(t *testing.T) {
 		t.Errorf("alias = %q, want %q", known.Alias, "pedals")
 	}
 
-	if _, ok := match(`USB\VID_1234&PID_5678\whatever`); ok {
+	if _, ok := match(KnownDevices, `USB\VID_1234&PID_5678\whatever`); ok {
 		t.Error("expected an unknown vendor not to match")
 	}
 }
@@ -210,7 +210,7 @@ func TestSortDevices(t *testing.T) {
 
 func TestFormatList(t *testing.T) {
 	var buf bytes.Buffer
-	FormatList(&buf, testDevices(), false)
+	FormatList(&buf, testDevices(), false, false)
 	out := buf.String()
 
 	for _, want := range []string{"handbrake", "MOZA HBP Handbrake", "disabled", "not connected"} {
@@ -225,7 +225,7 @@ func TestFormatList(t *testing.T) {
 
 func TestFormatListVerbose(t *testing.T) {
 	var buf bytes.Buffer
-	FormatList(&buf, testDevices(), true)
+	FormatList(&buf, testDevices(), true, false)
 	out := buf.String()
 
 	if !strings.Contains(out, `USB\A`) {
@@ -234,13 +234,201 @@ func TestFormatListVerbose(t *testing.T) {
 
 	// The absent wheelbase has no instance ID, so verbose mode must not emit a
 	// blank continuation line under it.
+	//
+	// A continuation is the padded format string with an empty ID, so it comes
+	// out as whitespace rather than as nothing. That is what distinguishes it
+	// from the genuinely empty line separating the table from its footer, which
+	// also falls under the last device.
 	lines := strings.Split(strings.TrimRight(out, "\n"), "\n")
 	for i, l := range lines {
 		if !strings.Contains(l, "wheelbase") {
 			continue
 		}
-		if i+1 < len(lines) && strings.TrimSpace(lines[i+1]) == "" {
+		if i+1 >= len(lines) {
+			continue
+		}
+		next := lines[i+1]
+		if next != "" && strings.TrimSpace(next) == "" {
 			t.Errorf("blank continuation line under the absent device, got:\n%s", out)
 		}
+	}
+}
+
+func TestFormatListDisclosesWhereTheListCameFrom(t *testing.T) {
+	// A configured list replaces the built-ins, so someone who added one device
+	// by hand has to be able to see why the rest disappeared.
+	var builtin, configured bytes.Buffer
+	FormatList(&builtin, testDevices(), false, false)
+	FormatList(&configured, testDevices(), false, true)
+
+	if !strings.Contains(builtin.String(), "Built-in") {
+		t.Errorf("built-in listing does not say so:\n%s", builtin.String())
+	}
+	if !strings.Contains(configured.String(), "config") {
+		t.Errorf("configured listing does not say so:\n%s", configured.String())
+	}
+	if builtin.String() == configured.String() {
+		t.Error("the two listings are identical — where the list came from is invisible")
+	}
+}
+
+func TestParseHexID(t *testing.T) {
+	ok := map[string]uint16{
+		"0x30B7": 0x30B7, "30B7": 0x30B7, "30b7": 0x30B7,
+		"VID_30B7": 0x30B7, "PID_1001": 0x1001, "  0x1 ": 1, "FFFF": 0xFFFF,
+	}
+	for in, want := range ok {
+		got, err := ParseHexID(in)
+		if err != nil {
+			t.Errorf("ParseHexID(%q) errored: %v", in, err)
+			continue
+		}
+		if got != want {
+			t.Errorf("ParseHexID(%q) = %#x, want %#x", in, got, want)
+		}
+	}
+
+	for _, in := range []string{"", "  ", "zzz", "0x10000", "12345", "-1", "0x"} {
+		if _, err := ParseHexID(in); err == nil {
+			t.Errorf("ParseHexID(%q) accepted a bad ID", in)
+		}
+	}
+}
+
+func TestFormatHexIDRoundTrips(t *testing.T) {
+	for _, v := range []uint16{0, 1, 0x30B7, 0xFFFF} {
+		got, err := ParseHexID(FormatHexID(v))
+		if err != nil || got != v {
+			t.Errorf("round trip of %#x gave %#x, %v", v, got, err)
+		}
+	}
+}
+
+// A non-empty config list replaces the built-ins rather than adding to them, so
+// a device you do not own can be dropped. An empty one falls back.
+func TestResolveKnown(t *testing.T) {
+	if got := ResolveKnown(nil); len(got) != len(KnownDevices) {
+		t.Errorf("ResolveKnown(nil) = %d devices, want the %d built-ins", len(got), len(KnownDevices))
+	}
+
+	mine := []Known{{Alias: "shifter", Name: "Q1", VID: 1, PID: 2}}
+	got := ResolveKnown(mine)
+	if len(got) != 1 || got[0].Alias != "shifter" {
+		t.Fatalf("ResolveKnown(mine) = %+v, want only the configured device", got)
+	}
+
+	// The returned slice must not alias the caller's, or a later append here
+	// would reach into the config's own list.
+	got[0].Alias = "mutated"
+	if mine[0].Alias != "shifter" {
+		t.Error("ResolveKnown returned a slice aliasing its input")
+	}
+	if ResolveKnown(nil)[0].Alias == "mutated" {
+		t.Error("ResolveKnown returned a slice aliasing the package's built-in list")
+	}
+}
+
+func TestScannedHardwareID(t *testing.T) {
+	s := Scanned{VID: 0x30B7, PID: 0x1001}
+	if got := s.HardwareID(); got != "VID_30B7&PID_1001" {
+		t.Errorf("HardwareID = %q, want the Device Manager form", got)
+	}
+	if s.IsKnown() {
+		t.Error("a device with no alias reported as known")
+	}
+	s.Alias = "pedals"
+	if !s.IsKnown() {
+		t.Error("a device with an alias reported as unknown")
+	}
+}
+
+// The picker sorts claimed devices first, then by hardware ID, because
+// enumeration order follows the PnP tree and shuffles with which port the
+// hardware went into.
+func TestSortScanned(t *testing.T) {
+	found := []Scanned{
+		{VID: 0xFFFF, PID: 0x0001},
+		{VID: 0x0001, PID: 0x0002, Alias: "wheelbase"},
+		{VID: 0x000A, PID: 0x0002},
+		{VID: 0x0002, PID: 0x0003, Alias: "pedals"},
+	}
+	SortScanned(found)
+
+	if found[0].Alias != "pedals" || found[1].Alias != "wheelbase" {
+		t.Fatalf("claimed devices not first and alias-sorted: %+v", found)
+	}
+	if found[2].HardwareID() >= found[3].HardwareID() {
+		t.Errorf("unclaimed devices not sorted by hardware ID: %q then %q",
+			found[2].HardwareID(), found[3].HardwareID())
+	}
+}
+
+func TestFormatScan(t *testing.T) {
+	var buf bytes.Buffer
+	FormatScan(&buf, []Scanned{
+		{VID: 0x30B7, PID: 0x1001, Alias: "pedals", Name: "Heusinkveld Sim Pedals Sprint", State: StateEnabled},
+		{VID: 0x046D, PID: 0xC52B, Desc: "Logitech Receiver", State: StateEnabled},
+	})
+	out := buf.String()
+
+	for _, want := range []string{"VID_30B7&PID_1001", "pedals", "VID_046D&PID_C52B", "Logitech Receiver"} {
+		if !strings.Contains(out, want) {
+			t.Errorf("expected %q in the scan, got:\n%s", want, out)
+		}
+	}
+	// An unclaimed device shows a dash rather than a blank, so the column does
+	// not read as a missing value.
+	if !strings.Contains(out, "-") {
+		t.Errorf("unclaimed device has no alias placeholder:\n%s", out)
+	}
+}
+
+func TestIsHubServiceName(t *testing.T) {
+	// Hubs are the bulk of a USB walk and none of them is a sim control.
+	for _, s := range []string{"USBHUB", "usbhub3", "USBHUB3", "UsbHub", "USBXHCI", "usbehci", " USBHUB "} {
+		if !IsHubServiceName(s) {
+			t.Errorf("IsHubServiceName(%q) = false, want true", s)
+		}
+	}
+	// Everything a peripheral is actually backed by must survive the filter —
+	// usbccgp in particular, which is what a composite device like the MOZA
+	// handbrake uses.
+	for _, s := range []string{"", "HidUsb", "usbccgp", "WinUSB", "usbser", "USBSTOR", "hub-ish"} {
+		if IsHubServiceName(s) {
+			t.Errorf("IsHubServiceName(%q) = true, want false", s)
+		}
+	}
+}
+
+// A hardware ID shared by several devnodes is one row with a count, because a
+// device-list entry matches by VID/PID and would claim all of them.
+func TestFormatScanDisclosesSharedHardwareIDs(t *testing.T) {
+	var buf bytes.Buffer
+	FormatScan(&buf, []Scanned{
+		{VID: 0x046D, PID: 0xC547, Desc: "LIGHTSPEED Receiver", State: StateEnabled, Count: 8},
+	})
+	out := buf.String()
+
+	if !strings.Contains(out, "8 devices share this ID") {
+		t.Errorf("shared hardware ID not disclosed on the row:\n%s", out)
+	}
+	if !strings.Contains(out, "claims every device with it") {
+		t.Errorf("consequence of adding a shared ID not explained:\n%s", out)
+	}
+}
+
+func TestFormatScanOmitsCountForSingletons(t *testing.T) {
+	var buf bytes.Buffer
+	FormatScan(&buf, []Scanned{
+		{VID: 0x30B7, PID: 0x1001, Alias: "pedals", Name: "Pedals", State: StateEnabled, Count: 1},
+	})
+	out := buf.String()
+
+	if strings.Contains(out, "share this ID") {
+		t.Errorf("a single device was annotated as shared:\n%s", out)
+	}
+	// The footer warning is only relevant when something is actually shared.
+	if strings.Contains(out, "claims every device with it") {
+		t.Errorf("shared-ID warning shown with no shared IDs:\n%s", out)
 	}
 }

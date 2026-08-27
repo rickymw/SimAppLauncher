@@ -48,7 +48,7 @@ motorhome [-config <path>] <start|stop|status|analyze|coach|pb|notes|live|camera
 | `notes` | Record voice notes stamped with track position |
 | `live` | Live position + gap in seconds to the car directly ahead and behind on track |
 | `camera` | Restart a stuck/frozen webcam by restarting the Windows Camera Frame Server |
-| `usb` | List the sim-racing USB devices and enable/disable them individually |
+| `usb` | List, scan for, and enable/disable the sim-racing USB devices |
 | `gui` | Serve the web interface on `127.0.0.1` — rig control, settings, analysis, live gaps, personal bests |
 
 ---
@@ -456,6 +456,7 @@ See [internal/camera/README.md](internal/camera/README.md) for details and known
 .\motorhome.exe usb on pedals          # re-enable it
 .\motorhome.exe usb toggle handbrake   # flip whichever way it currently is
 .\motorhome.exe usb off all            # disable every connected sim device
+.\motorhome.exe usb scan               # every USB device on this machine
 ```
 
 Every device on the rig presents to Windows as a HID game controller. A game that enumerates all controllers and auto-binds axes picks up phantom input from the ones that aren't being used — harmless in a sim, which expects several devices, and disruptive in anything else. Disabling a device removes its HID node entirely, so nothing can bind to it until it's turned back on.
@@ -483,11 +484,51 @@ A game that enumerated its controllers at startup may need restarting to notice.
 
 A device already in the requested state reports `already disabled` rather than claiming a change that didn't happen, and one that isn't plugged in is reported and skipped rather than failing the command.
 
-**Listing needs no special rights; changing a device state does.** The command re-runs itself elevated for that half only. UAC is set to never-notify on this machine, so this is silent — nothing pops up mid-session, and a Stream Deck button works the same as a terminal. Adding a device means one row in `KnownDevices` ([internal/usbdev/usbdev.go](internal/usbdev/usbdev.go)); find its VID/PID with:
+**Listing needs no special rights; changing a device state does.** The command re-runs itself elevated for that half only. UAC is set to never-notify on this machine, so this is silent — nothing pops up mid-session, and a Stream Deck button works the same as a terminal.
+
+### Adding your own devices
+
+The device list is yours, not hardcoded. The easiest way to add one is the GUI —
+**Rig → Scan for devices** lists everything plugged into the machine and fills in
+the IDs for you:
 
 ```powershell
-Get-PnpDevice -Class HIDClass -PresentOnly | Where-Object { $_.FriendlyName -match 'game controller' }
+.\motorhome.exe gui
 ```
+
+The same scan from the terminal:
+
+```powershell
+.\motorhome.exe usb scan
+```
+
+```
+USB devices attached to this machine
+
+  Hardware ID            State          Alias       Description
+  VID_346E&PID_001F      enabled        handbrake   MOZA HBP Handbrake
+  VID_30B7&PID_1001      enabled        pedals      Heusinkveld Sim Pedals Sprint
+  VID_045E&PID_02E6      enabled        -           Xbox Wireless Adapter for Windows
+  VID_046D&PID_C547      enabled        -           LIGHTSPEED Receiver  (8 devices share this ID)
+```
+
+Not sure which row is your handbrake? Unplug it and scan again — the row that
+disappears is the one. USB hubs are hidden, since none of them is a sim control
+and disabling one would take down everything plugged into it.
+
+Devices live under `usbDevices` in the config:
+
+```json
+"usbDevices": [
+  { "alias": "pedals", "name": "Heusinkveld Sim Pedals Sprint", "vid": "0x30B7", "pid": "0x1001" }
+]
+```
+
+**A list of your own replaces the built-in one** rather than adding to it — that
+is what lets you drop a device you don't own. The GUI writes the built-ins in
+alongside your first addition so nothing goes missing; a hand edit gets no such
+help, so start from what `usb list` shows. Both the CLI table and the GUI panel
+say which list is in use.
 
 See [internal/usbdev/README.md](internal/usbdev/README.md) for why devices are matched by vendor/product ID rather than name, and why composite devices are toggled at the top-level node.
 
@@ -524,6 +565,7 @@ See [internal/usbdev/README.md](internal/usbdev/README.md) for why devices are m
 | `whisperPath` | Path to `whisper-cli.exe` |
 | `whisperModel` | Path to Whisper `.bin` model file |
 | `apps[].processName` | Exe stem for `tasklist`/`taskkill`. Falls back to `name`. Set this if the app spawns a child process with a different image name. |
+| `usbDevices` | Your sim hardware: `{alias, name, vid, pid}` per device, IDs as hex strings. Leave it out to use the built-in list. Easiest filled in from **Rig → Scan for devices** in the GUI. |
 
 ---
 
@@ -539,11 +581,11 @@ Five panels:
 
 | Panel | What it does |
 |---|---|
-| **Rig** | Start/stop/status of the configured apps, USB device toggles, camera restart |
+| **Rig** | Start/stop/status of the configured apps, USB device toggles and a scanner for adding new ones, camera restart |
 | **Live** | Position, lap, and gaps to the cars ahead and behind, streamed at 2–30 Hz |
 | **Sessions** | Pick an `.ibt` and render the full analysis — laps, sectors, phases, vs-PB deltas, exit impact, tyres, consistency, fuel, voice notes |
 | **Personal bests** | Browse `pb.json`; open an entry for its setup, phase data and stored brake points |
-| **Settings** | Edit `launcher.config.json` — driver, paths, hotkey, and the app list with reordering |
+| **Settings** | Edit `launcher.config.json` — driver, paths, hotkey, your USB device list, and the app list with reordering |
 
 Runs in the foreground until Ctrl-C.
 

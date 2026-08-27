@@ -52,8 +52,9 @@ type Known struct {
 	PID   uint16
 }
 
-// KnownDevices is the rig. Entries are matched against the top-level USB
-// device node, never an interface node — see parseVIDPID.
+// KnownDevices is this rig as shipped, used when the config names no devices of
+// its own. Entries are matched against the top-level USB device node, never an
+// interface node — see parseVIDPID.
 //
 // The wheelbase VID (0x0483) belongs to STMicroelectronics rather than SIMAGIC,
 // since the base uses an ST microcontroller and never overrode the default; the
@@ -73,11 +74,77 @@ type Device struct {
 	State      State
 }
 
+// Scanned is one top-level USB device as the machine reports it, whether or not
+// it is one of ours.
+//
+// This is what makes a device pickable instead of hand-entered. Enumerate has
+// always walked every USB device and thrown away the ones that did not match a
+// known VID/PID; the only thing separating that walk from a "which of these is
+// your pedals?" list was the discard. Finding a VID/PID by hand — digging it out
+// of Device Manager or PowerShell — was the genuinely awkward part of adding a
+// device, and it is the part this removes.
+type Scanned struct {
+	InstanceID string
+	Desc       string // the description Windows reports, e.g. "USB Input Device"
+	VID        uint16
+	PID        uint16
+	State      State
+
+	// Alias and Name are set when this device is already in the known list,
+	// so a picker can show what is already claimed rather than offering it
+	// again as if it were new.
+	Alias string
+	Name  string
+
+	// Count is how many devnodes share this VID/PID. It is usually 1, and the
+	// exceptions matter: this rig reports eight identical wireless receivers
+	// under one hardware ID. Since a device-list entry selects by VID/PID, all
+	// of them would be claimed by a single entry — and `usb off` would act on
+	// only one. Surfacing the count is what stops that being a silent surprise.
+	Count int
+}
+
+// IsHubServiceName reports whether a Windows driver service name belongs to a
+// USB hub or host controller.
+//
+// Hubs are the bulk of what a USB enumeration returns — 27 of 63 nodes on this
+// rig — none of them is a sim control, and disabling one would take down
+// everything plugged into it. Excluding them is what turns a scan into a list
+// somebody can read.
+//
+// It keys on the service rather than the description because the description is
+// localised: "Generic USB Hub" is that string only on an English Windows, while
+// the service is a driver identifier and is not translated.
+func IsHubServiceName(service string) bool {
+	s := strings.ToUpper(strings.TrimSpace(service))
+	if strings.HasPrefix(s, "USBHUB") {
+		return true
+	}
+	switch s {
+	case "USBXHCI", "USBEHCI", "USBOHCI", "USBUHCI", "USBHUB3":
+		return true
+	}
+	return false
+}
+
+// Known reports whether this device is already in the configured list.
+func (s Scanned) IsKnown() bool { return s.Alias != "" }
+
+// HardwareID renders the VID/PID the way Windows writes it, which is how it
+// appears in Device Manager and therefore how someone cross-checking will
+// recognise it.
+func (s Scanned) HardwareID() string {
+	return fmt.Sprintf("VID_%04X&PID_%04X", s.VID, s.PID)
+}
+
 // Controller enumerates and toggles devices. It is an interface so the command
 // layer can be tested without a rig plugged in, and so the Win32 half stays in
 // one Windows-only file.
 type Controller interface {
 	Enumerate() ([]Device, error)
+	// Scan reports every top-level USB device attached to the machine,
+	// including ones not in the known list.
+	Scan() ([]Scanned, error)
 	// SetEnabled enables or disables one device, reporting whether Windows
 	// asked for a restart before the change takes effect.
 	SetEnabled(instanceID string, enable bool) (needsRestart bool, err error)
@@ -118,18 +185,43 @@ func parseVIDPID(instanceID string) (vid, pid uint16, ok bool) {
 	return vid, pid, haveVID && havePID
 }
 
-// match returns the known device for a USB instance ID, if it is one of ours.
-func match(instanceID string) (Known, bool) {
+// match returns the entry in known for a USB instance ID, if it is one of ours.
+//
+// The list is a parameter rather than the package global because it now comes
+// from the user's config; keeping it global would mean the answer depended on
+// process-wide state that a test — or a second controller — could not vary.
+func match(known []Known, instanceID string) (Known, bool) {
 	vid, pid, ok := parseVIDPID(instanceID)
 	if !ok {
 		return Known{}, false
 	}
-	for _, k := range KnownDevices {
+	for _, k := range known {
 		if k.VID == vid && k.PID == pid {
 			return k, true
 		}
 	}
 	return Known{}, false
+}
+
+// Resolve turns a config-supplied device list into the one the controller
+// should use, falling back to the built-in rig when the config names none.
+//
+// A non-empty config list **replaces** the built-ins rather than adding to
+// them. Additive would be the safer-sounding rule, but it makes one thing
+// impossible: dropping a device you do not own. A rig with no haptic unit would
+// carry a phantom "not connected" row forever with no way to remove it, and
+// "not connected" is supposed to mean "unplugged right now", not "belongs to
+// somebody else".
+//
+// The cost of that choice is that hand-adding one device to the config silently
+// drops the other three. It is not silent: callers report which list is in use
+// (see FormatList), and the GUI seeds the full built-in set when it writes the
+// first entry, so the ordinary path never meets the sharp edge.
+func ResolveKnown(fromConfig []Known) []Known {
+	if len(fromConfig) == 0 {
+		return append([]Known(nil), KnownDevices...)
+	}
+	return append([]Known(nil), fromConfig...)
 }
 
 // Resolve turns a command-line target into the devices it names.
@@ -200,7 +292,13 @@ func SortDevices(devs []Device) {
 }
 
 // FormatList writes the device table.
-func FormatList(w io.Writer, devs []Device, verbose bool) {
+//
+// fromConfig says the list came from launcher.config.json rather than the
+// built-in defaults, and is disclosed rather than inferred: because a configured
+// list replaces the built-ins, someone who added one device by hand needs to be
+// able to see why the other three vanished. A table that looked identical either
+// way would make that a mystery.
+func FormatList(w io.Writer, devs []Device, verbose, fromConfig bool) {
 	fmt.Fprintln(w, "Sim racing USB devices")
 	fmt.Fprintln(w)
 	fmt.Fprintf(w, "  %-11s %-14s %s\n", "Alias", "State", "Device")
@@ -210,4 +308,85 @@ func FormatList(w io.Writer, devs []Device, verbose bool) {
 			fmt.Fprintf(w, "  %-11s %-14s %s\n", "", "", d.InstanceID)
 		}
 	}
+	fmt.Fprintln(w)
+	if fromConfig {
+		fmt.Fprintf(w, "  %d device(s) from usbDevices in the config.\n", len(devs))
+		return
+	}
+	fmt.Fprintln(w, "  Built-in device list. Add your own with `motorhome gui` → Rig → Scan.")
 }
+
+// FormatScan writes the results of a scan: every top-level USB device on the
+// machine, with the ones already claimed marked.
+func FormatScan(w io.Writer, found []Scanned) {
+	fmt.Fprintln(w, "USB devices attached to this machine")
+	fmt.Fprintln(w)
+	fmt.Fprintf(w, "  %-22s %-14s %-11s %s\n", "Hardware ID", "State", "Alias", "Description")
+	dupes := false
+	for _, s := range found {
+		alias := s.Alias
+		if alias == "" {
+			alias = "-"
+		}
+		desc := s.Desc
+		if s.Name != "" {
+			desc = s.Name
+		}
+		// A count above one means several devnodes share this hardware ID, and
+		// one list entry would claim all of them. Said on the row rather than
+		// only in a footer, because it changes what adding that row means.
+		if s.Count > 1 {
+			desc = fmt.Sprintf("%s  (%d devices share this ID)", desc, s.Count)
+			dupes = true
+		}
+		fmt.Fprintf(w, "  %-22s %-14s %-11s %s\n", s.HardwareID(), s.State, alias, desc)
+	}
+	fmt.Fprintln(w)
+	fmt.Fprintln(w, "  Devices with no alias are not in your device list.")
+	fmt.Fprintln(w, "  Add one with `motorhome gui` → Rig → Scan, which fills in the IDs for you.")
+	fmt.Fprintln(w, "  USB hubs are not shown.")
+	if dupes {
+		fmt.Fprintln(w, "  Devices are matched by hardware ID, so adding a shared one claims every device with it.")
+	}
+}
+
+// SortScanned orders a scan so the devices already claimed come first, then by
+// hardware ID. Enumeration order follows the PnP tree, which shuffles with which
+// port the hardware went into — no use to someone reading a list to find their
+// pedals.
+func SortScanned(found []Scanned) {
+	sort.Slice(found, func(i, j int) bool {
+		if found[i].IsKnown() != found[j].IsKnown() {
+			return found[i].IsKnown()
+		}
+		if found[i].IsKnown() {
+			return found[i].Alias < found[j].Alias
+		}
+		return found[i].HardwareID() < found[j].HardwareID()
+	})
+}
+
+// ParseHexID reads a VID or PID written the way people find them: "0x30B7",
+// "30B7", or "VID_30B7". Case-insensitive.
+//
+// It accepts the prefixed forms because that is how the ID appears in Device
+// Manager and in an instance ID string, and someone copying one across should
+// not have to know which part to strip.
+func ParseHexID(s string) (uint16, error) {
+	t := strings.TrimSpace(s)
+	if t == "" {
+		return 0, fmt.Errorf("empty")
+	}
+	upper := strings.ToUpper(t)
+	for _, prefix := range []string{"VID_", "PID_", "0X"} {
+		upper = strings.TrimPrefix(upper, prefix)
+	}
+	v, err := strconv.ParseUint(upper, 16, 16)
+	if err != nil {
+		return 0, fmt.Errorf("%q is not a 4-digit hex ID", s)
+	}
+	return uint16(v), nil
+}
+
+// FormatHexID renders an ID back in the form the config stores.
+func FormatHexID(v uint16) string { return fmt.Sprintf("0x%04X", v) }

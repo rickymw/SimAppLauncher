@@ -15,8 +15,25 @@ import (
 // OS; this file is the only place they meet.
 func attachPlatformDeps(deps *gui.Deps) {
 	deps.Live = liveProvider{}
-	deps.USB = usbdev.NewController()
+	deps.USB = usbProvider{}
 	deps.Camera = camera.NewRestarter()
+}
+
+// usbProvider builds a controller per call rather than holding one.
+//
+// The device list is now editable through the settings panel, and a controller
+// constructed once at startup would keep matching against whatever the server
+// booted with — a device added through the picker would not show up until a
+// restart, which is exactly the friction the picker exists to remove.
+// Construction is a struct literal; there is nothing to reuse.
+type usbProvider struct{}
+
+func (usbProvider) Enumerate(known []usbdev.Known) ([]usbdev.Device, error) {
+	return usbdev.NewController(known).Enumerate()
+}
+
+func (usbProvider) Scan(known []usbdev.Known) ([]usbdev.Scanned, error) {
+	return usbdev.NewController(known).Scan()
 }
 
 type liveProvider struct{}

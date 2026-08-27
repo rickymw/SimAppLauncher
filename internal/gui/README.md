@@ -25,7 +25,7 @@ is how this rig is often used.
 | `settings.go` | `/api/config` GET and PUT |
 | `sessions.go` | `/api/sessions` listing, `/api/analyze` proxy |
 | `pbview.go` | `/api/pb` list and detail |
-| `devices.go` | `/api/usb` list and set, `/api/camera` |
+| `devices.go` | `/api/usb` list, set and scan; `/api/camera` |
 | `live.go` | `/api/live` snapshot, `/api/live/stream` SSE |
 | `static/` | `index.html`, `app.js`, `style.css`, embedded via `go:embed` |
 
@@ -152,3 +152,23 @@ returning when its request context ends.
 
 `cmd/motorhome/gui_test.go` covers `subcommandRunner` by re-execing the test
 binary through the `TestMain` dispatch `pb_exit_test.go` established.
+
+## The USB picker
+
+`GET /api/usb/scan` returns every USB device on the machine, hubs excluded and
+grouped by hardware ID (see [internal/usbdev/README.md](../usbdev/README.md)).
+It exists because moving the device list into the config only helps if finding a
+VID/PID stops being the hard part — a settings form you type `0x30B7` into is
+barely better than a Go file you type it into.
+
+Adding a device from the picker is a config write, not a device operation: the
+page reads `/api/config`, appends the entry, and PUTs it back through the same
+validation every other settings save goes through. When the config names no
+devices yet, the page seeds the built-in list alongside the new entry — without
+that, the first Add would silently drop the four defaults, since a configured
+list replaces them rather than extending them.
+
+`USBProvider` takes the known-device list per call rather than holding one,
+because a controller built once at boot would keep matching against whatever the
+server started with, and a device added through the picker would not appear until
+a restart — exactly the friction the picker removes.

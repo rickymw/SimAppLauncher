@@ -31,6 +31,7 @@ const (
 	digcfAllClasses = 0x04
 
 	spdrpDeviceDesc = 0x00
+	spdrpService    = 0x04
 
 	difPropertyChange = 0x12
 
@@ -87,10 +88,18 @@ type spDevInstallParams struct {
 	driverPath               [260]uint16
 }
 
-type winController struct{}
+type winController struct {
+	known []Known
+}
 
-// NewController returns the Windows implementation of Controller.
-func NewController() Controller { return &winController{} }
+// NewController returns the Windows implementation of Controller, matching
+// devices against known.
+//
+// The list is passed in rather than read from the package global because it now
+// comes from the user's config. Pass ResolveKnown(nil) for the built-in rig.
+func NewController(known []Known) Controller {
+	return &winController{known: ResolveKnown(known)}
+}
 
 // devInfoSet opens a device information set. enumerator may be "USB" for every
 // USB device, or a full device instance ID to get a set holding just that one.
@@ -187,11 +196,32 @@ func deviceInstanceID(h uintptr, did *spDevInfoData) (string, error) {
 // and a device we can otherwise identify and toggle should not be dropped from
 // the listing because one cosmetic property could not be read.
 func deviceDesc(h uintptr, did *spDevInfoData) string {
+	return deviceProperty(h, did, spdrpDeviceDesc)
+}
+
+// deviceService reads the driver service backing a device, which is how a hub
+// is told from a peripheral.
+//
+// The service is used rather than the description because the description is
+// localised — "Generic USB Hub" is only that string on an English Windows,
+// while the service name is a driver identifier and is not translated.
+func deviceService(h uintptr, did *spDevInfoData) string {
+	return deviceProperty(h, did, spdrpService)
+}
+
+// isHubService reports whether a device is backed by a hub or host-controller
+// driver. The name test lives in the cross-platform file so it can be tested
+// without a rig.
+func isHubService(h uintptr, did *spDevInfoData) bool {
+	return IsHubServiceName(deviceService(h, did))
+}
+
+func deviceProperty(h uintptr, did *spDevInfoData, prop uint32) string {
 	buf := make([]uint16, 512)
 	ret, _, _ := procSetupDiGetDeviceRegistryPropertyW.Call(
 		h,
 		uintptr(unsafe.Pointer(did)),
-		uintptr(spdrpDeviceDesc),
+		uintptr(prop),
 		0,
 		uintptr(unsafe.Pointer(&buf[0])),
 		uintptr(len(buf)*2), // in bytes
@@ -221,21 +251,15 @@ func devNodeState(devInst uint32) State {
 	return StateEnabled
 }
 
-func (c *winController) Enumerate() ([]Device, error) {
-	// Start from the known list so a device that is not plugged in is still
-	// reported, as StateAbsent, rather than silently missing from the table.
-	devs := make([]Device, 0, len(KnownDevices))
-	for _, k := range KnownDevices {
-		devs = append(devs, Device{Known: k, State: StateAbsent})
-	}
-	byAlias := make(map[string]*Device, len(devs))
-	for i := range devs {
-		byAlias[devs[i].Alias] = &devs[i]
-	}
-
+// walkUSB visits every top-level USB device node on the machine.
+//
+// Both Enumerate and Scan are built on it: they used to be the same walk with
+// and without a discard, and keeping one traversal means a device the picker
+// offers is by construction a device the toggler can find.
+func walkUSB(visit func(h uintptr, instanceID string, did *spDevInfoData)) error {
 	h, err := devInfoSet("USB")
 	if err != nil {
-		return nil, err
+		return err
 	}
 	defer destroyDevInfoSet(h)
 
@@ -243,29 +267,114 @@ func (c *winController) Enumerate() ([]Device, error) {
 		var did spDevInfoData
 		done, err := enumDevice(h, i, &did)
 		if err != nil {
-			return nil, err
+			return err
 		}
 		if done {
-			break
+			return nil
 		}
 
 		instanceID, err := deviceInstanceID(h, &did)
 		if err != nil {
 			continue
 		}
-		known, ok := match(instanceID)
-		if !ok {
-			continue
-		}
+		visit(h, instanceID, &did)
+	}
+}
 
+func (c *winController) Enumerate() ([]Device, error) {
+	// Start from the known list so a device that is not plugged in is still
+	// reported, as StateAbsent, rather than silently missing from the table.
+	devs := make([]Device, 0, len(c.known))
+	for _, k := range c.known {
+		devs = append(devs, Device{Known: k, State: StateAbsent})
+	}
+	byAlias := make(map[string]*Device, len(devs))
+	for i := range devs {
+		byAlias[devs[i].Alias] = &devs[i]
+	}
+
+	// The device info set handle is needed to read a description, and walkUSB
+	// owns it — so the description is read inside the callback rather than
+	// after the walk.
+	err := walkUSB(func(h uintptr, instanceID string, did *spDevInfoData) {
+		known, ok := match(c.known, instanceID)
+		if !ok {
+			return
+		}
 		d := byAlias[known.Alias]
 		d.InstanceID = instanceID
-		d.Desc = deviceDesc(h, &did)
+		d.Desc = deviceDesc(h, did)
 		d.State = devNodeState(did.devInst)
+	})
+	if err != nil {
+		return nil, err
 	}
 
 	SortDevices(devs)
 	return devs, nil
+}
+
+func (c *winController) Scan() ([]Scanned, error) {
+	// Grouped by hardware ID, because that is what a device list entry actually
+	// selects. This rig reports eight identical LIGHTSPEED receivers and seven
+	// generic hubs sharing one VID/PID; listing each devnode would offer the
+	// same "device" eight times, and adding any one of them would match all
+	// eight. Count carries that fact rather than hiding it.
+	byID := make(map[[2]uint16]*Scanned)
+	var order [][2]uint16
+
+	err := walkUSB(func(h uintptr, instanceID string, did *spDevInfoData) {
+		// parseVIDPID rejects interface nodes (&MI_), which is what keeps a
+		// composite device like the MOZA handbrake from appearing once per USB
+		// interface when only the top-level node is toggleable.
+		vid, pid, ok := parseVIDPID(instanceID)
+		if !ok {
+			return
+		}
+
+		// Hubs are dropped. They are the majority of what a USB walk returns —
+		// 27 of 63 nodes here — none of them is a sim control, and disabling
+		// one would take down everything plugged into it. Excluding them is
+		// what makes the picker a list someone can read.
+		if isHubService(h, did) {
+			return
+		}
+
+		key := [2]uint16{vid, pid}
+		if existing, seen := byID[key]; seen {
+			existing.Count++
+			// A group is disabled only if every node in it is: `usb off` on
+			// this hardware ID would have to disable them all to count.
+			if existing.State != StateDisabled {
+				existing.State = StateEnabled
+			}
+			return
+		}
+
+		s := &Scanned{
+			InstanceID: instanceID,
+			Desc:       deviceDesc(h, did),
+			VID:        vid,
+			PID:        pid,
+			State:      devNodeState(did.devInst),
+			Count:      1,
+		}
+		if known, isKnown := match(c.known, instanceID); isKnown {
+			s.Alias, s.Name = known.Alias, known.Name
+		}
+		byID[key] = s
+		order = append(order, key)
+	})
+	if err != nil {
+		return nil, err
+	}
+
+	found := make([]Scanned, 0, len(order))
+	for _, key := range order {
+		found = append(found, *byID[key])
+	}
+	SortScanned(found)
+	return found, nil
 }
 
 func (c *winController) SetEnabled(instanceID string, enable bool) (bool, error) {

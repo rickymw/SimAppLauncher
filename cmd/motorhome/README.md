@@ -47,7 +47,7 @@ Parses the `-config` flag, loads the config file, and dispatches to one of eleve
 | `notes_util_test.go` | Tests for key-name parsing and recent-`.ibt` lookup |
 | `live.go` | `RunLive` — live position + gap to car ahead/behind from iRacing shared memory |
 | `camera.go` | `RunCamera` — restart the Windows Camera Frame Server to clear a stuck webcam |
-| `usb.go` | `RunUSB` — list and enable/disable the sim-racing USB devices |
+| `usb.go` | `RunUSB` — list, scan, and enable/disable the sim-racing USB devices |
 | `elevate_windows.go` | `winIsElevated` / `winRelaunchElevated` — token check and `ShellExecuteExW runas` re-exec used by `usb` |
 | `usb_test.go` | Tests for usb listing, toggling, absent devices and the elevation hand-off |
 | `gui.go` | `RunGUI` — serve the web interface; `subcommandRunner` re-exec helper, `openBrowser` |
@@ -215,19 +215,33 @@ Session file is named after the most recently modified `.ibt` in `ibtDir` (withi
 
 ## usb subcommand (`usb.go`)
 
-`RunUSB(args) int` lists the sim-racing USB devices and enables or disables
-them. Returns the process exit code rather than calling `os.Exit`, so every path
-is testable in-process.
+`RunUSB(args, cfgPath) int` lists the sim-racing USB devices and enables or
+disables them. Returns the process exit code rather than calling `os.Exit`, so
+every path is testable in-process.
 
 ```
 motorhome usb                              # list, with state
 motorhome usb -v                           # list, with device instance IDs
+motorhome usb scan                         # every USB device on the machine
 motorhome usb <on|off|toggle> <alias|all>  # change state
 ```
 
 Device identification, matching and target resolution all live in
 [internal/usbdev](../../internal/usbdev/README.md). This file owns argument
 parsing, output, and the elevation hand-off.
+
+### The device list comes from the config
+
+`usbKnownDevices` reads `usbDevices` from `launcher.config.json`, falling back to
+`usbdev.KnownDevices`. It loads the config *here* rather than letting `main` do
+it, because `usb` is still dispatched ahead of `config.Load`: clearing a device
+from a bare copy of the exe has to keep working, and so does the elevated
+re-exec, whose working directory is not the user's. A missing or malformed config
+is therefore a warning plus the built-in list, not a failure — which is exactly
+what a bare exe had before the list was configurable.
+
+`scan` runs before target resolution, since it is the command you reach for when
+the device list is *wrong* and nothing should be able to reject a target first.
 
 ### Elevation
 
@@ -248,6 +262,12 @@ cannot print to the terminal. `-elevated-out <path>` redirects both `usbOut` and
 look identical whether or not it had to elevate. That flag is also the recursion
 guard: a process started with it never elevates again, so a failed elevation
 produces one clear "access denied" rather than a loop.
+
+The child's argv also carries `-config`. It did not until the device list moved
+into the config — harmless while `usb` read nothing from it, but with the list
+there a parent started with `-config D:\other.json` would resolve the target from
+one file while the child acted from whatever sat next to the exe, silently
+toggling a different device than the one named.
 
 ### What runs where
 

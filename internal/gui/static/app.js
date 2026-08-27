@@ -230,11 +230,124 @@ function renderUSB(data) {
     },
   ], rows));
 
+  // A configured list replaces the built-ins rather than extending them, so
+  // which one is in use has to be visible — otherwise someone who added one
+  // device is left wondering where the others went.
+  $("#usb-source").textContent = data.fromConfig
+    ? "Device list from your settings. Edit it under Settings → USB devices."
+    : "Built-in device list. Scan to add your own — that writes them to settings.";
+
   const out = $("#usb-output");
   if (data.output) {
     out.textContent = data.output;
     out.hidden = false;
   }
+}
+
+/* ── rig: usb scan / picker ────────────────────────────────────────── */
+
+$("#btn-usb-scan").addEventListener("click", (ev) => withBusy(ev.target, async () => {
+  const box = $("#usb-scan");
+  try {
+    const data = await api("/api/usb/scan");
+    renderScan(box, data.devices || []);
+  } catch (e) {
+    clear(box, el("p", { class: "bad", text: e.message }));
+  }
+}));
+
+function renderScan(box, devices) {
+  if (!devices.length) {
+    clear(box, el("p", { class: "muted", text: "No USB devices found." }));
+    return;
+  }
+
+  clear(box,
+    el("h3", { class: "subhead", text: "USB devices on this machine" }),
+    el("p", { class: "muted small", text: "Hubs are hidden. Unplug a device and rescan to work out which row is which — the one that disappears is it." }),
+    table([
+      { head: "Hardware ID", get: (d) => el("code", { text: d.hardwareId }) },
+      {
+        head: "Description",
+        get: (d) => {
+          const label = d.name || d.desc || "—";
+          // Several devnodes behind one hardware ID means adding this row
+          // claims all of them, since matching is by ID. Say so on the row.
+          if (d.count > 1) {
+            return el("span", {}, label,
+              el("span", { class: "muted small", text: `  (${d.count} devices share this ID)` }));
+          }
+          return label;
+        },
+      },
+      { head: "State", get: (d) => el("span", { class: "pill " + (d.state === "enabled" ? "on" : "off"), text: d.state }) },
+      {
+        head: "In your list",
+        get: (d) => (d.known ? el("code", { text: d.alias }) : el("span", { class: "muted", text: "—" })),
+      },
+      {
+        head: "",
+        get: (d) => d.known
+          ? el("span", { class: "muted small", text: "added" })
+          : el("button", { class: "btn small", onclick: (ev) => addScannedDevice(ev.target, d) }, "Add"),
+      },
+    ], devices));
+}
+
+/* addScannedDevice writes one scanned device into the settings.
+ *
+ * When the config currently names no devices, the built-in list is seeded
+ * alongside it. Without that the first Add would silently drop the four
+ * built-ins, because a configured list replaces them rather than extending
+ * them — the one sharp edge of that rule, and the place to blunt it. */
+async function addScannedDevice(btn, dev) {
+  const alias = prompt(
+    `Short name for this device (used as "motorhome usb off <name>"):`,
+    suggestAlias(dev));
+  if (alias === null) return;
+  const name = prompt("Product name to show in the table:", dev.name || dev.desc || "");
+  if (name === null) return;
+
+  await withBusy(btn, async () => {
+    try {
+      const cfgResp = await api("/api/config");
+      const cfg = cfgResp.config;
+
+      if (!cfg.usbDevices || !cfg.usbDevices.length) {
+        // Seed from what the rig panel is currently matching against, which is
+        // the built-in list when the config has none.
+        const current = await api("/api/usb");
+        cfg.usbDevices = (current.devices || [])
+          .filter((d) => d.vid && d.pid)
+          .map((d) => ({ alias: d.alias, name: d.name, vid: d.vid, pid: d.pid }));
+      }
+
+      cfg.usbDevices.push({
+        alias: alias.trim(),
+        name: (name.trim() || dev.desc || alias.trim()),
+        vid: dev.vid,
+        pid: dev.pid,
+      });
+
+      await api("/api/config", { method: "PUT", body: JSON.stringify(cfg) });
+      toast(`Added ${alias.trim()} to your device list.`, "ok");
+      await loadUSB();
+      // Redraw the scan so the row shows as claimed rather than still offering
+      // an Add that would now be a duplicate.
+      const rescan = await api("/api/usb/scan");
+      renderScan($("#usb-scan"), rescan.devices || []);
+    } catch (e) {
+      toast(e.message, "error");
+    }
+  });
+}
+
+// suggestAlias offers a lowercase single word from the device description, so
+// the common case is one Enter press rather than inventing a name.
+function suggestAlias(dev) {
+  const src = (dev.name || dev.desc || "").toLowerCase();
+  const word = src.split(/[^a-z0-9]+/).filter((w) => w.length > 2 && w !== "usb" && w !== "device")[0];
+  return word || "device";
 }
 
 async function setUSB(btn, action, target) {
@@ -778,8 +891,39 @@ function renderSettings() {
   };
   drawApps();
 
+  // USB devices. Empty means the built-in list is in use; the section says so
+  // rather than showing an empty table that looks like "no devices".
+  const usbBox = el("div", {});
+  const drawUSB = () => {
+    const list = c.usbDevices || [];
+    if (!list.length) {
+      clear(usbBox, el("p", { class: "muted small" },
+        "No devices configured — the built-in list is in use. ",
+        "Add one from Rig → Scan for devices, which fills in the IDs for you."));
+      return;
+    }
+    clear(usbBox, list.map((d, i) => el("div", { class: "app-row" },
+      el("div", { class: "app-head" },
+        el("strong", { text: d.alias || `Device ${i + 1}` }),
+        el("button", {
+          class: "btn small danger",
+          onclick: () => { c.usbDevices.splice(i, 1); drawUSB(); },
+        }, "Remove")),
+      textField("Alias", d.alias, (v) => { d.alias = v; },
+        "What you type: motorhome usb off <alias>"),
+      textField("Name", d.name, (v) => { d.name = v; }),
+      textField("Vendor ID", d.vid, (v) => { d.vid = v; }, "Hex, e.g. 0x30B7"),
+      textField("Product ID", d.pid, (v) => { d.pid = v; }, "Hex, e.g. 0x1001"))));
+  };
+  drawUSB();
+
   clear(form,
     card("General", general),
+    card("USB devices",
+      el("p", { class: "muted small" },
+        "This list ", el("strong", { text: "replaces" }),
+        " the built-in one when it has any entries, so you can drop a device you do not own. Leave it empty to use the defaults."),
+      usbBox),
     card("Apps",
       el("p", { class: "muted small", text: "Started in this order; each app's delay is waited out before the next." }),
       appsBox,

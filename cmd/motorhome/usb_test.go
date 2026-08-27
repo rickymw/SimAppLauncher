@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"errors"
 	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -16,6 +17,8 @@ type fakeUSBController struct {
 	setErr   error
 	restart  bool
 	setCalls []fakeSetCall
+	scanned  []usbdev.Scanned
+	gotKnown []usbdev.Known
 }
 
 type fakeSetCall struct {
@@ -28,6 +31,13 @@ func (f *fakeUSBController) Enumerate() ([]usbdev.Device, error) {
 		return nil, f.enumErr
 	}
 	return f.devs, nil
+}
+
+func (f *fakeUSBController) Scan() ([]usbdev.Scanned, error) {
+	if f.enumErr != nil {
+		return nil, f.enumErr
+	}
+	return f.scanned, nil
 }
 
 func (f *fakeUSBController) SetEnabled(instanceID string, enable bool) (bool, error) {
@@ -62,7 +72,12 @@ func runUSB(t *testing.T, ctrl usbdev.Controller, elevated bool, relaunch func([
 
 	var out, errBuf bytes.Buffer
 	usbOut, usbErrOut = &out, &errBuf
-	newUSBController = func() usbdev.Controller { return ctrl }
+	newUSBController = func(known []usbdev.Known) usbdev.Controller {
+		if f, ok := ctrl.(*fakeUSBController); ok {
+			f.gotKnown = known
+		}
+		return ctrl
+	}
 	usbIsElevated = func() bool { return elevated }
 	usbRelaunch = relaunch
 	if relaunch == nil {
@@ -72,7 +87,7 @@ func runUSB(t *testing.T, ctrl usbdev.Controller, elevated bool, relaunch func([
 		}
 	}
 
-	code := RunUSB(args)
+	code := RunUSB(args, filepath.Join(t.TempDir(), "launcher.config.json"))
 	return out.String(), errBuf.String(), code
 }
 
@@ -311,14 +326,18 @@ func TestRunUSBElevatedChildDoesNotRecurse(t *testing.T) {
 		newUSBController, usbIsElevated, usbRelaunch = oldCtrl, oldElev, oldRelaunch
 		usbOut, usbErrOut = oldOut, oldErr
 	})
-	newUSBController = func() usbdev.Controller { return ctrl }
+	newUSBController = func(known []usbdev.Known) usbdev.Controller {
+		ctrl.gotKnown = known
+		return ctrl
+	}
 	usbIsElevated = func() bool { return false } // still unelevated, yet told to act
 	usbRelaunch = func([]string) (int, error) {
 		t.Fatal("the elevated child must never re-elevate")
 		return 0, nil
 	}
 
-	code := RunUSB([]string{"off", "-elevated-out", path, "pedals"})
+	code := RunUSB([]string{"off", "-elevated-out", path, "pedals"},
+		filepath.Join(t.TempDir(), "launcher.config.json"))
 
 	if code != 0 {
 		t.Errorf("exit = %d, want 0", code)

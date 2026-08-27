@@ -103,6 +103,7 @@ motorhome usb off pedals                            # disable one device (silent
 motorhome usb on pedals                             # re-enable it
 motorhome usb toggle handbrake                      # flip whichever way it currently is
 motorhome usb off all                               # disable every connected sim device
+motorhome usb scan                                  # every USB device on the machine, for adding to the list
 motorhome gui                                       # web interface on 127.0.0.1:7777, opens a browser
 motorhome gui -port 8080 -no-open                   # different port, do not open a browser
 ```
@@ -158,6 +159,7 @@ Key top-level fields:
 - `hotkey` — key name for voice notes (set via `notes set-hotkey`).
 - `whisperPath` / `whisperModel` — paths to `whisper-cli.exe` and model file.
 - `apps[].processName` — exe stem for `tasklist`/`taskkill`; falls back to `name`. Must match Task Manager's image name.
+- `usbDevices` — the sim hardware `usb` recognises: `{alias, name, vid, pid}` with the IDs as hex *strings* (`"0x30B7"`). Omitted/empty means the built-in `usbdev.KnownDevices` list. **A non-empty list replaces the built-ins rather than extending them** — see below.
 - `apps[].args` — `string`, not `[]string`; split with `strings.Fields` before passing to `exec.Command`.
 
 ### analyze subcommand flow (`cmd/motorhome/analyze.go`)
@@ -340,6 +342,44 @@ Enumeration and target resolution stay in the **unelevated parent** so a typo is
 
 Like `camera`, `usb` is dispatched in `main.go` **before** `config.Load`: it reads nothing from the config, and requiring one would fail a bare copy of the exe.
 
+**The device list is configurable, and the scan is what makes that usable.**
+`usbDevices` in the config supplies the list; `usbdev.ResolveKnown` falls back to
+the built-ins when it is empty. Moving the list to config on its own would have
+been a poor trade — you would still have to dig a VID/PID out of Device Manager
+and type it in, which was the awkward part. `Controller.Scan` returns *every*
+top-level USB device, which `Enumerate` had always walked and discarded (`if
+!ok { continue }`); surfacing it turns adding a device into picking one.
+`walkUSB` is the shared traversal, so a device the picker offers is by
+construction one the toggler can find.
+
+Two things the raw scan needed before it was readable. **Hubs are dropped** —
+27 of 63 nodes on this rig, none of them a sim control, and disabling one takes
+down everything plugged into it. The filter keys on the driver service
+(`IsHubServiceName`) rather than the description, because "Generic USB Hub" is
+that string only on an English Windows. **Rows are grouped by VID/PID** with a
+`Count`, because that is what a list entry actually selects: this rig reports
+eight identical LIGHTSPEED receivers under one hardware ID, and one entry would
+claim all eight. 63 rows became 28.
+
+A configured list **replaces** the built-ins. Additive sounds safer but makes it
+impossible to drop a device you do not own — a rig with no haptic would carry a
+phantom "not connected" row forever, and that state is supposed to mean
+"unplugged right now", not "someone else's hardware". The cost is that
+hand-adding one device silently drops the rest, so it is *not* silent: both
+`FormatList` and the GUI panel say which list is in use, and the picker seeds
+the full built-in set when it writes the first entry, so the ordinary path never
+meets the edge.
+
+`usb` still dispatches before `config.Load` — it loads the config itself, and a
+missing or malformed one is a warning plus the built-in list, not a failure,
+which is exactly what a bare exe had before this was configurable.
+
+**The elevated child now gets `-config`.** It never did, which was harmless only
+while `usb` read nothing from the config; with the device list there, a parent
+started with `-config D:\other.json` would resolve the target from one file
+while the child acted from whatever sat next to the exe — silently toggling a
+different device than the one named.
+
 Two Win32 notes: `SetupDiGetClassDevs` will **not** accept a device instance ID as its `Enumerator` despite the documentation saying it does (fails `ERROR_INVALID_DATA` — verified on this rig), so `openDevice` uses `SetupDiCreateDeviceInfoList` + `SetupDiOpenDeviceInfoW`; and enable clears `DICS_FLAG_CONFIGSPECIFIC` *then* `DICS_FLAG_GLOBAL` while disable sets only `DICS_FLAG_GLOBAL`, because a device can be disabled in either scope and clearing one leaves it disabled while reporting success.
 
 ### Corner labelling and the Turns line
@@ -506,7 +546,9 @@ All live next to the binary in `G:\RACING\SimAppLauncher\`:
 - `stop` kills by image name — affects all instances of a process if multiple are running
 - `camera` restarts the Frame Server system-wide (not scoped to one device) and cannot fix a true USB-level hardware hang — only a full PnP disable/enable or physical unplug/replug can, which requires admin rights not available in this deployment
 - `camera` can block up to ~30s when an app is holding the device; this is Windows waiting on the stuck client, not the tool, and cannot be shortened without admin rights to kill the service host
-- `usb` recognises only the devices listed in `usbdev.KnownDevices`; a new or swapped device is invisible until its VID/PID is added there. There is no config field for this — the list is small and changes about as often as the hardware does
+- `usb` matches by VID/PID, so several devnodes sharing one hardware ID are one entry as far as the device list is concerned. `Enumerate` keeps the last node it saw, meaning `usb off` on a duplicated ID toggles an arbitrary one of them. The scan discloses the count rather than fixing it; no sim device on this rig duplicates, and the fix would need a per-instance list rather than a per-ID one
+- The `usb` scan hides USB hubs. The filter keys on the driver service name, so a hub with a non-standard driver would still be listed — harmless, but it would be offered as addable
+- `usbDevices` in the config replaces the built-in list rather than extending it, so hand-adding one device drops the rest. Both the CLI table and the GUI panel say which list is in use, and the GUI picker seeds the built-ins when writing the first entry, but a hand edit gets no such help
 - `usb` toggles the whole top-level USB device, so disabling the MOZA handbrake also takes down its `COM6` serial interface (used by MOZA Pit House). Toggling a single interface is possible but would leave the physical device half-on in a way the output could not sensibly describe
 - A game that enumerated its controllers at startup may need restarting to notice a device appearing or disappearing; `usb` says so after any change it makes
 - `usb` depends on UAC elevation being silent on this machine. On a box that prompts, every state change would raise a consent dialog — workable from a terminal, bad from a Stream Deck button mid-session. The fallback would be a one-time elevated scheduled task triggered by the unelevated binary, the same shape as the `camera` service ACL

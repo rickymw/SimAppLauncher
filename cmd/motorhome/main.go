@@ -29,7 +29,7 @@ func main() {
 		fmt.Fprintln(os.Stderr, "       motorhome live [-watch] [-hz N] [-raw]")
 		fmt.Fprintln(os.Stderr, "       motorhome camera")
 		fmt.Fprintln(os.Stderr, "       motorhome gui [-port N] [-no-open]")
-		fmt.Fprintln(os.Stderr, "       motorhome usb [list] [-v]")
+		fmt.Fprintln(os.Stderr, "       motorhome usb [list|scan] [-v]")
 		fmt.Fprintf(os.Stderr, "       motorhome usb <on|off|toggle> <%s>\n", usbTargetHint())
 		flag.PrintDefaults()
 	}
@@ -52,7 +52,7 @@ func main() {
 		RunCamera(args[1:])
 		return
 	case "usb":
-		os.Exit(RunUSB(args[1:]))
+		os.Exit(RunUSB(args[1:], *cfgPath))
 	case "gui":
 		// Also dispatched ahead of the config load, but for a different reason
 		// than camera and usb: the GUI's settings panel exists to *fix* the

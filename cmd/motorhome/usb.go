@@ -7,6 +7,7 @@ import (
 	"os"
 	"strings"
 
+	"github.com/rickymw/MotorHome/internal/config"
 	"github.com/rickymw/MotorHome/internal/usbdev"
 )
 
@@ -32,10 +33,31 @@ func usbErrf(format string, a ...any)   { fmt.Fprintf(usbErrOut, format+"\n", a.
 
 func isUSBAction(s string) bool {
 	switch s {
-	case "list", "on", "off", "toggle":
+	case "list", "on", "off", "toggle", "scan":
 		return true
 	}
 	return false
+}
+
+// usbKnownDevices reads the device list from the config, falling back to the
+// built-in rig.
+//
+// The config is loaded here rather than by main because `usb` is dispatched
+// ahead of config.Load on purpose — clearing a device from a bare copy of the
+// exe has to keep working, and so does the elevated re-exec, whose working
+// directory is not the user's. A missing or malformed config is therefore not
+// an error: it means the built-in list, which is exactly what a bare exe had
+// before this was configurable. The failure is reported so it is not silent,
+// then the command carries on.
+func usbKnownDevices(cfgPath string) []usbdev.Known {
+	cfg, err := config.Load(cfgPath)
+	if err != nil {
+		if !os.IsNotExist(err) {
+			usbErrf("warning: using the built-in device list (%v)", err)
+		}
+		return nil
+	}
+	return cfg.KnownUSBDevices()
 }
 
 // RunUSB lists the sim-racing USB devices and enables or disables them,
@@ -45,7 +67,7 @@ func isUSBAction(s string) bool {
 // re-runs itself elevated for that half only. Enumeration and target resolution
 // stay in the unelevated parent so a typo ("no device matches pedls") is
 // reported without an elevation round trip.
-func RunUSB(args []string) int {
+func RunUSB(args []string, cfgPath string) int {
 	action := "list"
 	rest := args
 	if len(args) > 0 && isUSBAction(args[0]) {
@@ -58,6 +80,7 @@ func RunUSB(args []string) int {
 	elevatedOut := fs.String("elevated-out", "", "internal: redirect all output to this file (set by the elevated re-exec)")
 	fs.Usage = func() {
 		fmt.Fprintln(os.Stderr, "Usage: motorhome usb [list] [-v]")
+		fmt.Fprintln(os.Stderr, "       motorhome usb scan [-v]")
 		fmt.Fprintln(os.Stderr, "       motorhome usb <on|off|toggle> [-v] <alias|all>")
 		fs.PrintDefaults()
 	}
@@ -76,7 +99,22 @@ func RunUSB(args []string) int {
 		usbOut, usbErrOut = f, f
 	}
 
-	ctrl := newUSBController()
+	known := usbKnownDevices(cfgPath)
+	ctrl := newUSBController(known)
+
+	// scan does not need the known list to be right, and is the command you
+	// reach for when it is wrong, so it runs before anything can reject a
+	// target.
+	if action == "scan" {
+		found, err := ctrl.Scan()
+		if err != nil {
+			usbErrf("cannot scan USB devices: %v", err)
+			return 1
+		}
+		usbdev.FormatScan(usbOut, found)
+		return 0
+	}
+
 	devs, err := ctrl.Enumerate()
 	if err != nil {
 		usbErrf("cannot enumerate USB devices: %v", err)
@@ -84,14 +122,14 @@ func RunUSB(args []string) int {
 	}
 
 	if action == "list" {
-		usbdev.FormatList(usbOut, devs, *verbose)
+		usbdev.FormatList(usbOut, devs, *verbose, len(known) > 0)
 		return 0
 	}
 
 	target := fs.Arg(0)
 	if target == "" {
 		usbErrf("usb %s: no device named", action)
-		usbdev.FormatList(usbErrOut, devs, false)
+		usbdev.FormatList(usbErrOut, devs, false, len(known) > 0)
 		return 1
 	}
 
@@ -109,7 +147,7 @@ func RunUSB(args []string) int {
 	}
 
 	if *elevatedOut == "" && !usbIsElevated() {
-		return usbElevate(action, target, *verbose)
+		return usbElevate(action, target, *verbose, cfgPath)
 	}
 
 	return usbApply(ctrl, action, targets)
@@ -130,7 +168,13 @@ func anyActionable(devs []usbdev.Device) bool {
 //
 // The child's arguments are rebuilt rather than forwarded verbatim so the
 // flags land ahead of the target regardless of how they were typed.
-func usbElevate(action, target string, verbose bool) int {
+//
+// -config is threaded through explicitly. It used to be omitted, which was
+// harmless only for as long as `usb` read nothing from the config: now that the
+// device list lives there, a parent started with `-config D:\other.json` would
+// resolve the target from one file while the child acted from whatever sits
+// next to the exe — silently toggling a different device than the one named.
+func usbElevate(action, target string, verbose bool, cfgPath string) int {
 	tmp, err := os.CreateTemp("", "motorhome-usb-*.txt")
 	if err != nil {
 		usbErrf("cannot create temp file for elevated output: %v", err)
@@ -140,7 +184,7 @@ func usbElevate(action, target string, verbose bool) int {
 	tmp.Close()
 	defer os.Remove(path)
 
-	childArgs := []string{"usb", action, "-elevated-out", path}
+	childArgs := []string{"-config", cfgPath, "usb", action, "-elevated-out", path}
 	if verbose {
 		childArgs = append(childArgs, "-v")
 	}

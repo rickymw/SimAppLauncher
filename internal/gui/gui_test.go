@@ -71,11 +71,25 @@ func (f *fakePM) Kill(name string) error {
 }
 
 type fakeUSB struct {
-	devs []usbdev.Device
-	err  error
+	devs    []usbdev.Device
+	scanned []usbdev.Scanned
+	err     error
+
+	// gotKnown records the device list the handler passed in, which is how the
+	// tests check that the config — not a list captured at boot — is what the
+	// provider matches against.
+	gotKnown []usbdev.Known
 }
 
-func (f *fakeUSB) Enumerate() ([]usbdev.Device, error) { return f.devs, f.err }
+func (f *fakeUSB) Enumerate(known []usbdev.Known) ([]usbdev.Device, error) {
+	f.gotKnown = known
+	return f.devs, f.err
+}
+
+func (f *fakeUSB) Scan(known []usbdev.Known) ([]usbdev.Scanned, error) {
+	f.gotKnown = known
+	return f.scanned, f.err
+}
 
 type fakeCamera struct {
 	results  []camera.ServiceResult
@@ -668,6 +682,94 @@ func TestUSBListMarksAbsentDevicesUnactionable(t *testing.T) {
 	}
 	if got.Devices[1].State != "not connected" {
 		t.Errorf("handbrake state = %q", got.Devices[1].State)
+	}
+}
+
+// The device list must come from the config on every request, not from
+// something captured at boot — otherwise a device added through the picker
+// would not appear until the server restarted, which is the friction the
+// picker exists to remove.
+func TestUSBListUsesTheConfiguredDeviceList(t *testing.T) {
+	usb := &fakeUSB{devs: devices()}
+	s, _, dir := testServer(t, func(d *Deps) { d.USB = usb })
+
+	cfgPath := filepath.Join(dir, "launcher.config.json")
+	cfg, err := config.Load(cfgPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cfg.USBDevices = []config.USBDevice{
+		{Alias: "shifter", Name: "SIMAGIC Q1 Shifter", VID: "0x3670", PID: "0x0401"},
+	}
+	if err := config.Save(cfgPath, cfg); err != nil {
+		t.Fatal(err)
+	}
+
+	got := decode[usbResponse](t, do(t, s, "GET", "/api/usb", ""))
+
+	if len(usb.gotKnown) != 1 || usb.gotKnown[0].Alias != "shifter" {
+		t.Fatalf("provider matched against %+v, want the configured device", usb.gotKnown)
+	}
+	if usb.gotKnown[0].VID != 0x3670 || usb.gotKnown[0].PID != 0x0401 {
+		t.Errorf("hex IDs not parsed: %+v", usb.gotKnown[0])
+	}
+	if !got.FromConfig {
+		t.Error("fromConfig is false with a configured list — the panel cannot say where the list came from")
+	}
+}
+
+func TestUSBListFallsBackToBuiltInDevices(t *testing.T) {
+	usb := &fakeUSB{devs: devices()}
+	s, _, _ := testServer(t, func(d *Deps) { d.USB = usb })
+
+	got := decode[usbResponse](t, do(t, s, "GET", "/api/usb", ""))
+
+	// nil is what ResolveKnown turns into the built-in rig; the handler must
+	// not invent a list of its own.
+	if len(usb.gotKnown) != 0 {
+		t.Errorf("gotKnown = %+v, want nil so usbdev falls back to the built-ins", usb.gotKnown)
+	}
+	if got.FromConfig {
+		t.Error("fromConfig is true with no configured devices")
+	}
+}
+
+func TestUSBScanReportsKnownAndUnknownDevices(t *testing.T) {
+	usb := &fakeUSB{scanned: []usbdev.Scanned{
+		{InstanceID: `USB\VID_30B7&PID_1001\X`, VID: 0x30B7, PID: 0x1001,
+			Desc: "USB Input Device", State: usbdev.StateEnabled,
+			Alias: "pedals", Name: "Heusinkveld Sim Pedals Sprint"},
+		{InstanceID: `USB\VID_046D&PID_C52B\Y`, VID: 0x046D, PID: 0xC52B,
+			Desc: "Logitech Receiver", State: usbdev.StateEnabled},
+	}}
+	s, _, _ := testServer(t, func(d *Deps) { d.USB = usb })
+
+	got := decode[scanResponse](t, do(t, s, "GET", "/api/usb/scan", ""))
+
+	if len(got.Devices) != 2 {
+		t.Fatalf("scanned %d devices, want 2", len(got.Devices))
+	}
+	if !got.Devices[0].Known || got.Devices[0].Alias != "pedals" {
+		t.Errorf("claimed device = %+v, want it marked known", got.Devices[0])
+	}
+	// The unclaimed one is the whole point: it is what the picker can offer.
+	if got.Devices[1].Known {
+		t.Errorf("unclaimed device = %+v, want known false", got.Devices[1])
+	}
+	// The IDs arrive pre-formatted in the form the config stores, so adding a
+	// device is a copy rather than a conversion the page has to get right.
+	if got.Devices[1].VID != "0x046D" || got.Devices[1].PID != "0xC52B" {
+		t.Errorf("vid/pid = %q/%q, want the config's hex-string form", got.Devices[1].VID, got.Devices[1].PID)
+	}
+	if got.Devices[1].HardwareID != "VID_046D&PID_C52B" {
+		t.Errorf("hardwareId = %q, want the Device Manager form", got.Devices[1].HardwareID)
+	}
+}
+
+func TestUSBScanUnavailableOffWindows(t *testing.T) {
+	s, _, _ := testServer(t, nil)
+	if w := do(t, s, "GET", "/api/usb/scan", ""); w.Code != http.StatusNotImplemented {
+		t.Fatalf("status = %d, want 501", w.Code)
 	}
 }
 

@@ -30,6 +30,51 @@ The wheelbase VID belongs to STMicroelectronics rather than SIMAGIC — the base
 uses an ST microcontroller and never overrode the default — so the PID is what
 actually pins it down.
 
+That table is the **default**, not the list. `usbDevices` in the config supplies
+the real one and `ResolveKnown` falls back to the table above when it is empty.
+The list is passed into `NewController` rather than read from the package global,
+so the answer never depends on process-wide state a test or a second controller
+cannot vary.
+
+A configured list **replaces** the defaults rather than extending them. Additive
+sounds safer, but it makes it impossible to drop a device you do not own: a rig
+with no haptic unit would carry a phantom `not connected` row forever, and that
+state is supposed to mean "unplugged right now", not "belongs to somebody else".
+The cost is that hand-adding one device drops the rest — so `FormatList` prints
+which list it used, and the GUI picker seeds the defaults when it writes the
+first entry.
+
+## `Scan` — every device, not just ours
+
+`Enumerate` had always walked every USB device and discarded the ones that did
+not match (`if !ok { continue }`). `Scan` is the same walk without the discard,
+and it is what turns adding a device from *find the VID/PID in Device Manager
+and type it in* into *pick it from a list*. Both go through `walkUSB`, so a
+device the picker offers is by construction one the toggler can find.
+
+Two things the raw walk needed before it was readable — 63 nodes on this rig:
+
+- **Hubs are dropped.** 27 of those 63, none of them a sim control, and
+  disabling one takes down everything plugged into it. `IsHubServiceName` keys
+  on the driver service rather than the description, because "Generic USB Hub"
+  is that string only on an English Windows while a service name is a driver
+  identifier and is not translated. The name test lives in the cross-platform
+  file so it can be tested without a rig.
+- **Rows are grouped by VID/PID**, carrying a `Count`. That is what a device-list
+  entry actually selects, and this rig reports eight identical LIGHTSPEED
+  receivers under one hardware ID — listing each devnode would offer the same
+  "device" eight times, and adding any one of them would claim all eight.
+
+63 rows became 28. Note the honest limitation this exposes: `Enumerate` keeps the
+last node it saw for a given ID, so `usb off` on a duplicated hardware ID toggles
+an arbitrary one of them. The count is disclosed rather than the behaviour fixed,
+because no sim device here duplicates and the fix would need a per-instance list.
+
+IDs are stored in the config as hex **strings** (`"0x30B7"`). JSON has no hex
+literal, so numbers would mean writing `12471` for `VID_30B7` — unrecognisable
+next to the Device Manager entry it was copied from. `ParseHexID` accepts every
+form someone might paste: `0x30B7`, `30B7`, `30b7`, `VID_30B7`.
+
 ## Interface nodes are rejected
 
 `parseVIDPID` refuses any instance ID carrying `&MI_`. A composite device like
@@ -98,10 +143,16 @@ for a fault in the game instead.
 
 ## Elevation
 
-Enumeration needs no special rights. **Changing a device state requires an
-elevated token** — `SetupDiCallClassInstaller` returns `ERROR_ACCESS_DENIED`
-otherwise. This package does not elevate; it surfaces that error and lets
-`cmd/motorhome/usb.go` handle the re-exec.
+Enumeration and scanning need no special rights. **Changing a device state
+requires an elevated token** — `SetupDiCallClassInstaller` returns
+`ERROR_ACCESS_DENIED` otherwise. This package does not elevate; it surfaces that
+error and lets `cmd/motorhome/usb.go` handle the re-exec.
+
+The elevated child is passed `-config` explicitly. It was not, before the device
+list moved into the config — harmless while `usb` read nothing from it, but with
+the list there a parent started with `-config D:\other.json` would resolve the
+target from one file while the child acted from whatever sat next to the exe,
+silently toggling a different device than the one named.
 
 ## Testing
 
