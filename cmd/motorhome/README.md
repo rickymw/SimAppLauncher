@@ -4,7 +4,7 @@ Main entry point and subcommand dispatch for the `motorhome` CLI.
 
 ## What it does
 
-Parses the `-config` flag, loads the config file, and dispatches to one of eight subcommands: `start`, `stop`, `status`, `analyze`, `pb`, `notes`, `live`, `camera`.
+Parses the `-config` flag, loads the config file, and dispatches to one of ten subcommands: `start`, `stop`, `status`, `analyze`, `coach`, `pb`, `notes`, `live`, `camera`, `usb`.
 
 ## Files
 
@@ -47,6 +47,9 @@ Parses the `-config` flag, loads the config file, and dispatches to one of eight
 | `notes_util_test.go` | Tests for key-name parsing and recent-`.ibt` lookup |
 | `live.go` | `RunLive` — live position + gap to car ahead/behind from iRacing shared memory |
 | `camera.go` | `RunCamera` — restart the Windows Camera Frame Server to clear a stuck webcam |
+| `usb.go` | `RunUSB` — list and enable/disable the sim-racing USB devices |
+| `elevate_windows.go` | `winIsElevated` / `winRelaunchElevated` — token check and `ShellExecuteExW runas` re-exec used by `usb` |
+| `usb_test.go` | Tests for usb listing, toggling, absent devices and the elevation hand-off |
 
 ## Dispatch
 
@@ -60,6 +63,7 @@ pb [list|show|diff|prune] →  RunPB in pb.go
 notes [set-hotkey]     →  RunNotes in notes.go
 live [-watch] [-hz N]  →  RunLive in live.go
 camera                 →  RunCamera in camera.go
+usb [on|off|toggle]    →  RunUSB in usb.go
 ```
 
 Runtime file paths are all derived from the config file's directory:
@@ -203,3 +207,58 @@ Toggle model: a single `toggleCh chan struct{}` is sent on every key-down or HID
 Beeps use `kernel32.Beep`. Start: 880 Hz (A5, 80ms) + 1047 Hz (C6, 100ms). Stop: 659 Hz (E5, 80ms) + 440 Hz (A4, 120ms). All tones are from the A harmonic family — musically consistent.
 
 Session file is named after the most recently modified `.ibt` in `ibtDir` (within 4 hours), falling back to a plain timestamp.
+
+## usb subcommand (`usb.go`)
+
+`RunUSB(args) int` lists the sim-racing USB devices and enables or disables
+them. Returns the process exit code rather than calling `os.Exit`, so every path
+is testable in-process.
+
+```
+motorhome usb                              # list, with state
+motorhome usb -v                           # list, with device instance IDs
+motorhome usb <on|off|toggle> <alias|all>  # change state
+```
+
+Device identification, matching and target resolution all live in
+[internal/usbdev](../../internal/usbdev/README.md). This file owns argument
+parsing, output, and the elevation hand-off.
+
+### Elevation
+
+Enumerating devices needs no special rights. **Changing one does.** On this
+machine the user is in the Administrators group but normal processes still run
+with the filtered token, so `winIsElevated` checks `TokenElevation` rather than
+group membership — a membership check would report true for a process that
+cannot change a device state.
+
+When a state change is requested unelevated, `usbElevate` re-runs the exe via
+`ShellExecuteExW` with the `runas` verb (`elevate_windows.go`) and waits for it.
+UAC is set to never-notify here, so this is silent — no dialog interrupts a
+Stream Deck press mid-session.
+
+The elevated child gets its own console that the parent has no handle to, so it
+cannot print to the terminal. `-elevated-out <path>` redirects both `usbOut` and
+`usbErrOut` to a file; the parent reads it back and replays it, making a toggle
+look identical whether or not it had to elevate. That flag is also the recursion
+guard: a process started with it never elevates again, so a failed elevation
+produces one clear "access denied" rather than a loop.
+
+### What runs where
+
+Enumeration and target resolution stay in the **unelevated parent**, so a typo
+(`no device matches "pedls"`) is reported without paying for an elevation first.
+`usbApply` runs only in the process holding the token, and owns *every* line of
+per-device output — printing in both would show each device twice, once from the
+parent and once replayed from the child.
+
+`-v` and `-elevated-out` are rebuilt into the child's argv rather than forwarded
+verbatim, so flags land ahead of the target regardless of how they were typed.
+
+### Reporting
+
+A device already in the requested state prints `already disabled` rather than
+claiming a change that didn't happen; an unplugged one prints `not connected`
+and is skipped instead of failing the command, so `usb off all` still works with
+the wheelbase off the rig. A target that is *entirely* unplugged is an error,
+checked before elevating.

@@ -21,13 +21,15 @@ func defaultConfigPath() string {
 func main() {
 	cfgPath := flag.String("config", defaultConfigPath(), "path to config file")
 	flag.Usage = func() {
-		fmt.Fprintln(os.Stderr, "Usage: motorhome [-config <path>] <start|stop|status|analyze|coach|pb|notes|live|camera>")
+		fmt.Fprintln(os.Stderr, "Usage: motorhome [-config <path>] <start|stop|status|analyze|coach|pb|notes|live|camera|usb>")
 		fmt.Fprintln(os.Stderr, "       motorhome analyze [-lap N] [-update-map] [-json] [-dump T3 [-dump-all]] [file.ibt]")
 		fmt.Fprintln(os.Stderr, "       motorhome coach [-lap N] [-table] [file.ibt]")
 		fmt.Fprintln(os.Stderr, "       motorhome pb [list|show|diff|prune]")
 		fmt.Fprintln(os.Stderr, "       motorhome notes [set-hotkey]")
 		fmt.Fprintln(os.Stderr, "       motorhome live [-watch] [-hz N] [-raw]")
 		fmt.Fprintln(os.Stderr, "       motorhome camera")
+		fmt.Fprintln(os.Stderr, "       motorhome usb [list] [-v]")
+		fmt.Fprintf(os.Stderr, "       motorhome usb <on|off|toggle> <%s>\n", usbTargetHint())
 		flag.PrintDefaults()
 	}
 	flag.Parse()
@@ -38,14 +40,18 @@ func main() {
 		os.Exit(1)
 	}
 
-	// camera reads nothing from the config, and is the one subcommand likely to
-	// be run from a bare copy of the exe on another machine — un-sticking a
-	// webcam redirected into an RDP session means running it on the far end,
-	// where there is no launcher.config.json. Dispatch it before the config
-	// load so a missing config can't block it.
-	if args[0] == "camera" {
+	// camera and usb read nothing from the config, and are the subcommands most
+	// likely to run from a bare copy of the exe — un-sticking a webcam
+	// redirected into an RDP session means running it on the far end, where
+	// there is no launcher.config.json, and usb re-runs this exe elevated,
+	// where the working directory is not the user's. Dispatch both before the
+	// config load so a missing config can't block them.
+	switch args[0] {
+	case "camera":
 		RunCamera(args[1:])
 		return
+	case "usb":
+		os.Exit(RunUSB(args[1:]))
 	}
 
 	cfg, err := config.Load(*cfgPath)

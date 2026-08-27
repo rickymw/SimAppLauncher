@@ -33,7 +33,7 @@ go build -o motorhome.exe ./cmd/motorhome
 ## Subcommands
 
 ```
-motorhome [-config <path>] <start|stop|status|analyze|notes|live|camera>
+motorhome [-config <path>] <start|stop|status|analyze|coach|pb|notes|live|camera|usb>
 ```
 
 | Subcommand | Description |
@@ -47,6 +47,7 @@ motorhome [-config <path>] <start|stop|status|analyze|notes|live|camera>
 | `notes` | Record voice notes stamped with track position |
 | `live` | Live position + gap in seconds to the car directly ahead and behind on track |
 | `camera` | Restart a stuck/frozen webcam by restarting the Windows Camera Frame Server |
+| `usb` | List the sim-racing USB devices and enable/disable them individually |
 
 ---
 
@@ -408,7 +409,7 @@ The case this exists for: when the webcam is redirected into a **Remote Desktop*
 
 **Redirection has two ends.** The camera is attached to the RDP client, but the remote machine runs its own frame server for the redirected device. If apps *inside* the session say "in use or unavailable", the stall is on the remote machine and running this locally will not help — copy `motorhome.exe` over and run it there. It needs no config file or any other repo file, just the exe.
 
-Reconnecting the RDP session does **not** clear that one: the frame server is machine-wide, not per-session, so the stale handle survives the session being rebuilt. Running `camera` on the remote machine does clear it, without a reboot. This does **not** require an elevated process, only a one-time grant of `SERVICE_START`/`SERVICE_STOP` rights on those two services to your account (a full PnP device disable/enable would need real admin rights, which aren't reliably obtainable via UAC in this setup):
+Reconnecting the RDP session does **not** clear that one: the frame server is machine-wide, not per-session, so the stale handle survives the session being rebuilt. Running `camera` on the remote machine does clear it, without a reboot. This does **not** require an elevated process, only a one-time grant of `SERVICE_START`/`SERVICE_STOP` rights on those two services to your account (a full PnP device disable/enable needs real admin rights — obtainable here by re-execing elevated, as `motorhome usb` does, but a bigger hammer than this needs):
 
 ```powershell
 # One-time setup — run once, elevated. Look up your SID first:
@@ -441,6 +442,52 @@ Windows starts it on demand, so the camera will initialise fresh on next use.
 See [internal/camera/README.md](internal/camera/README.md) for details and known limitations (system-wide restart, won't fix a true USB-level hardware hang).
 
 ---
+
+---
+
+## USB Devices
+
+```powershell
+.\motorhome.exe usb                    # list every sim device and its state
+.\motorhome.exe usb -v                 # ... with device instance IDs
+.\motorhome.exe usb off pedals         # disable one device
+.\motorhome.exe usb on pedals          # re-enable it
+.\motorhome.exe usb toggle handbrake   # flip whichever way it currently is
+.\motorhome.exe usb off all            # disable every connected sim device
+```
+
+Every device on the rig presents to Windows as a HID game controller. A game that enumerates all controllers and auto-binds axes picks up phantom input from the ones that aren't being used — harmless in a sim, which expects several devices, and disruptive in anything else. Disabling a device removes its HID node entirely, so nothing can bind to it until it's turned back on.
+
+```
+Sim racing USB devices
+
+  Alias       State          Device
+  handbrake   enabled        MOZA HBP Handbrake
+  haptic      enabled        SIMAGIC P2000 Haptic
+  pedals      enabled        Heusinkveld Sim Pedals Sprint
+  wheelbase   not connected  SIMAGIC Alpha Series Wheelbase
+```
+
+Targets can be an alias, any unambiguous substring of a device name (`heusink` works), or `all`. A target matching several devices is an error listing them rather than a guess — disabling the wrong device mid-session is cheap to undo but not cheap to *notice*, since the symptom is a control that silently stopped working.
+
+```
+  [+] handbrake   MOZA HBP Handbrake               disabled
+  [+] haptic      SIMAGIC P2000 Haptic             disabled
+  [+] pedals      Heusinkveld Sim Pedals Sprint    disabled
+  [=] wheelbase   SIMAGIC Alpha Series Wheelbase   not connected
+
+A game that enumerated its controllers at startup may need restarting to notice.
+```
+
+A device already in the requested state reports `already disabled` rather than claiming a change that didn't happen, and one that isn't plugged in is reported and skipped rather than failing the command.
+
+**Listing needs no special rights; changing a device state does.** The command re-runs itself elevated for that half only. UAC is set to never-notify on this machine, so this is silent — nothing pops up mid-session, and a Stream Deck button works the same as a terminal. Adding a device means one row in `KnownDevices` ([internal/usbdev/usbdev.go](internal/usbdev/usbdev.go)); find its VID/PID with:
+
+```powershell
+Get-PnpDevice -Class HIDClass -PresentOnly | Where-Object { $_.FriendlyName -match 'game controller' }
+```
+
+See [internal/usbdev/README.md](internal/usbdev/README.md) for why devices are matched by vendor/product ID rather than name, and why composite devices are toggled at the top-level node.
 
 ## Configuration
 
@@ -502,6 +549,7 @@ go test -tags e2e -v ./internal/launcher/ -run TestE2E_FullStack -timeout 120s  
 | `internal/iracing` | Live telemetry via iRacing shared memory | [README](internal/iracing/README.md) |
 | `internal/audio` | Microphone recording via WinMM | [README](internal/audio/README.md) |
 | `internal/camera` | Restarts the Windows Camera Frame Server | [README](internal/camera/README.md) |
+| `internal/usbdev` | Identifies sim-racing USB devices and enables/disables them | [README](internal/usbdev/README.md) |
 
 ---
 

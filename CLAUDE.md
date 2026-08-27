@@ -1,7 +1,7 @@
 # CLAUDE.md — MotorHome
 
 ## Project overview
-Windows CLI tool (`motorhome.exe`) that launches, monitors, and closes sim racing apps in sequence, analyses iRacing `.ibt` telemetry files, and records voice notes during a session. Designed for Stream Deck integration. Nine subcommands: `start`, `stop`, `status`, `analyze`, `coach`, `pb`, `notes`, `live`, `camera`. Accepts an optional `-config <path>` flag.
+Windows CLI tool (`motorhome.exe`) that launches, monitors, and closes sim racing apps in sequence, analyses iRacing `.ibt` telemetry files, and records voice notes during a session. Designed for Stream Deck integration. Ten subcommands: `start`, `stop`, `status`, `analyze`, `coach`, `pb`, `notes`, `live`, `camera`, `usb`. Accepts an optional `-config <path>` flag.
 
 ## Documentation rule
 When making any code change, always review and update documentation to match:
@@ -97,6 +97,12 @@ motorhome live -watch                               # stream updates at 5 Hz unt
 motorhome live -watch -hz 10                        # poll at 10 Hz
 motorhome live -raw                                 # dump raw LiveData fields (diagnostic)
 motorhome camera                                    # restart a stuck/frozen webcam
+motorhome usb                                       # list sim racing USB devices and their state
+motorhome usb -v                                    # ... with device instance IDs
+motorhome usb off pedals                            # disable one device (silently re-execs elevated)
+motorhome usb on pedals                             # re-enable it
+motorhome usb toggle handbrake                      # flip whichever way it currently is
+motorhome usb off all                               # disable every connected sim device
 ```
 
 ## AI Coaching workflow
@@ -138,6 +144,7 @@ Each package has its own README with full detail. Below is a terse summary with 
 | `internal/iracing` | `ReadLiveData()` snapshot from iRacing shared memory (Windows-only); `ParseDrivers`, `ComputeGaps` for gap-to-car math (cross-platform) | [README](internal/iracing/README.md) |
 | `internal/audio` | WinMM `Recorder.Start/Stop`; `BuildWAV` for Whisper input | [README](internal/audio/README.md) |
 | `internal/camera` | `Restarter` interface; Windows impl stops/starts `FrameServer`+`FrameServerMonitor` via raw SCM syscalls to un-stick a frozen webcam | [README](internal/camera/README.md) |
+| `internal/usbdev` | `Controller` interface; identifies sim-racing USB devices by VID/PID and enables/disables them via raw SetupAPI syscalls | [README](internal/usbdev/README.md) |
 
 ### Config (`launcher.config.json`)
 Lives next to the binary by default. Override with `-config <path>`. Validated on load — rejects empty `name`/`path`, negative `delayMs`, invalid `windowStyle`.
@@ -291,7 +298,7 @@ Toggle model — each press starts or stops recording:
 Reads an iRacing shared-memory snapshot via `iracing.ReadLiveData()` and prints your position, lap, and gap in seconds to the car directly ahead/behind on track. Default mode prints one frame and exits. `-watch` polls at `-hz` Hz (default 5, clamped 1–60) and prints one summary line per tick until Ctrl-C. `-raw` dumps every field of `LiveData` plus per-car detail for each valid CarIdx — use this when the formatted view looks wrong. Gap computation lives in `internal/iracing/gap.go` (`ComputeGaps`); driver-name lookup uses the `Drivers` map parsed from the session YAML. Solo practice sessions with no other cars show `Ahead/Behind: (none)` by design. Windows-only (`//go:build windows`).
 
 ### camera subcommand flow (`cmd/motorhome/camera.go`)
-Restarts a stuck/frozen webcam by stopping (if running) and restarting the Windows `FrameServer`/`FrameServerMonitor` services — the shared pipeline every app uses to access a camera — rather than disabling/enabling the USB PnP device itself. This was a deliberate fallback: `Disable-PnpDevice`/`Enable-PnpDevice` and `pnputil` both require a genuine administrator token, which `motorhome.exe` does not have in normal (Stream Deck-launched) use, and `runas` elevation doesn't work in this environment (see Deployment below). Restarting the two named services only needs `SERVICE_START`/`SERVICE_STOP` rights on those specific services, which — like `SeDebugPrivilege` for `Kill()` — can be granted to the account directly via a one-time `sc sdset` ACL change (see [internal/camera/README.md](internal/camera/README.md)) instead of requiring full admin membership. Implementation is raw `advapi32.dll` Service Control Manager calls (`OpenSCManagerW`/`OpenServiceW`/`ControlService`/`StartServiceW`), matching the no-external-dependency style of `internal/launcher`. Windows-only (`//go:build windows`).
+Restarts a stuck/frozen webcam by stopping (if running) and restarting the Windows `FrameServer`/`FrameServerMonitor` services — the shared pipeline every app uses to access a camera — rather than disabling/enabling the USB PnP device itself. This was a deliberate fallback: `Disable-PnpDevice`/`Enable-PnpDevice` and `pnputil` both require a genuine administrator token, which `motorhome.exe` does not have in normal (Stream Deck-launched) use, and `runas` elevation was believed not to work in this environment. **That belief was wrong** — `usb` (added 2026-08-26) elevates silently via `ShellExecuteExW runas`, so a PnP disable/enable *would* have been available to `camera` after all. The service-restart approach is kept because it works, is narrower in what it touches, and needs no elevation at all; but the stated rationale no longer holds and shouldn't be reused as a reason to avoid elevation elsewhere. Restarting the two named services only needs `SERVICE_START`/`SERVICE_STOP` rights on those specific services, which — like `SeDebugPrivilege` for `Kill()` — can be granted to the account directly via a one-time `sc sdset` ACL change (see [internal/camera/README.md](internal/camera/README.md)) instead of requiring full admin membership. Implementation is raw `advapi32.dll` Service Control Manager calls (`OpenSCManagerW`/`OpenServiceW`/`ControlService`/`StartServiceW`), matching the no-external-dependency style of `internal/launcher`. Windows-only (`//go:build windows`).
 
 **Motivating case:** the webcam is redirected into a Remote Desktop session (`mstsc.exe`), and on leaving the meeting RDP never releases it — the device stays held indefinitely and every local app finds it busy. Nothing frees it short of a reboot or unplugging the camera. Restarting the Frame Server tears down that stale handle; verified to release the device with `mstsc.exe` holding it.
 
@@ -308,6 +315,29 @@ Runtime depends on whether the camera is held: ~0.01s when the services are alre
 Killing the hosting `svchost.exe` would be faster and is safely scoped (each service is alone in its svchost group), but both run as `LocalService`/`LocalSystem`, so terminating them non-elevated is expected to fail the same way `pnputil` did. The graceful stop works, so it isn't attempted.
 
 Trade-off: restarts the camera pipeline system-wide (affects any camera in use, not just one device) and won't fix a true USB-level hardware hang — only a full PnP disable/enable or physical unplug/replug can, and that needs admin rights this tool doesn't have.
+
+### usb subcommand flow (`cmd/motorhome/usb.go`)
+
+Lists the sim-racing USB devices and enables or disables them individually. Every device on the rig — wheelbase, pedals, handbrake, haptic unit — presents as a HID game controller, and a game that enumerates all controllers and auto-binds axes picks up phantom input from the ones not in use. Disabling a device removes its HID node entirely, so nothing can bind to it.
+
+| Command | Behaviour |
+|---|---|
+| `usb` / `usb list [-v]` | Table of every known device and its state; `-v` adds instance IDs |
+| `usb on\|off\|toggle <alias\|all>` | Change state; target is an alias, an unambiguous substring, or `all` |
+
+Devices are matched by **VID/PID, not by name** — Windows reports all four as the generic "USB Input Device", and the real product string lives in a bus-reported property the PnP enumerator doesn't key on. Adding a device is one row in `usbdev.KnownDevices`. Instance IDs carrying `&MI_` are rejected: a composite device like the MOZA handbrake publishes one node per USB interface (a `COM6` serial port and a game controller) under a single top-level node, and it is the top-level node that gets toggled.
+
+`StateAbsent` is distinct from `StateDisabled` — a disabled device still has a devnode and can be re-enabled, an absent one can't be acted on at all. `Enumerate` starts from `KnownDevices` and fills in what it finds, so an unplugged device reports `not connected` rather than vanishing from the table. `Resolve` refuses to guess on an ambiguous target (the `pb show` pattern): the symptom of disabling the wrong device is a control that silently stopped working, which is cheap to undo and expensive to notice.
+
+**Elevation is the interesting part.** Enumeration needs no rights; `SetupDiCallClassInstaller` returns `ERROR_ACCESS_DENIED` without a full token. `winIsElevated` checks `TokenElevation` rather than group membership — the account *is* in Administrators but normal processes get the filtered token, so a membership test would report true for a process that cannot change a device state. `usbElevate` then re-execs the exe via `ShellExecuteExW` with the `runas` verb (`elevate_windows.go`); UAC is never-notify here so it is silent, and a Stream Deck press never raises a dialog.
+
+The elevated child gets its own console the parent has no handle to, so `-elevated-out <path>` redirects both output sinks to a file the parent reads back and replays. That flag doubles as the recursion guard: a process started with it never elevates again, so a failed elevation gives one clear "access denied" instead of a loop.
+
+Enumeration and target resolution stay in the **unelevated parent** so a typo is reported without paying for an elevation first, but `usbApply` owns *every* line of per-device output — printing in both would show each device twice, once from the parent and once replayed from the child. (It did, before the split.) The child's argv is rebuilt rather than forwarded so flags land ahead of the target regardless of how they were typed.
+
+Like `camera`, `usb` is dispatched in `main.go` **before** `config.Load`: it reads nothing from the config, and requiring one would fail a bare copy of the exe.
+
+Two Win32 notes: `SetupDiGetClassDevs` will **not** accept a device instance ID as its `Enumerator` despite the documentation saying it does (fails `ERROR_INVALID_DATA` — verified on this rig), so `openDevice` uses `SetupDiCreateDeviceInfoList` + `SetupDiOpenDeviceInfoW`; and enable clears `DICS_FLAG_CONFIGSPECIFIC` *then* `DICS_FLAG_GLOBAL` while disable sets only `DICS_FLAG_GLOBAL`, because a device can be disabled in either scope and clearing one leaves it disabled while reporting success.
 
 ### Corner labelling and the Turns line
 Detected corners are auto-labelled `T1`, `T2`, … in track order from the S/F line. **These are positional, not iRacing's official turn numbers.** Detection merges complexes, so the counts often differ — Road America reports `TrackNumTurns: 14` while detection finds 11 corner segments, and from the first merge onward every generated label is offset (the detected 8th corner is really the Kink).
@@ -382,15 +412,20 @@ All live next to the binary in `G:\RACING\SimAppLauncher\`:
 ## Deployment
 - Binary + config live in `G:\RACING\SimAppLauncher\` (the repo root)
 - Stream Deck triggers via the **Open** action pointing directly at `G:\RACING\SimAppLauncher\motorhome.exe` with arguments `start` or `stop` — no PowerShell wrapper needed. Config path resolves relative to the exe via `os.Executable()`.
-- UAC is set to never-notify on this machine — elevation via `ShellExecuteExW runas` does not work in this environment; use `elevate: false` for all apps
+- UAC is set to never-notify on this machine. **`ShellExecuteExW runas` elevation does work here, and works silently** — corrected 2026-08-26: the `usb` subcommand re-execs itself that way and the child comes back at High Mandatory Level with `BUILTIN\Administrators` enabled, with no consent dialog shown. The previous note here claimed the opposite and was wrong. `elevate: false` is still right for the launcher's apps, but that is about those apps, not about elevation being unavailable
+- The account (`ricky`) **is** a member of the local Administrators group; normal processes simply get the filtered token. So an elevation check must read `TokenElevation`, not group membership — a membership test reports true for a process that cannot change a device state
 - SimHub auto-elevates via its own manifest and resists `taskkill` — the `SeDebugPrivilege` fallback in `Kill()` handles this
-- Confirmed empirically (2026-07-28) that the process running `motorhome.exe` normally does **not** hold a full administrator token: `Disable-PnpDevice`/`pnputil /disable-device` both fail with access-denied against a real device. Only specific, narrowly-grantable privileges/rights (like `SeDebugPrivilege`, or the `camera` subcommand's service ACL) work without elevation — don't assume a feature needing genuine admin rights will work without first checking
+- Confirmed empirically (2026-07-28) that the process running `motorhome.exe` normally does **not** hold a full administrator token: `Disable-PnpDevice`/`pnputil /disable-device` both fail with access-denied against a real device. Only specific, narrowly-grantable privileges/rights (like `SeDebugPrivilege`, or the `camera` subcommand's service ACL) work *without* elevation — don't assume a feature needing genuine admin rights will work in-process without first checking. What has changed since that note is the escape hatch: a feature that genuinely needs admin can re-exec itself elevated (see `usb`), so "needs admin" is no longer a reason to abandon an approach here — it only means the work has to happen in a child process
 
 ## Known limitations
 - `Minimized` window style not implemented (requires `golang.org/x/sys/windows` for `StartupInfo`; currently treated as `Normal`)
 - `stop` kills by image name — affects all instances of a process if multiple are running
 - `camera` restarts the Frame Server system-wide (not scoped to one device) and cannot fix a true USB-level hardware hang — only a full PnP disable/enable or physical unplug/replug can, which requires admin rights not available in this deployment
 - `camera` can block up to ~30s when an app is holding the device; this is Windows waiting on the stuck client, not the tool, and cannot be shortened without admin rights to kill the service host
+- `usb` recognises only the devices listed in `usbdev.KnownDevices`; a new or swapped device is invisible until its VID/PID is added there. There is no config field for this — the list is small and changes about as often as the hardware does
+- `usb` toggles the whole top-level USB device, so disabling the MOZA handbrake also takes down its `COM6` serial interface (used by MOZA Pit House). Toggling a single interface is possible but would leave the physical device half-on in a way the output could not sensibly describe
+- A game that enumerated its controllers at startup may need restarting to notice a device appearing or disappearing; `usb` says so after any change it makes
+- `usb` depends on UAC elevation being silent on this machine. On a box that prompts, every state change would raise a consent dialog — workable from a terminal, bad from a Stream Deck button mid-session. The fallback would be a one-time elevated scheduled task triggered by the unelevated binary, the same shape as the `camera` service ACL
 - `processName` whitespace is not trimmed — accidental spaces will cause silent match failures
 - Segment detection with `lataccel` method only uses lateral G — pure braking zones with no lateral load appear as straights (`latlon` default avoids this)
 - S/F line wraparound: tiny corners (< 50 m) at the S/F line are auto-removed, but if the first and last segments are both straights they are not merged into one
