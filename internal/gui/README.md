@@ -142,6 +142,33 @@ paths are free text from iRacing and from the user's own files; building through
 `createElement`/`textContent` means a track called `<script>` is a track called
 `<script>` rather than a bug.
 
+## The mark
+
+`static/logo.svg` (topbar) and `static/favicon.svg` (tab icon): a slick tyre
+under a chevron roofline — a shift light at a glance and a motor *home* on the
+second look. Two elements, two colours, drawn on a 64-unit grid, so it survives
+down to a 16px favicon.
+
+They are **two files rather than one referenced twice**, which is the only
+non-obvious part. The app chrome is dark by deliberate choice (see the note at
+the top of `style.css`), so the topbar mark can hard-code a light tyre. A
+browser tab strip is not the app and follows the OS, so `favicon.svg` carries a
+`prefers-color-scheme` block and swaps the tyre to dark on a light strip. A
+single file cannot do both: the media-query version renders a dark tyre on the
+dark topbar whenever the OS is in light mode, which is invisible. The accent
+roof is the same `#4fa3ff` in both because it reads on either ground.
+
+Note also that the roof and the tyre are drawn with a deliberate gap between
+them, sized so it stays open at 16px rather than closing into a single blob.
+Adjusting either the roof's `stroke-width` or the circle's radius eats into that
+gap from both sides — the clear space is what is left after both strokes, not
+the distance between the two paths' centrelines.
+
+`TestBrandingAssets` asserts both files are served as `image/svg+xml` and that
+`index.html` still references the names they are served under, because a rename
+degrades silently: the page renders perfectly, just with no mark and no tab
+icon.
+
 ## Testing
 
 `gui_test.go` drives the full handler chain through `httptest`, including

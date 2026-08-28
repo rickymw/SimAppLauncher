@@ -453,6 +453,13 @@ Serves the web interface on `127.0.0.1` and opens a browser. Five panels: rig
 control (apps + USB + camera), settings, session analysis, live gaps, personal
 bests. Full detail in [internal/gui/README.md](internal/gui/README.md).
 
+**The mark ships as two SVGs, not one.** `static/logo.svg` (topbar) hard-codes a
+light tyre because the app chrome is deliberately dark-only; `static/favicon.svg`
+carries a `prefers-color-scheme` block because a tab strip follows the OS. One
+shared file would render a dark tyre on the dark topbar whenever the OS is light.
+No Go change was needed for either — `//go:embed static` and the `FileServer` at
+`GET /` pick up anything dropped in that directory.
+
 **A browser, not a window.** Every Go GUI toolkit brings a dependency tree this
 repo does not have — fyne pulls cgo and OpenGL, walk pulls `golang.org/x/sys` —
 and `go.mod`'s empty require block is a property `internal/camera`,

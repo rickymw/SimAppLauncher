@@ -1,0 +1,10 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" width="64" height="64" role="img" aria-label="MotorHome">
+  <style>
+    /* The tab strip is not the app: it can be light or dark, so the tyre
+       follows the browser while the accent roof works on either ground. */
+    .tyre { stroke: #14161a; }
+    @media (prefers-color-scheme: dark) { .tyre { stroke: #e6e8ec; } }
+  </style>
+  <path d="M9 26L32 8l23 18" fill="none" stroke="#4fa3ff" stroke-width="8" stroke-linecap="round" stroke-linejoin="round"/>
+  <circle class="tyre" cx="32" cy="42" r="13" fill="none" stroke-width="9"/>
+</svg>
